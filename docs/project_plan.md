@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-03-29
-> Status: Phase 0 — Project Setup (in progress)
+> Status: Phase 1 — Game Engine (in progress)
 
 ---
 
@@ -70,19 +70,19 @@ azul-alphazero/
 
 ## Development Phases
 
-### Phase 0 — Project Setup ✅ (current)
+### Phase 0 — Project Setup ✅ (complete)
 *Goal: professional project skeleton before any game code*
 
-- [ ] Create GitHub repository
-- [ ] Clone to local machine
-- [ ] Create and activate Python virtual environment
-- [ ] Install dev dependencies (pytest, black, flake8)
-- [ ] Create folder structure
-- [ ] Configure pytest (`pytest.ini`)
-- [ ] Configure code formatter (`pyproject.toml`)
-- [ ] Set up GitHub Actions CI (runs tests on every push)
-- [ ] Write and pass first dummy test (proves CI works)
-- [ ] Commit and push — CI goes green
+- [x] Create GitHub repository
+- [x] Clone to local machine
+- [x] Create and activate Python virtual environment
+- [x] Install dev dependencies (pytest, black, flake8, isort, pytest-watch)
+- [x] Create folder structure
+- [x] Configure pytest (`pytest.ini`)
+- [x] Configure code formatter (`pyproject.toml`)
+- [x] Set up GitHub Actions CI (runs tests on every push)
+- [x] Write and pass first dummy test (proves CI works)
+- [x] Commit and push — CI goes green
 
 **Definition of done:** Pushing a commit to GitHub automatically runs the test suite and shows a green checkmark.
 

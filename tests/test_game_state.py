@@ -2,7 +2,7 @@
 
 """Tests for core game state dataclasses."""
 
-from engine.game import (
+from engine.game_state import (
     Tile,
     PlayerBoard,
     GameState,

@@ -4,15 +4,11 @@
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from engine.constants import BOARD_SIZE, PLAYERS, TILES_PER_COLOR
+import random
 import logging
 
 logger = logging.getLogger(__name__)
-
-BOARD_SIZE = 5  # also equal to the number of tile colors
-PLAYERS = 2  # number of players in a new GameState
-TILES_PER_COLOR = (
-    20  # number of tiles of each color in the bag at the start of the game
-)
 
 
 class Tile(Enum):
@@ -85,3 +81,4 @@ class GameState:
                 color for color in Tile if color != Tile.FIRST_PLAYER
             ] * TILES_PER_COLOR
             logger.debug(f"Created bag with {len(self.bag)} tiles")
+            random.shuffle(self.bag)  # Shuffle the bag at the start of the game

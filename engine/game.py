@@ -26,7 +26,7 @@ class Tile(Enum):
 
 #     Attributes:
 #         score: The player's current score.
-#         pattern_lines: 5 rows; row i can hold at most i+1 tiles of one colour.
+#         pattern_lines: 5 rows; row i can hold at most i+1 tiles of one color.
 #         wall: 5x5 grid of placed tiles (None = empty).
 #         floor_line: Tiles dropped here incur minus-point penalties.
 #     """

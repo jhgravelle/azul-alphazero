@@ -5,7 +5,7 @@
 from engine.game import Tile  # GameState, PlayerBoard,
 
 
-# ── Tile tests ────────────────────────────────────────────────────────────────
+# ── Tile tests ─────────────────────────────
 
 
 def test_tile_has_six_types():

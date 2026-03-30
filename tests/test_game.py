@@ -5,7 +5,7 @@
 from engine.game import Tile  # GameState, PlayerBoard,
 
 
-# ── Tile tests ─────────────────────────────
+# ── Tile tests ───────────────────────────────────────────────────────────────
 
 
 def test_tile_has_six_types():
@@ -21,7 +21,7 @@ def test_tile_first_player_marker_exists():
     assert Tile.FIRST_PLAYER in Tile
 
 
-# # ── PlayerBoard tests ─────────────────────────────────────────────────────────
+# # ── PlayerBoard tests ──────────────────────────────────────────────────────
 
 
 # def test_player_board_initial_score_is_zero():
@@ -59,7 +59,7 @@ def test_tile_first_player_marker_exists():
 #     assert board.floor_line == []
 
 
-# # ── GameState tests ───────────────────────────────────────────────────────────
+# # ── GameState tests ────────────────────────────────────────────────────────
 
 
 # def test_game_state_default_has_two_players():

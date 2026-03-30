@@ -91,15 +91,18 @@ azul-alphazero/
 ### Phase 1 — Game Engine (TDD)
 *Goal: a complete, fully-tested Azul rule engine with no UI*
 
-- [ ] Model game state as Python dataclasses
-- [ ] Implement factory display setup and tile drawing
-- [ ] Implement legal move generation
-- [ ] Implement tile placement (pattern lines → wall)
-- [ ] Implement end-of-round scoring
-- [ ] Implement end-of-game bonus scoring
-- [ ] Implement game-over detection
-- [ ] Text-based CLI so a human can play both sides
-- [ ] Full test suite — every rule covered
+- [x] Model game state as Python dataclasses
+- [x] Constants module
+- [x] Game class skeleton
+- [x] Factory setup and bag drawing
+- [x] Legal move generation (source and destination constraints)
+- [ ] Wall color pattern (fixed positions)
+- [ ] make_move()
+- [ ] First-player marker handling
+- [ ] End-of-round scoring
+- [ ] End-of-game bonus scoring
+- [ ] Game-over detection
+- [ ] Text-based CLI
 
 **Approach:** Test-Driven Development. Write the test first, watch it fail, write the code to make it pass, refactor.
 

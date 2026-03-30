@@ -2,7 +2,6 @@
 
 """Core game controller for Azul."""
 
-
 from dataclasses import dataclass
 from engine.constants import BOARD_SIZE, TILES_PER_FACTORY
 from engine.game_state import GameState, PlayerBoard, Tile

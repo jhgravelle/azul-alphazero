@@ -3,47 +3,13 @@
 """Core game state dataclasses for Azul."""
 
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from engine.constants import BOARD_SIZE, PLAYERS, TILES_PER_COLOR
+from engine.board import Board
+from engine.tile import Tile
+from engine.constants import PLAYERS, TILES_PER_COLOR
 import random
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-class Tile(Enum):
-    """The five tile colors in Azul, plus the first-player marker."""
-
-    BLUE = auto()
-    YELLOW = auto()
-    RED = auto()
-    BLACK = auto()
-    WHITE = auto()
-    FIRST_PLAYER = auto()
-
-
-@dataclass
-class PlayerBoard:
-    """Represents a single player's board.
-
-    Attributes:
-        score: The player's current score.
-        pattern_lines: 5 rows; row i can hold at most i+1 tiles of one color.
-        wall: 5x5 grid of placed tiles (None = empty).
-        floor_line: Tiles dropped here incur minus-point penalties.
-    """
-
-    score: int = 0
-
-    pattern_lines: list[list[Tile]] = field(
-        default_factory=lambda: [[] for _ in range(BOARD_SIZE)]
-    )
-
-    wall: list[list[Tile | None]] = field(
-        default_factory=lambda: [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
-    )
-
-    floor_line: list[Tile] = field(default_factory=list)
 
 
 @dataclass
@@ -59,7 +25,7 @@ class GameState:
         current_player: Index into players — whose turn it is.
     """
 
-    players: list[PlayerBoard] = field(default_factory=list)
+    players: list[Board] = field(default_factory=list)
     current_player: int = 0
     factories: list[list[Tile]] = field(default_factory=list)
     center: list[Tile] = field(default_factory=list)
@@ -68,7 +34,7 @@ class GameState:
 
     def __post_init__(self) -> None:
         if not self.players:
-            self.players = [PlayerBoard() for _ in range(PLAYERS)]
+            self.players = [Board() for _ in range(PLAYERS)]
             logger.debug(f"Created {PLAYERS} player boards")
 
         if not self.factories:

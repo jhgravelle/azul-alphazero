@@ -1,10 +1,9 @@
-# tests/test_game.py
+# tests/test_game_state.py
 
 """Tests for core game state dataclasses."""
 
+from engine.tile import Tile
 from engine.game_state import (
-    Tile,
-    PlayerBoard,
     GameState,
 )
 
@@ -13,52 +12,6 @@ from engine.constants import (
     PLAYERS,
     TILES_PER_COLOR,
 )
-
-# ── Tile tests ───────────────────────────────────────────────────────────────
-
-
-def test_tile_has_correct_length():
-    assert len(Tile) == BOARD_SIZE + 1  # 5 colors + first-player marker
-
-
-def test_tile_has_correct_number_of_colors():
-    color_tiles = [t for t in Tile if t != Tile.FIRST_PLAYER]
-    assert len(color_tiles) == BOARD_SIZE
-
-
-def test_tile_first_player_marker_exists():
-    assert Tile.FIRST_PLAYER in Tile
-
-
-# # ── PlayerBoard tests ──────────────────────────────────────────────────────
-
-
-def test_player_board_initial_score_is_zero():
-    board = PlayerBoard()
-    assert board.score == 0
-
-
-def test_player_board_pattern_lines_are_empty():
-    board = PlayerBoard()
-    assert len(board.pattern_lines) == BOARD_SIZE
-    for row in board.pattern_lines:
-        assert row == []
-
-
-def test_player_board_wall_is_empty():
-    board = PlayerBoard()
-    assert len(board.wall) == BOARD_SIZE
-    for row in board.wall:
-        assert len(row) == BOARD_SIZE
-        for cell in row:
-            assert cell is None
-
-
-def test_player_board_floor_line_is_empty():
-    """The floor line starts empty."""
-    board = PlayerBoard()
-    assert board.floor_line == []
-
 
 # ── GameState tests ────────────────────────────────────────────────────────
 

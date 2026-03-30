@@ -3,15 +3,23 @@
 """Core game controller for Azul."""
 
 from dataclasses import dataclass
+from engine.board import Board
+from engine.tile import Tile
 from engine.constants import BOARD_SIZE, TILES_PER_FACTORY
-from engine.game_state import GameState, PlayerBoard, Tile
+from engine.game_state import GameState
 import random
 import logging
 
 logger = logging.getLogger(__name__)
 
 CENTER = -1
-FLOOR = -1
+FLOOR = -2
+_WALL_SEQUENCE = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
+
+WALL_PATTERN: list[list[Tile]] = [
+    [_WALL_SEQUENCE[(col - row) % BOARD_SIZE] for col in range(BOARD_SIZE)]
+    for row in range(BOARD_SIZE)
+]
 
 
 @dataclass
@@ -55,7 +63,7 @@ class Game:
                 factory.append(self.state.bag.pop())
 
     def _is_valid_destination(
-        self, player: PlayerBoard, color: Tile, destination: int
+        self, player: Board, color: Tile, destination: int
     ) -> bool:
         """Return True if the color can be placed on the destination pattern line."""
         if destination == FLOOR:
@@ -89,3 +97,48 @@ class Game:
                         )
                 moves.append(Move(source=source_index, color=color, destination=FLOOR))
         return moves
+
+    def wall_column_for(self, *, row: int, color: Tile) -> int:
+        """Return the column index where a color tile belongs in a given wall row."""
+        return WALL_PATTERN[row].index(color)
+
+    def make_move(self, move: Move) -> None:
+        """Apply a move to the current game state.
+
+        Trusts that the move is legal. Removes tiles from the source,
+        sends leftovers to the center, places chosen tiles on the
+        destination pattern line or floor, and advances the current player.
+        """
+        player = self.state.players[self.state.current_player]
+
+        # 1. Pull tiles from the source
+        if move.source == CENTER:
+            source = self.state.center
+        else:
+            source = self.state.factories[move.source]
+
+        chosen = [t for t in source if t == move.color]
+        leftover = [t for t in source if t != move.color and t != Tile.FIRST_PLAYER]
+
+        # 2. Handle first-player marker
+        if Tile.FIRST_PLAYER in source:
+            player.floor_line.append(Tile.FIRST_PLAYER)
+
+        # 3. Clear the source and place the leftovers in the center
+        source.clear()
+        self.state.center.extend(leftover)
+
+        # 4. Place chosen tiles on destination
+        if move.destination == FLOOR:
+            player.floor_line.extend(chosen)
+        else:
+            line = player.pattern_lines[move.destination]
+            capacity = move.destination + 1
+            space = capacity - len(line)
+            line.extend(chosen[:space])
+            player.floor_line.extend(chosen[space:])
+
+        # 6. Advance to next player
+        self.state.current_player = (self.state.current_player + 1) % len(
+            self.state.players
+        )

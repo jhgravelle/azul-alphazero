@@ -2,18 +2,25 @@
 
 """Tests for core game state dataclasses."""
 
-from engine.game import Tile  # GameState, PlayerBoard,
+from engine.game import (
+    Tile,
+    PlayerBoard,
+    GameState,
+    BOARD_SIZE,
+    PLAYERS,
+    TILES_PER_COLOR,
+)
 
 # ── Tile tests ───────────────────────────────────────────────────────────────
 
 
-def test_tile_has_six_types():
-    assert len(Tile) == 6
+def test_tile_has_correct_length():
+    assert len(Tile) == BOARD_SIZE + 1  # 5 colors + first-player marker
 
 
-def test_tile_has_five_colors():
+def test_tile_has_correct_number_of_colors():
     color_tiles = [t for t in Tile if t != Tile.FIRST_PLAYER]
-    assert len(color_tiles) == 5
+    assert len(color_tiles) == BOARD_SIZE
 
 
 def test_tile_first_player_marker_exists():
@@ -23,63 +30,72 @@ def test_tile_first_player_marker_exists():
 # # ── PlayerBoard tests ──────────────────────────────────────────────────────
 
 
-# def test_player_board_initial_score_is_zero():
-#     """A freshly created player board starts with a score of 0."""
-#     board = PlayerBoard()
-#     assert board.score == 0
+def test_player_board_initial_score_is_zero():
+    board = PlayerBoard()
+    assert board.score == 0
 
 
-# def test_player_board_pattern_lines_has_five_rows():
-#     """The pattern lines have 5 rows (row i holds i+1 tiles)."""
-#     board = PlayerBoard()
-#     assert len(board.pattern_lines) == 5
+def test_player_board_pattern_lines_are_empty():
+    board = PlayerBoard()
+    assert len(board.pattern_lines) == BOARD_SIZE
+    for row in board.pattern_lines:
+        assert row == []
 
 
-# def test_player_board_pattern_lines_are_empty():
-#     """Each pattern line starts empty (represented as an empty list)."""
-#     board = PlayerBoard()
-#     for row in board.pattern_lines:
-#         assert row == []
+def test_player_board_wall_is_empty():
+    board = PlayerBoard()
+    assert len(board.wall) == BOARD_SIZE
+    for row in board.wall:
+        assert len(row) == BOARD_SIZE
+        for cell in row:
+            assert cell is None
 
 
-# def test_player_board_wall_is_5x5_of_none():
-#     """The wall is a 5×5 grid, initially all None (no tiles placed)."""
-#     board = PlayerBoard()
-#     assert len(board.wall) == 5
-#     for row in board.wall:
-#         assert len(row) == 5
-#         for cell in row:
-#             assert cell is None
+def test_player_board_floor_line_is_empty():
+    """The floor line starts empty."""
+    board = PlayerBoard()
+    assert board.floor_line == []
 
 
-# def test_player_board_floor_line_is_empty():
-#     """The floor line starts empty."""
-#     board = PlayerBoard()
-#     assert board.floor_line == []
+# ── GameState tests ────────────────────────────────────────────────────────
 
 
-# # ── GameState tests ────────────────────────────────────────────────────────
+def test_game_state_default_players():
+    state = GameState()
+    assert len(state.players) == PLAYERS
 
 
-# def test_game_state_default_has_two_players():
-#     """A default GameState is set up for 2 players."""
-#     state = GameState()
-#     assert len(state.players) == 2
+def test_game_state_current_player_starts_at_zero():
+    state = GameState()
+    assert state.current_player == 0
 
 
-# def test_game_state_current_player_starts_at_zero():
-#     """It's player 0's turn at the start of the game."""
-#     state = GameState()
-#     assert state.current_player == 0
+def test_game_state_factories_are_empty():
+    state = GameState()
+    assert len(state.factories) == 2 * PLAYERS + 1
+    for factory in state.factories:
+        assert factory == []
 
 
-# def test_game_state_two_players_have_five_factories():
-#     """A 2-player game uses 5 factory displays."""
-#     state = GameState()
-#     assert len(state.factories) == 5
+def test_game_state_center_pool_starts_empty():
+    state = GameState()
+    assert state.center == []
 
 
-# def test_game_state_centre_pool_starts_empty():
-#     """The centre pool starts with no tiles (before the bag is drawn)."""
-#     state = GameState()
-#     assert state.centre == []
+def test_game_state_bag_starts_full():
+    state = GameState()
+    assert len(state.bag) == BOARD_SIZE * TILES_PER_COLOR
+
+
+def test_game_state_bag_has_correct_tile_counts():
+    state = GameState()
+    for tile_type in [t for t in Tile if t != Tile.FIRST_PLAYER]:
+        if tile_type == Tile.FIRST_PLAYER:
+            assert state.bag.count(tile_type) == 0
+        else:
+            assert state.bag.count(tile_type) == TILES_PER_COLOR
+
+
+def test_game_state_discard_is_empty():
+    state = GameState()
+    assert state.discard == []

@@ -4,3 +4,4 @@ TILES_PER_COLOR = (
     20  # number of tiles of each color in the bag at the start of the game
 )
 TILES_PER_FACTORY = 4  # number of tiles placed in each factory at the start of a round
+FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3]

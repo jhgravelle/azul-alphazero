@@ -189,3 +189,11 @@ def test_score_game_applies_to_all_players():
     game.score_game()
     for player in game.state.players:
         assert player.score == 2
+
+
+def test_player_with_first_player_tile_starts_next_round():
+    game = Game()
+    # Player 1 (index 1) has the first player marker on their floor
+    game.state.players[1].floor_line = [Tile.FIRST_PLAYER]
+    game.score_round()
+    assert game.state.current_player == 1

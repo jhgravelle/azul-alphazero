@@ -52,6 +52,8 @@ class Game:
 
     def setup_round(self) -> None:
         """Set up the factories and center for a new round."""
+        self.state.center.clear()
+        self.state.center.append(Tile.FIRST_PLAYER)
         for factory in self.state.factories:
             factory.clear()  # safety check
             for _ in range(TILES_PER_FACTORY):
@@ -193,24 +195,28 @@ class Game:
         - Full pattern lines: move one tile to the wall, score it, discard the rest
         - Incomplete pattern lines: leave them alone
         - Apply floor penalties and clear the floor
+        After scoring, the player who held the first player marker starts next round.
         """
         for player in self.state.players:
             for row, line in enumerate(player.pattern_lines):
                 capacity = row + 1
                 if len(line) < capacity:
-                    continue  # incomplete — leave it
+                    continue
 
                 color = line[0]
                 col = self.wall_column_for(row=row, color=color)
                 player.wall[row][col] = color
-
-                # score the placement before clearing the line
                 player.score += self._score_placement(player.wall, row, col)
-
-                # one tile goes to wall, the rest to discard
                 self.state.discard.extend(line[1:])
                 player.pattern_lines[row] = []
 
+        # Find who has the first player marker before floors are cleared
+        for i, player in enumerate(self.state.players):
+            if Tile.FIRST_PLAYER in player.floor_line:
+                self.state.current_player = i
+                break
+
+        for player in self.state.players:
             self._score_floor(player)
 
     def is_game_over(self) -> bool:

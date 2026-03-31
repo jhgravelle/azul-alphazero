@@ -218,3 +218,9 @@ def test_make_move_advances_current_player():
     game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
     game.make_move(Move(source=0, color=Tile.BLUE, destination=0))
     assert game.state.current_player == 1
+
+
+def test_setup_round_places_first_player_token_in_center():
+    game = Game()
+    game.setup_round()
+    assert Tile.FIRST_PLAYER in game.state.center

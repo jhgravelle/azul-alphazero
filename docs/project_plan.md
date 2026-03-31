@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-03-29
-> Status: Phase 1 — Game Engine (in progress)
+> Last updated: 2026-03-30
+> Status: Phase 2 — Graphical Front End (up next)
 
 ---
 
@@ -30,10 +30,13 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 ```
 azul-alphazero/
 ├── engine/          # Pure Python game logic (no UI dependencies)
-│   ├── game.py      # Game state, rules, legal moves
+│   ├── game.py      # Game state, rules, legal moves, scoring
 │   ├── board.py     # Player board, pattern lines, wall
-│   ├── factory.py   # Factory displays and centre pool
-│   └── scoring.py   # End-of-round and end-of-game scoring
+│   ├── game_state.py# GameState dataclass
+│   ├── tile.py      # Tile enum and COLORS constant
+│   └── constants.py # BOARD_SIZE, PLAYERS, TILES_PER_COLOR, TILES_PER_FACTORY
+├── cli/             # Terminal interface (human vs human)
+│   └── cli.py
 ├── agents/          # AI agent implementations
 │   ├── base.py      # Abstract Agent interface
 │   ├── random.py    # Random move agent
@@ -52,9 +55,10 @@ azul-alphazero/
 │   └── style.css
 ├── tests/           # pytest test suite (mirrors engine/ structure)
 │   ├── test_game.py
+│   ├── test_game_state.py
 │   ├── test_board.py
 │   ├── test_scoring.py
-│   └── ...
+│   └── test_tile.py
 ├── docs/            # Project documentation
 │   └── PROJECT_PLAN.md  (this file)
 ├── .github/
@@ -88,25 +92,22 @@ azul-alphazero/
 
 ---
 
-### Phase 1 — Game Engine (TDD)
+### Phase 1 — Game Engine (TDD) ✅ (complete)
 *Goal: a complete, fully-tested Azul rule engine with no UI*
 
 - [x] Model game state as Python dataclasses
-- [x] Constants module
-- [x] Game class skeleton
-- [x] Factory setup and bag drawing
-- [x] Legal move generation (source and destination constraints)
-- [ ] Wall color pattern (fixed positions)
-- [ ] make_move()
-- [ ] First-player marker handling
-- [ ] End-of-round scoring
-- [ ] End-of-game bonus scoring
-- [ ] Game-over detection
-- [ ] Text-based CLI
+- [x] Implement factory display setup and tile drawing
+- [x] Implement legal move generation
+- [x] Implement tile placement (pattern lines → wall)
+- [x] Implement end-of-round scoring
+- [x] Implement end-of-game bonus scoring
+- [x] Implement game-over detection
+- [x] Text-based CLI so a human can play both sides
+- [x] Full test suite — every rule covered
 
 **Approach:** Test-Driven Development. Write the test first, watch it fail, write the code to make it pass, refactor.
 
-**Definition of done:** A human can play a complete game of Azul against themselves in the terminal. All tests pass.
+**Definition of done:** A human can play a complete game of Azul against themselves in the terminal. All tests pass. ✅
 
 ---
 
@@ -226,3 +227,4 @@ azul-alphazero/
 | Date | Change |
 |---|---|
 | 2026-03-29 | Initial project plan created |
+| 2026-03-30 | Phase 1 complete — game engine, scoring, CLI |

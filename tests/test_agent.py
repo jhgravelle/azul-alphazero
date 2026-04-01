@@ -57,3 +57,14 @@ def test_random_agent_respects_seeded_randomness():
         move_b.color,
         move_b.destination,
     )
+
+
+def test_random_agent_avoids_floor_when_other_moves_exist():
+    """RandomAgent should not choose the floor if non-floor moves are available."""
+    game = Game()
+    game.setup_round()
+    agent = RandomAgent()
+    moves = [agent.choose_move(game) for _ in range(50)]
+    non_floor_legal = [m for m in game.legal_moves() if m.destination != -2]
+    if non_floor_legal:
+        assert any(m.destination != -2 for m in moves)

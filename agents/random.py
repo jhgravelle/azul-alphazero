@@ -1,6 +1,6 @@
 # agents/random.py
 
-"""A agent that selects a random legal move."""
+"""An agent that selects a random legal move, preferring non-floor moves."""
 
 import random
 
@@ -9,15 +9,17 @@ from engine.game import Game, Move
 
 
 class RandomAgent(Agent):
-    """Selects a uniformly random legal move each turn."""
+    """Selects a random legal move, avoiding the floor if possible."""
 
     def choose_move(self, game: Game) -> Move:
-        """Return a random legal move for the current game state.
+        """Return a random legal move, preferring non-floor destinations.
 
         Args:
             game: The current Game instance. Read only.
 
         Returns:
-            A randomly selected Move from the list of legal moves.
+            A randomly selected Move, from non-floor moves if any exist.
         """
-        return random.choice(game.legal_moves())
+        moves = game.legal_moves()
+        non_floor = [m for m in moves if m.destination != -2]
+        return random.choice(non_floor if non_floor else moves)

@@ -27,10 +27,10 @@ let selection = null; // { source, color } or null
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function createElement(tag, className, text) {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined) el.textContent = text;
+  return el;
 }
 
 function makeTile(color, faint = false) {
@@ -48,52 +48,127 @@ function makeTile(color, faint = false) {
 function isLegalDestination(destination) {
   if (!gameState || !selection) return false;
   return gameState.legal_moves.some(
-    move =>
-      move.source === selection.source &&
-      move.color === selection.color &&
-      move.destination === destination
+    m => m.source === selection.source &&
+         m.color  === selection.color  &&
+         m.destination === destination
   );
+}
+
+function currentPlayerIsBot() {
+  if (!gameState) return false;
+  return gameState.player_types[gameState.current_player] !== "human";
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
 
 async function loadState() {
-  const response = await fetch(`${API}/state`);
-  gameState = await response.json();
+  const res = await fetch(`${API}/state`);
+  gameState = await res.json();
   selection = null;
   render(gameState);
+  maybeRunBot();
 }
 
 async function submitMove(source, color, destination) {
-  const response = await fetch(`${API}/move`, {
+  const res = await fetch(`${API}/move`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source, color, destination }),
   });
-  if (!response.ok) {
-    const error = await response.json();
-    console.error("Illegal move:", error.detail);
+  if (!res.ok) {
+    const err = await res.json();
+    console.error("Illegal move:", err.detail);
     selection = null;
     render(gameState);
     return;
   }
-  gameState = await response.json();
+  gameState = await res.json();
   selection = null;
   render(gameState);
+  maybeRunBot();
 }
 
-async function startNewGame() {
-  const response = await fetch(`${API}/new-game`, { method: "POST" });
-  gameState = await response.json();
+async function requestAgentMove() {
+  const res = await fetch(`${API}/agent-move`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json();
+    console.error("Agent move failed:", err.detail);
+    return;
+  }
+  gameState = await res.json();
   selection = null;
   render(gameState);
+  maybeRunBot(); // chain — in case both players are bots
+}
+
+async function startNewGame(playerTypes) {
+  const res = await fetch(`${API}/new-game`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ player_types: playerTypes }),
+  });
+  gameState = await res.json();
+  selection = null;
+  render(gameState);
+  maybeRunBot();
+}
+
+// ── Bot loop ───────────────────────────────────────────────────────────────
+
+function maybeRunBot() {
+  if (!gameState || gameState.is_game_over) return;
+  if (!currentPlayerIsBot()) return;
+  // Small delay so the human can see the board before the bot moves
+  setTimeout(requestAgentMove, 600);
+}
+
+// ── New game config screen ─────────────────────────────────────────────────
+
+function showNewGameDialog() {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+
+  const dialog = createElement("div", "dialog");
+  dialog.appendChild(createElement("h2", "dialog-title", "New Game"));
+
+  const PLAYER_OPTIONS = [
+    { value: "human",  label: "Human" },
+    { value: "random", label: "Random Bot" },
+  ];
+
+  const selects = [0, 1].map(i => {
+    const row = createElement("div", "dialog-row");
+    row.appendChild(createElement("label", "dialog-label", `Player ${i + 1}`));
+    const select = document.createElement("select");
+    select.className = "dialog-select";
+    PLAYER_OPTIONS.forEach(opt => {
+      const option = document.createElement("option");
+      option.value = opt.value;
+      option.textContent = opt.label;
+      select.appendChild(option);
+    });
+    // Default: P1 human, P2 random
+    select.value = i === 0 ? "human" : "random";
+    row.appendChild(select);
+    dialog.appendChild(row);
+    return select;
+  });
+
+  const startBtn = createElement("button", "start-btn", "Start");
+  startBtn.addEventListener("click", () => {
+    const playerTypes = selects.map(s => s.value);
+    startNewGame(playerTypes);
+  });
+  dialog.appendChild(startBtn);
+
+  app.appendChild(dialog);
 }
 
 // ── Selection ──────────────────────────────────────────────────────────────
 
 function handleSourceClick(source, color) {
   if (selection?.source === source && selection?.color === color) {
-    selection = null; // reclick to deselect
+    selection = null;
   } else {
     selection = { source, color };
   }
@@ -104,31 +179,27 @@ function handleSourceClick(source, color) {
 
 function renderSources(state) {
   const section = createElement("section", "sources");
+  const humanTurn = !currentPlayerIsBot() && !state.is_game_over;
 
   state.factories.forEach((factory, index) => {
     const display = createElement("div", "factory");
     const grid = createElement("div", "factory-grid");
-
     for (let i = 0; i < 4; i++) {
       const color = factory[i] ?? null;
       const tile = makeTile(color);
-
-      if (color && color !== "FIRST_PLAYER" && !state.is_game_over) {
+      if (color && color !== "FIRST_PLAYER" && humanTurn) {
         tile.classList.add("clickable");
         if (selection?.source === index && selection?.color === color) {
           tile.classList.add("selected");
         }
         tile.addEventListener("click", () => handleSourceClick(index, color));
       }
-
       grid.appendChild(tile);
     }
-
     display.appendChild(grid);
     section.appendChild(display);
   });
 
-  // Center pool
   const centerPool = createElement("div", "center-pool");
   centerPool.appendChild(createElement("div", "pool-label", "Center"));
   const centerTiles = createElement("div", "center-tiles");
@@ -138,7 +209,7 @@ function renderSources(state) {
   } else {
     state.center.forEach(color => {
       const tile = makeTile(color);
-      if (color !== "FIRST_PLAYER" && !state.is_game_over) {
+      if (color !== "FIRST_PLAYER" && humanTurn) {
         tile.classList.add("clickable");
         if (selection?.source === -1 && selection?.color === color) {
           tile.classList.add("selected");
@@ -151,7 +222,6 @@ function renderSources(state) {
 
   centerPool.appendChild(centerTiles);
   section.appendChild(centerPool);
-
   return section;
 }
 
@@ -159,29 +229,25 @@ function renderSources(state) {
 
 function renderPatternLines(patternLines, isActive) {
   const wrapper = createElement("div", "pattern-lines");
+  const humanTurn = !currentPlayerIsBot();
 
   patternLines.forEach((line, row) => {
-    const rowElement = createElement("div", "pattern-row");
+    const rowEl = createElement("div", "pattern-row");
     const capacity = row + 1;
-    const canPlace = isActive && selection !== null && isLegalDestination(row);
+    const canPlace = isActive && humanTurn && selection !== null && isLegalDestination(row);
 
     if (canPlace) {
-      rowElement.classList.add("clickable-row");
-      rowElement.addEventListener("click", () =>
+      rowEl.classList.add("clickable-row");
+      rowEl.addEventListener("click", () =>
         submitMove(selection.source, selection.color, row)
       );
     }
 
-    // Fill right to left: empty slots on the left, tiles on the right
     const emptyCount = capacity - line.length;
-    for (let i = 0; i < emptyCount; i++) {
-      rowElement.appendChild(makeTile(null));
-    }
-    for (let i = 0; i < line.length; i++) {
-      rowElement.appendChild(makeTile(line[i]));
-    }
+    for (let i = 0; i < emptyCount; i++) rowEl.appendChild(makeTile(null));
+    for (let i = 0; i < line.length; i++) rowEl.appendChild(makeTile(line[i]));
 
-    wrapper.appendChild(rowElement);
+    wrapper.appendChild(rowEl);
   });
 
   return wrapper;
@@ -190,13 +256,14 @@ function renderPatternLines(patternLines, isActive) {
 function renderFloorLine(floorLine, isActive) {
   const wrapper = createElement("div", "floor-line");
   const penalties = [-1, -1, -2, -2, -2, -3, -3];
+  const humanTurn = !currentPlayerIsBot();
 
   wrapper.appendChild(createElement("div", "pool-label", "Floor"));
 
   const tilesRow = createElement("div", "floor-tiles");
-  const canPlaceOnFloor = isActive && selection !== null && isLegalDestination(-2);
+  const canPlace = isActive && humanTurn && selection !== null && isLegalDestination(-2);
 
-  if (canPlaceOnFloor) {
+  if (canPlace) {
     tilesRow.classList.add("clickable-row");
     tilesRow.addEventListener("click", () =>
       submitMove(selection.source, selection.color, -2)
@@ -217,32 +284,31 @@ function renderFloorLine(floorLine, isActive) {
 function renderWall(wall) {
   const wrapper = createElement("div", "wall");
   wall.forEach((row, rowIndex) => {
-    const rowElement = createElement("div", "wall-row");
+    const rowEl = createElement("div", "wall-row");
     row.forEach((cell, colIndex) => {
-      rowElement.appendChild(
-        cell
-          ? makeTile(cell)
-          : makeTile(WALL_PATTERN[rowIndex][colIndex], true)
+      rowEl.appendChild(
+        cell ? makeTile(cell) : makeTile(WALL_PATTERN[rowIndex][colIndex], true)
       );
     });
-    wrapper.appendChild(rowElement);
+    wrapper.appendChild(rowEl);
   });
   return wrapper;
 }
 
 function renderBoard(board, index, isActive) {
+  const playerType = gameState?.player_types?.[index] ?? "human";
+  const label = playerType === "human" ? "Human" : "Random Bot";
+
   const wrapper = createElement("div",
     `player-board${isActive ? " active-player" : ""}`);
-
   wrapper.appendChild(createElement("h2", "player-heading",
-    `Player ${index + 1} — Score: ${board.score}`));
+    `Player ${index + 1} (${label}) — Score: ${board.score}`));
 
   const middle = createElement("div", "board-middle");
   middle.appendChild(renderPatternLines(board.pattern_lines, isActive));
   middle.appendChild(createElement("div", "board-divider"));
   middle.appendChild(renderWall(board.wall));
   wrapper.appendChild(middle);
-
   wrapper.appendChild(renderFloorLine(board.floor_line, isActive));
   return wrapper;
 }
@@ -253,35 +319,33 @@ function render(state) {
   const app = document.getElementById("app");
   app.innerHTML = "";
 
-  // Header
   const header = createElement("div", "header");
 
   header.appendChild(createElement("p", "status-line",
     state.is_game_over
       ? `Game over — Player ${state.winner + 1} wins!`
-      : `Player ${state.current_player + 1}'s turn`
+      : currentPlayerIsBot()
+        ? `Player ${state.current_player + 1}'s turn (bot is thinking…)`
+        : `Player ${state.current_player + 1}'s turn`
   ));
 
-  // Reserve space for hint so layout doesn't jump
   const hint = createElement("p", "selection-hint",
     selection
       ? `Selected: ${selection.color} from ${selection.source === -1 ? "center" : `factory ${selection.source + 1}`} — click a pattern line row or the floor`
-      : " " // non-breaking space holds the line height
+      : " "
   );
   header.appendChild(hint);
 
-  const newGameButton = createElement("button", "new-game-btn", "New Game");
-  newGameButton.addEventListener("click", startNewGame);
-  header.appendChild(newGameButton);
+  const newGameBtn = createElement("button", "new-game-btn", "New Game");
+  newGameBtn.addEventListener("click", showNewGameDialog);
+  header.appendChild(newGameBtn);
 
   app.appendChild(header);
   app.appendChild(renderSources(state));
 
   const boards = createElement("div", "boards");
   state.boards.forEach((board, index) => {
-    boards.appendChild(
-      renderBoard(board, index, index === state.current_player)
-    );
+    boards.appendChild(renderBoard(board, index, index === state.current_player));
   });
   app.appendChild(boards);
 }

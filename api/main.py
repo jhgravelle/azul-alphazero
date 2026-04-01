@@ -79,10 +79,10 @@ def _build_response(game: Game) -> GameStateResponse:
     game_over = game.is_game_over()
     winner = None
     if game_over:
-        winner = max(
-            range(len(game.state.players)),
-            key=lambda i: game.state.players[i].score,
-        )
+        scores = [p.score for p in game.state.players]
+        if scores.count(max(scores)) == 1:
+            winner = scores.index(max(scores))
+        # else winner stays None — it's a tie
 
     legal = [
         MoveRequest(source=m.source, color=m.color.name, destination=m.destination)

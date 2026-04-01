@@ -145,6 +145,14 @@ class Game:
             self.state.players
         )
 
+        # 7. Check if the round is over
+        factories_empty = all(len(f) == 0 for f in self.state.factories)
+        center_empty = len(self.state.center) == 0
+        if factories_empty and center_empty:
+            self.score_round()
+            if not self.is_game_over():
+                self.setup_round()
+
     def _score_placement(
         self, wall: list[list[Tile | None]], row: int, col: int
     ) -> int:

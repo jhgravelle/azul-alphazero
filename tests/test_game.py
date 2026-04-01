@@ -179,7 +179,12 @@ def test_make_move_taking_from_center_leaves_no_leftover():
 
 def test_make_move_taking_from_center_moves_first_player_marker_to_floor():
     game = Game()
-    game.state.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE]
+    game.state.center = [
+        Tile.FIRST_PLAYER,
+        Tile.BLUE,
+        Tile.BLUE,
+        Tile.RED,
+    ]  # making sure the round doesn't end
     game.make_move(Move(source=CENTER, color=Tile.BLUE, destination=0))
     player = game.state.players[game.state.current_player - 1]
     assert Tile.FIRST_PLAYER in player.floor_line

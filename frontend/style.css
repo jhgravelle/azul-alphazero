@@ -1,0 +1,10 @@
+/* frontend/style.css */
+
+body {
+  font-family: sans-serif;
+  max-width: 1000px;
+  margin: 40px auto;
+  padding: 0 20px;
+  background: #f5f0e8;
+  color: #2c2c2c;
+}

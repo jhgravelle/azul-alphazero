@@ -3,18 +3,26 @@
 """FastAPI application for the Azul game."""
 
 import logging
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from agents.base import Agent
+from agents.random import RandomAgent
 from engine.game import Game, Move
 from engine.tile import Tile
-from api.schemas import BoardResponse, GameStateResponse, MoveRequest
+from api.schemas import (
+    BoardResponse,
+    GameStateResponse,
+    MoveRequest,
+    NewGameRequest,
+    PlayerType,
+)
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Azul API")
 
-# Allow the HTML frontend (opened as a local file) to call the API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,18 +30,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# One global game instance — simple and sufficient for Phase 2.
+# Game state — one game at a time.
 _game = Game()
 _game.setup_round()
+_player_types: list[PlayerType] = ["human", "human"]
+
+
+def _make_agent(player_type: PlayerType) -> Agent | None:
+    """Return an Agent instance for the given type, or None for human."""
+    if player_type == "random":
+        return RandomAgent()
+    return None
+
+
+_agents: list[Agent | None] = [_make_agent(t) for t in _player_types]
 
 
 def _tile_to_str(tile: Tile) -> str:
-    """Convert a Tile enum value to its string name."""
     return tile.name
 
 
 def _str_to_tile(name: str) -> Tile:
-    """Convert a color string to a Tile enum value."""
     try:
         return Tile[name]
     except KeyError:
@@ -63,15 +80,12 @@ def _build_response(game: Game) -> GameStateResponse:
     winner = None
     if game_over:
         winner = max(
-            range(len(game.state.players)), key=lambda i: game.state.players[i].score
+            range(len(game.state.players)),
+            key=lambda i: game.state.players[i].score,
         )
 
     legal = [
-        MoveRequest(
-            source=m.source,
-            color=m.color.name,
-            destination=m.destination,
-        )
+        MoveRequest(source=m.source, color=m.color.name, destination=m.destination)
         for m in game.legal_moves()
     ]
 
@@ -83,6 +97,7 @@ def _build_response(game: Game) -> GameStateResponse:
         is_game_over=game_over,
         winner=winner,
         legal_moves=legal,
+        player_types=_player_types,
     )
 
 
@@ -97,21 +112,35 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
     """Apply a move and return the updated game state."""
     color = _str_to_tile(move_request.color)
     move = Move(
-        source=move_request.source,
-        color=color,
-        destination=move_request.destination,
+        source=move_request.source, color=color, destination=move_request.destination
     )
-    legal = _game.legal_moves()
-    if move not in legal:
+    if move not in _game.legal_moves():
         raise HTTPException(status_code=422, detail="Illegal move")
     _game.make_move(move)
     return _build_response(_game)
 
 
 @app.post("/new-game", response_model=GameStateResponse)
-def new_game() -> GameStateResponse:
-    """Reset the game and return the fresh state."""
-    global _game
+def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
+    """Reset the game with the given player configuration."""
+    global _game, _player_types, _agents
+    _player_types = request.player_types
+    _agents = [_make_agent(t) for t in _player_types]
     _game = Game()
     _game.setup_round()
+    return _build_response(_game)
+
+
+@app.post("/agent-move", response_model=GameStateResponse)
+def agent_move() -> GameStateResponse:
+    """Ask the current player's agent to pick and apply a move."""
+    current = _game.state.current_player
+    agent = _agents[current]
+    if agent is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Player {current + 1} is human — use /move instead",
+        )
+    move = agent.choose_move(_game)
+    _game.make_move(move)
     return _build_response(_game)

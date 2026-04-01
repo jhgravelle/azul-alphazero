@@ -2,23 +2,39 @@
 
 """Pydantic schemas for the Azul API request and response bodies."""
 
-from pydantic import BaseModel
+from typing import Literal
+from pydantic import BaseModel, field_validator
+
+PlayerType = Literal["human", "random"]
 
 
 class MoveRequest(BaseModel):
     """A move — used both for submitting moves and describing legal moves."""
 
-    source: int  # factory index, or -1 for the center pool
-    color: str  # tile color as a string e.g. "BLUE"
-    destination: int  # pattern line row (0–4), or -2 for the floor
+    source: int
+    color: str
+    destination: int
+
+
+class NewGameRequest(BaseModel):
+    """Configuration for starting a new game."""
+
+    player_types: list[PlayerType] = ["human", "human"]
+
+    @field_validator("player_types")
+    @classmethod
+    def validate_player_types(cls, v: list[str]) -> list[str]:
+        if len(v) != 2:
+            raise ValueError("player_types must have exactly 2 entries")
+        return v
 
 
 class BoardResponse(BaseModel):
     """The state of one player's board."""
 
     score: int
-    pattern_lines: list[list[str]]  # e.g. [["BLUE"], [], ["RED", "RED"], ...]
-    wall: list[list[str | None]]  # None = empty cell
+    pattern_lines: list[list[str]]
+    wall: list[list[str | None]]
     floor_line: list[str]
 
 
@@ -32,3 +48,4 @@ class GameStateResponse(BaseModel):
     is_game_over: bool
     winner: int | None
     legal_moves: list[MoveRequest]
+    player_types: list[PlayerType]

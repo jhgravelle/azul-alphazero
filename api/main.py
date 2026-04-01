@@ -66,6 +66,15 @@ def _build_response(game: Game) -> GameStateResponse:
             range(len(game.state.players)), key=lambda i: game.state.players[i].score
         )
 
+    legal = [
+        MoveRequest(
+            source=m.source,
+            color=m.color.name,
+            destination=m.destination,
+        )
+        for m in game.legal_moves()
+    ]
+
     return GameStateResponse(
         current_player=game.state.current_player,
         factories=[[_tile_to_str(t) for t in f] for f in game.state.factories],
@@ -73,6 +82,7 @@ def _build_response(game: Game) -> GameStateResponse:
         boards=boards,
         is_game_over=game_over,
         winner=winner,
+        legal_moves=legal,
     )
 
 

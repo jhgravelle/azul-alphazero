@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class MoveRequest(BaseModel):
-    """A move submitted by the frontend."""
+    """A move — used both for submitting moves and describing legal moves."""
 
     source: int  # factory index, or -1 for the center pool
     color: str  # tile color as a string e.g. "BLUE"
@@ -26,8 +26,9 @@ class GameStateResponse(BaseModel):
     """The complete game state sent to the frontend after every action."""
 
     current_player: int
-    factories: list[list[str]]  # each factory is a list of color strings
+    factories: list[list[str]]
     center: list[str]
     boards: list[BoardResponse]
     is_game_over: bool
-    winner: int | None  # None if game is not over
+    winner: int | None
+    legal_moves: list[MoveRequest]

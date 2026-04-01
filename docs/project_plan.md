@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-03-30
-> Status: Phase 2 — Graphical Front End (up next)
+> Last updated: 2026-04-01
+> Status: Phase 3 — Random Bot + Agent Interface (up next)
 
 ---
 
@@ -30,13 +30,10 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 ```
 azul-alphazero/
 ├── engine/          # Pure Python game logic (no UI dependencies)
-│   ├── game.py      # Game state, rules, legal moves, scoring
+│   ├── game.py      # Game state, rules, legal moves
 │   ├── board.py     # Player board, pattern lines, wall
-│   ├── game_state.py# GameState dataclass
-│   ├── tile.py      # Tile enum and COLORS constant
-│   └── constants.py # BOARD_SIZE, PLAYERS, TILES_PER_COLOR, TILES_PER_FACTORY
-├── cli/             # Terminal interface (human vs human)
-│   └── cli.py
+│   ├── factory.py   # Factory displays and centre pool
+│   └── scoring.py   # End-of-round and end-of-game scoring
 ├── agents/          # AI agent implementations
 │   ├── base.py      # Abstract Agent interface
 │   ├── random.py    # Random move agent
@@ -55,10 +52,9 @@ azul-alphazero/
 │   └── style.css
 ├── tests/           # pytest test suite (mirrors engine/ structure)
 │   ├── test_game.py
-│   ├── test_game_state.py
 │   ├── test_board.py
 │   ├── test_scoring.py
-│   └── test_tile.py
+│   └── ...
 ├── docs/            # Project documentation
 │   └── PROJECT_PLAN.md  (this file)
 ├── .github/
@@ -92,7 +88,7 @@ azul-alphazero/
 
 ---
 
-### Phase 1 — Game Engine (TDD) ✅ (complete)
+### Phase 1 — Game Engine ✅ (complete)
 *Goal: a complete, fully-tested Azul rule engine with no UI*
 
 - [x] Model game state as Python dataclasses
@@ -105,23 +101,35 @@ azul-alphazero/
 - [x] Text-based CLI so a human can play both sides
 - [x] Full test suite — every rule covered
 
-**Approach:** Test-Driven Development. Write the test first, watch it fail, write the code to make it pass, refactor.
-
 **Definition of done:** A human can play a complete game of Azul against themselves in the terminal. All tests pass. ✅
 
 ---
 
-### Phase 2 — Graphical Front End
+### Phase 2 — Graphical Front End ✅ (complete)
 *Goal: a proper visual game board in the browser*
 
-- [ ] FastAPI server that serves the frontend and exposes a game API
-- [ ] HTML/JS frontend that renders the full Azul board
-- [ ] Clicking tiles and factory displays makes legal moves
-- [ ] Game state updates are reflected visually
-- [ ] Human vs human (passing the keyboard)
-- [ ] Clean separation: UI calls API, API calls engine
+- [x] FastAPI server that serves the frontend and exposes a game API
+- [x] HTML/JS frontend that renders the full Azul board
+- [x] Clicking tiles and factory displays makes legal moves
+- [x] Game state updates are reflected visually
+- [x] Human vs human (passing the keyboard)
+- [x] Clean separation: UI calls API, API calls engine
+- [x] End-of-round scoring and new round setup triggered automatically
+- [x] End-of-game detection and winner display
+- [x] New Game button resets state
+- [x] Legal moves served by API — frontend never second-guesses the engine
 
-**Definition of done:** Two people can sit at one computer and play a full game of Azul in the browser.
+**Definition of done:** Two people can sit at one computer and play a full game of Azul in the browser. ✅
+
+#### Phase 2 — Known polish items (carry into Phase 8)
+- Layout jumps when outlines appear around pattern lines and floor on selection
+- Placed wall tiles are too visually similar to empty wall hint squares
+- Factories would feel more natural positioned between the two player boards
+- Animations to make tile movement easier to follow
+- Scoring hints when a pattern line is completed (show points about to be scored)
+- Scoring hints for end-of-game bonuses (completed rows, columns, colors)
+- Show how many tiles remain in the bag
+- Show how many tiles are in the discard pile
 
 ---
 
@@ -191,6 +199,7 @@ azul-alphazero/
 ### Phase 8 — Polish and Release
 *Goal: something you'd be proud to share*
 
+- [ ] Resolve all Phase 2 polish items (see above)
 - [ ] Animated tile placement
 - [ ] Sound effects (optional)
 - [ ] Game history / move replay
@@ -205,6 +214,8 @@ azul-alphazero/
 **Test-Driven Development (TDD):** Write the failing test first, then write the code to make it pass. Never write engine code without a test.
 
 **Engine independence:** The game engine (`engine/`) must never import from `api/` or `frontend/`. It is pure Python logic. This is what makes it testable, and what will make the AI training fast.
+
+**No abbreviations in code** unless the scope is limited to the very few lines surrounding it. Full names make code readable to anyone, including your future self. (e.g. `createElement` not `el`, `response` not `res`, `index` not `i` outside tight loops).
 
 **Commit often:** A commit should represent one coherent thing ("add end-of-round scoring", "fix tile draw bug"). If your commit message needs the word "and" more than once, split it up.
 
@@ -227,4 +238,7 @@ azul-alphazero/
 | Date | Change |
 |---|---|
 | 2026-03-29 | Initial project plan created |
-| 2026-03-30 | Phase 1 complete — game engine, scoring, CLI |
+| 2026-04-01 | Phase 1 marked complete |
+| 2026-04-01 | Phase 2 marked complete — browser UI, API, end-of-round/game logic |
+| 2026-04-01 | Added no-abbreviations convention to Key Principles |
+| 2026-04-01 | Phase 2 polish items logged for Phase 8 |

@@ -52,6 +52,7 @@ class Game:
 
     def setup_round(self) -> None:
         """Set up the factories and center for a new round."""
+        self.state.round += 1
         self.state.center.clear()
         self.state.center.append(Tile.FIRST_PLAYER)
         for factory in self.state.factories:

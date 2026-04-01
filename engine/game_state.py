@@ -31,6 +31,7 @@ class GameState:
     center: list[Tile] = field(default_factory=list)
     bag: list[Tile] = field(default_factory=list)
     discard: list[Tile] = field(default_factory=list)
+    round: int = 0
 
     def __post_init__(self) -> None:
         if not self.players:

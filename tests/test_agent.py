@@ -7,6 +7,7 @@ import random
 from engine.game import Game
 from agents.base import Agent
 from agents.random import RandomAgent
+from engine.tile import Tile
 
 
 def test_agent_cannot_be_instantiated_directly():
@@ -68,3 +69,35 @@ def test_random_agent_avoids_floor_when_other_moves_exist():
     non_floor_legal = [m for m in game.legal_moves() if m.destination != -2]
     if non_floor_legal:
         assert any(m.destination != -2 for m in moves)
+
+
+def test_random_agent_prefers_partial_line_without_biasing_color_selection():
+    """Partial line preference should affect destination, not color choice."""
+    game = Game()
+    game.setup_round()
+    agent = RandomAgent()
+
+    player = game.state.players[game.state.current_player]
+    # Put BLUE on row 2 (capacity 3, so not full)
+    player.pattern_lines[2] = [Tile.BLUE]
+
+    game.state.center.append(Tile.BLUE)
+
+    moves = [agent.choose_move(game) for _ in range(100)]
+
+    # Among blue moves, majority should go to row 2
+    blue_moves = [m for m in moves if m.color == Tile.BLUE and m.destination >= 0]
+    if blue_moves:
+        partial_picks = sum(1 for m in blue_moves if m.destination == 2)
+        assert partial_picks / len(blue_moves) > 0.5, (
+            "Expected >50% of blue moves to target row 2, "
+            f"got {partial_picks}/{len(blue_moves)}"
+        )
+
+    # But BLUE should not dominate color selection overall
+    non_floor = [m for m in moves if m.destination != -2]
+    blue_non_floor = [m for m in non_floor if m.color == Tile.BLUE]
+    if non_floor:
+        assert (
+            len(blue_non_floor) / len(non_floor) < 0.9
+        ), "Color selection appears biased toward BLUE"

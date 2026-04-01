@@ -2,6 +2,7 @@
 
 """Tests for core game state dataclasses."""
 
+from engine.game import Game
 from engine.tile import Tile
 from engine.game_state import (
     GameState,
@@ -62,3 +63,17 @@ def test_game_state_bag_is_shuffled():
 def test_game_state_discard_is_empty():
     state = GameState()
     assert state.discard == []
+
+
+def test_game_state_round_starts_at_zero():
+    state = GameState()
+    assert state.round == 0
+
+
+def test_setup_round_increments_round():
+    game = Game()
+    game.setup_round()
+    assert game.state.round == 1
+    game.score_round()
+    game.setup_round()
+    assert game.state.round == 2

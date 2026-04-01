@@ -23,6 +23,7 @@ const WALL_PATTERN = [
 
 let gameState = null;
 let selection = null; // { source, color } or null
+let lastRound = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -118,8 +119,9 @@ async function startNewGame(playerTypes) {
 function maybeRunBot() {
   if (!gameState || gameState.is_game_over) return;
   if (!currentPlayerIsBot()) return;
-  // Small delay so the human can see the board before the bot moves
-  setTimeout(requestAgentMove, 600);
+  const isNewRound = lastRound !== null && gameState.round !== lastRound;
+  lastRound = gameState.round;
+  setTimeout(requestAgentMove, isNewRound ? 2000 : 600);
 }
 
 // ── New game config screen ─────────────────────────────────────────────────

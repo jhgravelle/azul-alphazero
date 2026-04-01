@@ -49,3 +49,4 @@ class GameStateResponse(BaseModel):
     winner: int | None
     legal_moves: list[MoveRequest]
     player_types: list[PlayerType]
+    round: int

@@ -98,6 +98,7 @@ def _build_response(game: Game) -> GameStateResponse:
         winner=winner,
         legal_moves=legal,
         player_types=_player_types,
+        round=game.state.round,  # add this
     )
 
 

@@ -23,7 +23,7 @@ class NewGameRequest(BaseModel):
 
     @field_validator("player_types")
     @classmethod
-    def validate_player_types(cls, v: list[str]) -> list[str]:
+    def must_have_two_players(cls, v: list[str]) -> list[str]:
         if len(v) != 2:
             raise ValueError("player_types must have exactly 2 entries")
         return v

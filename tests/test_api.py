@@ -2,15 +2,22 @@
 
 """Tests for the FastAPI endpoints."""
 
-import pytest  # noqa: F401
+import pytest
 from fastapi.testclient import TestClient
-from api.main import app
-
-client = TestClient(app)
 
 
-def test_new_game_defaults_to_human_vs_human():
-    """Posting to /new-game with no body gives us a fresh game state."""
+@pytest.fixture
+def client():
+    """A fresh TestClient (and reset global game) for each test."""
+    from api import main
+    from api.main import app
+
+    main._game = None
+    main._player_types = None
+    return TestClient(app)
+
+
+def test_new_game_defaults_to_human_vs_human(client):
     response = client.post("/new-game", json={})
     assert response.status_code == 200
     data = response.json()
@@ -18,8 +25,7 @@ def test_new_game_defaults_to_human_vs_human():
     assert data["current_player"] == 0
 
 
-def test_new_game_accepts_agent_config():
-    """We can specify player types when starting a new game."""
+def test_new_game_accepts_agent_config(client):
     response = client.post(
         "/new-game",
         json={"player_types": ["human", "random"]},
@@ -27,8 +33,7 @@ def test_new_game_accepts_agent_config():
     assert response.status_code == 200
 
 
-def test_new_game_rejects_invalid_player_type():
-    """An unknown agent name should return a 422."""
+def test_new_game_rejects_invalid_player_type(client):
     response = client.post(
         "/new-game",
         json={"player_types": ["human", "banana"]},
@@ -36,19 +41,15 @@ def test_new_game_rejects_invalid_player_type():
     assert response.status_code == 422
 
 
-def test_agent_move_returns_updated_state():
-    """When current player is a bot, /agent-move applies a move and returns state."""
-    # Start a game where player 0 is a random agent
+def test_agent_move_returns_updated_state(client):
     client.post("/new-game", json={"player_types": ["random", "human"]})
     response = client.post("/agent-move")
     assert response.status_code == 200
     data = response.json()
-    # After the bot moves, it should be player 1's turn (or round ended)
     assert data["current_player"] in (0, 1)
 
 
-def test_agent_move_rejected_when_current_player_is_human():
-    """/agent-move should 422 when it's a human's turn."""
+def test_agent_move_rejected_when_current_player_is_human(client):
     client.post("/new-game", json={"player_types": ["human", "random"]})
     response = client.post("/agent-move")
     assert response.status_code == 422

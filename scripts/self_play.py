@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass
+import time
 
 from agents.base import Agent
 from agents.random import RandomAgent
@@ -113,7 +114,23 @@ def run_series(p1: Agent, p2: Agent, n: int) -> SeriesStats:
     Returns:
         A SeriesStats summarising the series.
     """
-    results = [run_game(p1, p2) for _ in range(n)]
+    results = []
+    last_update = time.time()
+
+    for i in range(n):
+        results.append(run_game(p1, p2))
+
+        now = time.time()
+        if now - last_update >= 5.0:
+            pct = (i + 1) / n * 100
+            p1_wins = sum(1 for r in results if r.winner == 0)
+            p2_wins = sum(1 for r in results if r.winner == 1)
+            print(
+                f"  {i + 1}/{n} games ({pct:.0f}%) — "
+                f"P1 {p1_wins} W / P2 {p2_wins} W",
+                flush=True,
+            )
+            last_update = now
 
     p1_wins = sum(1 for r in results if r.winner == 0)
     p2_wins = sum(1 for r in results if r.winner == 1)

@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-04-01
-> Status: Phase 3 — Random Bot + Agent Interface (up next)
+> Status: Phase 4 — Monte Carlo Tree Search (up next)
 
 ---
 
@@ -36,7 +36,7 @@ azul-alphazero/
 │   └── scoring.py   # End-of-round and end-of-game scoring
 ├── agents/          # AI agent implementations
 │   ├── base.py      # Abstract Agent interface
-│   ├── random.py    # Random move agent
+│   ├── random.py    # Random move agent (with heuristics)
 │   ├── mcts.py      # Pure MCTS agent
 │   └── alphazero.py # Neural net + MCTS agent
 ├── neural/          # PyTorch model and training
@@ -50,10 +50,15 @@ azul-alphazero/
 │   ├── index.html
 │   ├── game.js
 │   └── style.css
-├── tests/           # pytest test suite (mirrors engine/ structure)
+├── scripts/         # Standalone utilities
+│   └── self_play.py # Self-play harness CLI
+├── tests/           # pytest test suite
 │   ├── test_game.py
 │   ├── test_board.py
 │   ├── test_scoring.py
+│   ├── test_agents.py
+│   ├── test_api.py
+│   ├── test_self_play.py
 │   └── ...
 ├── docs/            # Project documentation
 │   └── PROJECT_PLAN.md  (this file)
@@ -84,8 +89,6 @@ azul-alphazero/
 - [x] Write and pass first dummy test (proves CI works)
 - [x] Commit and push — CI goes green
 
-**Definition of done:** Pushing a commit to GitHub automatically runs the test suite and shows a green checkmark.
-
 ---
 
 ### Phase 1 — Game Engine ✅ (complete)
@@ -101,8 +104,6 @@ azul-alphazero/
 - [x] Text-based CLI so a human can play both sides
 - [x] Full test suite — every rule covered
 
-**Definition of done:** A human can play a complete game of Azul against themselves in the terminal. All tests pass. ✅
-
 ---
 
 ### Phase 2 — Graphical Front End ✅ (complete)
@@ -114,35 +115,21 @@ azul-alphazero/
 - [x] Game state updates are reflected visually
 - [x] Human vs human (passing the keyboard)
 - [x] Clean separation: UI calls API, API calls engine
-- [x] End-of-round scoring and new round setup triggered automatically
-- [x] End-of-game detection and winner display
-- [x] New Game button resets state
-- [x] Legal moves served by API — frontend never second-guesses the engine
-
-**Definition of done:** Two people can sit at one computer and play a full game of Azul in the browser. ✅
-
-#### Phase 2 — Known polish items (carry into Phase 8)
-- Layout jumps when outlines appear around pattern lines and floor on selection
-- Placed wall tiles are too visually similar to empty wall hint squares
-- Factories would feel more natural positioned between the two player boards
-- Animations to make tile movement easier to follow
-- Scoring hints when a pattern line is completed (show points about to be scored)
-- Scoring hints for end-of-game bonuses (completed rows, columns, colors)
-- Show how many tiles remain in the bag
-- Show how many tiles are in the discard pile
 
 ---
 
-### Phase 3 — Random Bot + Agent Interface
+### Phase 3 — Random Bot + Agent Interface ✅ (complete)
 *Goal: a pluggable agent system and a baseline opponent*
 
-- [ ] Define abstract `Agent` base class with a `choose_move(game_state)` method
-- [ ] Implement `RandomAgent` (picks a legal move uniformly at random)
-- [ ] Wire agent into the game loop (human vs random bot)
-- [ ] Add a self-play harness (bot vs bot, N games)
-- [ ] Log game statistics (win rate, game length, score distributions)
-
-**Definition of done:** The random bot plays against itself 1,000 games and statistics are logged to a file.
+- [x] Define abstract `Agent` base class with a `choose_move(game_state)` method
+- [x] Implement `RandomAgent` with basic heuristics (avoids floor, prefers partial lines)
+- [x] Wire agent into the game loop via `/agent-move` API endpoint
+- [x] New Game dialog with per-player dropdowns (Human / Random Bot)
+- [x] Bot turns trigger automatically in the UI with inter-round pause
+- [x] Add a self-play harness (`scripts/self_play.py`) — bot vs bot, N games
+- [x] Log game statistics (win rate, game length, score distributions)
+- [x] Progress indicator printed every 5 seconds during long runs
+- [x] `AGENT_REGISTRY` for easy addition of future agents
 
 ---
 
@@ -154,6 +141,7 @@ azul-alphazero/
 - [ ] Tune simulation count vs. play speed
 - [ ] `MCTSAgent` beats `RandomAgent` >80% of the time
 - [ ] Add MCTS bot as an opponent option in the UI
+- [ ] Add MCTS to `AGENT_REGISTRY` in self-play harness
 
 **Definition of done:** MCTSAgent wins >80% vs RandomAgent over 200 games. A human can play against it in the browser.
 
@@ -199,13 +187,15 @@ azul-alphazero/
 ### Phase 8 — Polish and Release
 *Goal: something you'd be proud to share*
 
-- [ ] Resolve all Phase 2 polish items (see above)
 - [ ] Animated tile placement
 - [ ] Sound effects (optional)
 - [ ] Game history / move replay
 - [ ] Deploy to a cloud host (Render, Railway, or Fly.io — all have free tiers)
 - [ ] Capacitor packaging for iOS / Android App Store
 - [ ] README with screenshots and instructions
+- [ ] Show round number in the UI header
+- [ ] Label winner more clearly on game over (highlight winning board)
+- [ ] Bot vs bot: inter-round pause timing polish
 
 ---
 
@@ -214,8 +204,6 @@ azul-alphazero/
 **Test-Driven Development (TDD):** Write the failing test first, then write the code to make it pass. Never write engine code without a test.
 
 **Engine independence:** The game engine (`engine/`) must never import from `api/` or `frontend/`. It is pure Python logic. This is what makes it testable, and what will make the AI training fast.
-
-**No abbreviations in code** unless the scope is limited to the very few lines surrounding it. Full names make code readable to anyone, including your future self. (e.g. `createElement` not `el`, `response` not `res`, `index` not `i` outside tight loops).
 
 **Commit often:** A commit should represent one coherent thing ("add end-of-round scoring", "fix tile draw bug"). If your commit message needs the word "and" more than once, split it up.
 
@@ -238,7 +226,4 @@ azul-alphazero/
 | Date | Change |
 |---|---|
 | 2026-03-29 | Initial project plan created |
-| 2026-04-01 | Phase 1 marked complete |
-| 2026-04-01 | Phase 2 marked complete — browser UI, API, end-of-round/game logic |
-| 2026-04-01 | Added no-abbreviations convention to Key Principles |
-| 2026-04-01 | Phase 2 polish items logged for Phase 8 |
+| 2026-04-01 | Phases 1, 2, 3 complete. Phase 4 up next. |

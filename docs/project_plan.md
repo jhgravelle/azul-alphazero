@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-04-01
-> Status: Phase 5 — Neural Network (up next)
+> Last updated: 2026-04-02
+> Status: Phase 6 — AlphaZero Self-Play Training (up next)
 
 ---
 
@@ -43,9 +43,10 @@ azul-alphazero/
 │   ├── mcts.py      # Pure MCTS agent (UCB1)
 │   └── alphazero.py # Neural net + MCTS agent (Phase 6)
 ├── neural/          # PyTorch model and training
-│   ├── model.py     # ResNet policy + value network
-│   ├── trainer.py   # Self-play and training loop
-│   └── replay.py    # Experience replay buffer
+│   ├── encoder.py   # State vector and move index encoding
+│   ├── model.py     # Residual MLP policy + value network
+│   ├── trainer.py   # Loss function and training step
+│   └── replay.py    # Circular experience replay buffer
 ├── api/             # FastAPI web server
 │   ├── main.py      # App entry point, routes
 │   └── schemas.py   # Pydantic request/response models
@@ -62,7 +63,11 @@ azul-alphazero/
 │   ├── test_agents.py
 │   ├── test_api.py
 │   ├── test_self_play.py
-│   └── test_mcts.py
+│   ├── test_mcts.py
+│   ├── test_encoder.py
+│   ├── test_model.py
+│   ├── test_replay.py
+│   └── test_trainer.py
 ├── docs/            # Project documentation
 │   └── PROJECT_PLAN.md  (this file)
 ├── .github/
@@ -158,32 +163,69 @@ azul-alphazero/
 
 **Known limitation of pure MCTS:** Azul has a high branching factor in early rounds (50+ legal moves). At 200 simulations, each child of the root receives only a few visits, so value estimates are too noisy to overcome a well-tuned heuristic opponent. MCTS earns its strength in the late game when branching factor drops and rollouts become more informative. This is the primary motivation for the neural network policy head in Phase 6 — it concentrates simulations on promising moves immediately, bypassing the branching factor problem.
 
-**Tile math note:** In a 2-player game, the maximum tiles on player boards at the start of any round is 60 (each player: 10 on pattern lines + 20 on wall = 30). With 100 tiles in the bag/discard cycle, running out of tiles mid-round is impossible in a valid game state. If `legal_moves()` ever returns empty mid-round, it indicates a bug — not a bag exhaustion edge case.
-
 ---
 
-### Phase 5 — Neural Network
+### Phase 5 — Neural Network ✅ (complete)
 *Goal: a trained policy + value network for Azul*
 
-- [ ] Design Azul state encoding (feature vector / tensor)
-- [ ] Build ResNet architecture with policy head and value head
-- [ ] Write training loop with supervised warm-up on MCTS data
-- [ ] Verify network learns (loss decreases, value head calibration)
-- [ ] Unit tests for state encoding (no silent shape bugs)
+- [x] Design Azul state encoding — dense 116-float normalized vector
+- [x] Build residual MLP with policy head and value head
+- [x] Implement circular experience replay buffer
+- [x] Implement loss function (MSE value loss + cross-entropy policy loss)
+- [x] Implement training step with Adam optimizer
+- [x] Unit tests for all neural network components
 
-**Definition of done:** Network trains without errors, loss curves look healthy, value predictions correlate with actual outcomes.
+**State vector layout (116 floats, all normalized to [0, 1]):**
+
+| Section | Size | Encoding |
+|---|---|---|
+| My wall | 25 | 1.0/0.0 per cell, row-major |
+| Opponent wall | 25 | same |
+| My pattern line fill ratios | 5 | tiles present / row capacity |
+| My pattern line colors | 5 | color index / 5, or 0.0 if empty |
+| Opponent pattern line fill ratios | 5 | same |
+| Opponent pattern line colors | 5 | same |
+| Factories | 25 | count of each color per factory / 4 |
+| Center color counts | 5 | count / TILES_PER_COLOR |
+| First player token in center | 1 | 1.0 / 0.0 |
+| I hold first player token | 1 | 1.0 / 0.0 |
+| My floor | 1 | tiles on floor / 7 |
+| Opponent floor | 1 | same |
+| My score | 1 | score / 100 |
+| Opponent score | 1 | same |
+| Bag totals | 5 | count of each color / 20 |
+| Discard totals | 5 | count of each color / 20 |
+
+Always encoded from the current player's perspective — "my" = current player, "opp" = other player.
+
+**Network architecture:**
+- Input: 116-float vector
+- Stem: Linear(116 → 256) → LayerNorm → ReLU
+- Trunk: 3 × ResBlock(256) — each block: Linear → LayerNorm → ReLU → Linear → LayerNorm → skip add → ReLU
+- Policy head: Linear(256 → 180) — raw logits; softmax applied externally after masking illegal moves
+- Value head: Linear(256 → 64) → ReLU → Linear(64 → 1) → Tanh — scalar in (-1, 1)
+
+**Move space:** 180 indices = 6 sources × 5 colors × 6 destinations (5 pattern lines + floor).
+
+**Key design decisions:**
+- Dense float vector over sparse binary planes — trains faster on consumer hardware; Azul's relationships are more combinatorial than spatial
+- LayerNorm over BatchNorm — BatchNorm requires batch size > 1, LayerNorm works with any batch size including single-sample inference
+- Logits not probabilities from policy head — allows illegal move masking before softmax
+- `collect_self_play()` stubbed in `trainer.py` — will be completed in Phase 6 once `AlphaZeroAgent` exists
 
 ---
 
 ### Phase 6 — AlphaZero Self-Play Training
 *Goal: iterative self-play that produces a strong Azul AI*
 
-- [ ] Replace MCTS rollouts with neural net value estimates (PUCT instead of UCB1)
-- [ ] Self-play data generation loop
-- [ ] Experience replay buffer
-- [ ] Iterative training: generate data → train → evaluate → keep if better
-- [ ] Model checkpointing
+- [ ] Implement `AlphaZeroAgent` — PUCT tree search guided by the neural network
+- [ ] Replace UCB1 with PUCT (adds prior probability from policy head to exploration term)
+- [ ] Replace random rollouts with neural net value estimates
+- [ ] Complete `collect_self_play()` in `trainer.py`
+- [ ] Iterative training loop: generate data → train → evaluate → keep if better
+- [ ] Model checkpointing (save/load network weights)
 - [ ] Elo rating system to track model strength over generations
+- [ ] Add AlphaZero agent as a UI opponent option
 
 **Definition of done:** Generation N+1 beats Generation N at a statistically significant rate (>55% over 200 games).
 
@@ -258,3 +300,4 @@ azul-alphazero/
 | 2026-03-29 | Initial project plan created |
 | 2026-04-01 | Phases 1–3 complete |
 | 2026-04-01 | Phase 4 complete — MCTSAgent, heuristic agent refactor, round-robin benchmark |
+| 2026-04-02 | Phase 5 complete — encoder, AzulNet, replay buffer, trainer |

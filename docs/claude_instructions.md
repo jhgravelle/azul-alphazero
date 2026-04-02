@@ -33,7 +33,7 @@ I am building an Azul board game engine with an AlphaZero AI in Python. This is 
 
 > **Update this whenever a phase is complete.**
 
-Phase 5 — Neural Network (up next)
+Phase 6 — AlphaZero Self-Play Training (up next)
 
 ---
 
@@ -150,10 +150,47 @@ Tests (`tests/`): test_mcts.py — includes `@pytest.mark.slow` strength test (e
 
 ---
 
+### Phase 5 — Neural Network ✅
+
+Neural network modules (`neural/`):
+- `encoder.py` — encodes game state as a 116-float normalized vector and moves as integer indices:
+  - `encode_state(game) -> Tensor` — always from current player's perspective
+  - `encode_move(move, game) -> int` — flat triple index (source × color × destination)
+  - `decode_move(index, game) -> Move` — inverse of encode_move
+  - `STATE_SIZE = 116`, `MOVE_SPACE_SIZE = 180`
+  - Exports offset constants (OFF_MY_WALL, OFF_BAG, etc.) for use in tests and training
+- `model.py` — AzulNet: residual MLP with policy and value heads:
+  - `ResBlock(dim)` — Linear → LayerNorm → ReLU → Linear → LayerNorm → skip add → ReLU
+  - `AzulNet(hidden_dim=256, num_blocks=3)` — stem + trunk + two heads
+  - Policy head returns raw logits (softmax applied externally after illegal move masking)
+  - Value head returns scalar in (-1, 1) via Tanh
+- `replay.py` — ReplayBuffer: circular buffer of (state, policy, value) triples:
+  - Pre-allocated tensors, `_pos` cursor wraps with modulo, `_size` capped at capacity
+  - `push(state, policy, value)` — overwrites oldest when full
+  - `sample(batch_size) -> (states, policies, values)` — random without replacement via `torch.randperm`
+- `trainer.py` — Trainer: loss function and training step:
+  - `compute_loss(net, states, policies, values)` — MSE value loss + cross-entropy policy loss
+  - `Trainer(net, lr=1e-3, batch_size=256)` — Adam optimizer
+  - `train_step(buf) -> float` — samples buffer, backpropagates, returns loss
+  - `collect_self_play(buf, num_games)` — stubbed, completed in Phase 6
+
+Tests (`tests/`): test_encoder.py, test_model.py, test_replay.py, test_trainer.py
+
+**Key design decisions:**
+- Dense float vector over sparse binary planes — trains faster on consumer hardware; Azul's relationships are more combinatorial than spatial
+- LayerNorm over BatchNorm — works with any batch size including single-sample inference during MCTS
+- Policy head returns logits not probabilities — allows illegal move masking before softmax
+- Color index normalized as `(index + 1) / 5` — leaves 0.0 unambiguously meaning "empty pattern line"
+- Bag and discard totals included — tile scarcity is strategically important
+- First player token encoded as two bits — in center, and whether current player holds it
+
+---
+
 ## Conventions in this project
 
 - All Python files use **black** formatting (line length 88)
 - Imports sorted by **isort**
+- `extend-ignore = E203` in flake8 config — black and flake8 disagree on slice spacing
 - Type hints on all function signatures
 - Docstrings on all public classes and functions
 - Test files live in `tests/` and mirror the source structure

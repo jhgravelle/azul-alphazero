@@ -16,7 +16,6 @@ from engine.game import Game, Move
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
 from neural.model import AzulNet
 
-
 _PUCT_C = 1.5  # exploration constant — higher = more exploration
 
 

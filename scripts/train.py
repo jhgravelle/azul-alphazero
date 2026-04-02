@@ -22,8 +22,9 @@ import torch
 
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
-from neural.trainer import Trainer, collect_self_play
+from neural.trainer import Trainer, collect_self_play, collect_heuristic_games
 from agents.alphazero import AlphaZeroAgent
+from agents.greedy import GreedyAgent
 from engine.game import Game
 from agents.random import RandomAgent
 
@@ -35,6 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_DIR = Path("checkpoints")
+_MAX_MOVES = 300  # safeguard against infinite games
 
 
 # ── Checkpoint helpers ────────────────────────────────────────────────────────
@@ -62,9 +64,11 @@ def evaluate(
     num_games: int = 40,
     simulations: int = 50,
 ) -> float:
-    """Play new vs old; return new_net win rate (ties count as 0.5)."""
-    from engine.game import Game
+    """Play new vs old; return new_net win rate (ties count as 0.5).
 
+    Both agents use AlphaZero with the given simulation count. Games are
+    capped at _MAX_MOVES to prevent runaway evaluation time.
+    """
     new_agent = AlphaZeroAgent(new_net, simulations=simulations, temperature=0.0)
     old_agent = AlphaZeroAgent(old_net, simulations=simulations, temperature=0.0)
 
@@ -72,21 +76,37 @@ def evaluate(
     for i in range(num_games):
         game = Game()
         game.setup_round()
-        # Alternate who plays as player 0 to reduce first-mover bias
         agents = [new_agent, old_agent] if i % 2 == 0 else [old_agent, new_agent]
         new_is_p0 = i % 2 == 0
+        moves = 0
 
-        while not game.is_game_over():
+        while not game.is_game_over() and moves < _MAX_MOVES:
             if not game.legal_moves():
                 break
             agent = agents[game.state.current_player]
             game.make_move(agent.choose_move(game))
+            moves += 1
+
+        if moves >= _MAX_MOVES:
+            logger.warning("game %d hit move cap (%d) — scoring as tie", i, _MAX_MOVES)
 
         scores = [p.score for p in game.state.players]
         if scores[0] == scores[1]:
+            result = "tie"
             new_wins += 0.5
         elif (scores[0] > scores[1]) == new_is_p0:
+            result = "new ✓"
             new_wins += 1.0
+        else:
+            result = "old ✗"
+        logger.info(
+            "  eval game %d/%d — scores %s — %s (new win rate so far: %.0f%%)",
+            i + 1,
+            num_games,
+            scores,
+            result,
+            new_wins / (i + 1) * 100,
+        )
 
     return new_wins / num_games
 
@@ -96,7 +116,8 @@ def evaluate_vs_random(
     num_games: int = 20,
     simulations: int = 50,
 ) -> float:
-    """Quick sanity check: win rate vs RandomAgent."""
+    """Quick sanity check: win rate vs RandomAgent. Fast because RandomAgent
+    needs no simulation — this is the cheap eval we run every iteration."""
     az_agent = AlphaZeroAgent(net, simulations=simulations, temperature=0.0)
     rng_agent = RandomAgent()
     wins = 0.0
@@ -105,10 +126,12 @@ def evaluate_vs_random(
         game.setup_round()
         agents = [az_agent, rng_agent] if i % 2 == 0 else [rng_agent, az_agent]
         az_is_p0 = i % 2 == 0
-        while not game.is_game_over():
+        moves = 0
+        while not game.is_game_over() and moves < _MAX_MOVES:
             if not game.legal_moves():
                 break
             game.make_move(agents[game.state.current_player].choose_move(game))
+            moves += 1
         scores = [p.score for p in game.state.players]
         if scores[0] == scores[1]:
             wins += 0.5
@@ -180,6 +203,32 @@ def main() -> None:
         "--load", type=str, default=None, help="path to a checkpoint to resume from"
     )
     parser.add_argument(
+        "--pretrain-games",
+        type=int,
+        default=0,
+        help="heuristic games to fill buffer before self-play (default 0)",
+    )
+    parser.add_argument(
+        "--greedy-warmup",
+        action="store_true",
+        help="start by playing AlphaZero vs GreedyAgent; auto-switch "
+        "to self-play once rolling avg score exceeds --warmup-threshold",
+    )
+    parser.add_argument(
+        "--warmup-threshold",
+        type=float,
+        default=25.0,
+        help="avg AlphaZero score (over last --warmup-window games) "
+        "required to switch from warmup to self-play (default 25)",
+    )
+    parser.add_argument(
+        "--warmup-window",
+        type=int,
+        default=40,
+        help="number of recent games used for the rolling score average "
+        "(default 40)",
+    )
+    parser.add_argument(
         "--temperature",
         type=float,
         default=1.0,
@@ -198,6 +247,23 @@ def main() -> None:
     buf = ReplayBuffer(capacity=args.buffer_size)
     trainer = Trainer(net, lr=args.lr, batch_size=args.batch_size)
 
+    warmup_mode = args.greedy_warmup
+    greedy_opponent = GreedyAgent()
+    recent_az_scores: list[int] = []  # rolling window of AlphaZero scores
+
+    if warmup_mode:
+        logger.info(
+            "greedy warmup enabled — will switch to self-play once rolling avg "
+            "score exceeds %.0f over %d games",
+            args.warmup_threshold,
+            args.warmup_window,
+        )
+
+    if args.pretrain_games > 0:
+        logger.info("pretraining buffer with %d heuristic games…", args.pretrain_games)
+        collect_heuristic_games(buf, num_games=args.pretrain_games)
+        logger.info("pretraining complete — buffer size: %d", len(buf))
+
     logger.info(
         "starting training — %d iterations, %d games/iter, %d sims/move",
         args.iterations,
@@ -211,16 +277,36 @@ def main() -> None:
         logger.info("iteration %d / %d", iteration, args.iterations)
 
         # ── 1. Self-play data generation ──────────────────────────────────
-        logger.info("generating %d self-play games…", args.games_per_iter)
+        opponent = greedy_opponent if warmup_mode else None
+        mode_label = "warmup" if warmup_mode else "self-play"
+        logger.info("generating %d %s games…", args.games_per_iter, mode_label)
         net.eval()
-        collect_self_play(
+        az_scores = collect_self_play(
             buf,
             net=net,
             num_games=args.games_per_iter,
             simulations=args.simulations,
             temperature=args.temperature,
+            opponent=opponent,
         )
         logger.info("replay buffer size: %d", len(buf))
+
+        # ── Rolling average and auto-switch ───────────────────────────────
+        recent_az_scores.extend(az_scores)
+        recent_az_scores = recent_az_scores[-args.warmup_window :]
+        rolling_avg = sum(recent_az_scores) / len(recent_az_scores)
+        logger.info(
+            "AlphaZero rolling avg score (last %d games): %.1f",
+            len(recent_az_scores),
+            rolling_avg,
+        )
+        if warmup_mode and rolling_avg >= args.warmup_threshold:
+            warmup_mode = False
+            logger.info(
+                "★ rolling avg %.1f ≥ %.0f — switching to self-play mode",
+                rolling_avg,
+                args.warmup_threshold,
+            )
 
         # ── 2. Training ───────────────────────────────────────────────────
         if len(buf) < args.batch_size:
@@ -248,7 +334,6 @@ def main() -> None:
         )
         logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
 
-        # Quick sanity: vs random
         rng_wr = evaluate_vs_random(
             net, num_games=20, simulations=args.eval_simulations
         )
@@ -267,7 +352,6 @@ def main() -> None:
                 win_rate * 100,
                 args.win_threshold * 100,
             )
-            # Reset net weights to best — prevents diverging from a bad iteration
             net.load_state_dict(copy.deepcopy(best_net.state_dict()))
             trainer.optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
 

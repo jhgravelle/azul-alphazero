@@ -8,7 +8,12 @@ import pytest
 from neural.encoder import STATE_SIZE, MOVE_SPACE_SIZE
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
-from neural.trainer import Trainer, compute_loss
+from neural.trainer import (
+    Trainer,
+    compute_loss,
+    collect_heuristic_games,
+)
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -23,7 +28,6 @@ def make_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a random (states, policies, values) batch."""
     states = torch.rand(batch_size, STATE_SIZE)
-    # Policies should sum to 1 (as MCTS visit distributions do)
     raw = torch.rand(batch_size, MOVE_SPACE_SIZE)
     policies = raw / raw.sum(dim=-1, keepdim=True)
     values = torch.rand(batch_size, 1) * 2 - 1  # uniform in (-1, 1)
@@ -43,7 +47,7 @@ def test_compute_loss_returns_scalar():
     net = AzulNet()
     states, policies, values = make_batch()
     loss = compute_loss(net, states, policies, values)
-    assert loss.shape == ()  # scalar tensor
+    assert loss.shape == ()
 
 
 def test_compute_loss_is_positive():
@@ -65,19 +69,16 @@ def test_compute_loss_has_gradient():
     states, policies, values = make_batch()
     loss = compute_loss(net, states, policies, values)
     loss.backward()
-    # At least one parameter must have a gradient
     grads = [p.grad for p in net.parameters() if p.grad is not None]
     assert len(grads) > 0
 
 
 def test_compute_loss_decreases_toward_perfect_value():
-    """A network predicting the correct value should have lower loss than a random
-    one."""
+    """A network trained on a fixed batch should have lower loss after training."""
     net = AzulNet()
     states, policies, values = make_batch(32)
     loss_before = compute_loss(net, states, policies, values).item()
 
-    # Force the value head to output the correct values by training for a few steps
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     for _ in range(200):
         optimizer.zero_grad()
@@ -134,12 +135,12 @@ def test_train_step_loss_is_positive():
     assert trainer.train_step(buf) > 0.0
 
 
-def test_train_step_raises_when_buffer_too_small():
+def test_train_step_returns_zero_when_buffer_too_small():
     trainer = make_trainer()
     buf = ReplayBuffer(capacity=1000)
     fill_buffer(buf, 10)  # less than default batch_size of 256
-    with pytest.raises(ValueError):
-        trainer.train_step(buf)
+    loss = trainer.train_step(buf)
+    assert loss == 0.0
 
 
 def test_train_step_updates_weights():
@@ -163,5 +164,21 @@ def test_train_step_loss_trends_down():
     fill_buffer(buf, 300)
 
     losses = [trainer.train_step(buf) for _ in range(100)]
-    # Compare average of first 10 steps vs last 10 steps
     assert sum(losses[:10]) > sum(losses[-10:])
+
+
+# ── collect_heuristic_games ────────────────────────────────────────────────
+
+
+def test_collect_heuristic_games_fills_buffer():
+    buf = ReplayBuffer(capacity=10_000)
+    collect_heuristic_games(buf, num_games=3)
+    assert len(buf) > 0
+
+
+def test_collect_heuristic_games_policy_is_one_hot():
+    buf = ReplayBuffer(capacity=10_000)
+    collect_heuristic_games(buf, num_games=2)
+    _, policies, _ = buf.sample(min(len(buf), 10))
+    sums = policies.sum(dim=1)
+    assert torch.allclose(sums, torch.ones_like(sums))

@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import logging
+import random as _random
 
 import torch
 import torch.nn.functional as F
 
+from agents.base import Agent
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -76,28 +78,39 @@ def collect_self_play(
     num_games: int = 50,
     simulations: int = 100,
     temperature: float = 1.0,
-) -> None:
-    """Play num_games games of self-play and push training examples into buf.
+    opponent: Agent | None = None,
+) -> list[int]:
+    """Play num_games games and push training examples into buf.
 
-    Each position produces one training example:
-        state   — encoded game state vector (current player's POV)
-        policy  — MCTS visit distribution over all moves (MOVE_SPACE_SIZE floats)
-        value   — game outcome from that player's perspective (+1 win, -1 loss, 0 tie)
+    If opponent is None, plays AlphaZero vs AlphaZero (pure self-play).
+    If opponent is provided (e.g. GreedyAgent), AlphaZero plays as player 0
+    in even games and player 1 in odd games, alternating sides.
 
-    The value is filled in *retroactively* once the game ends — we play the
-    whole game first, record states and policies, then go back and label them.
+    Only AlphaZero's positions are recorded as training examples — the
+    opponent's moves are used to advance the game but not learned from.
+
+    Returns a list of AlphaZero's scores from each game, for use in
+    deciding when to switch from warmup to self-play mode.
     """
-    # Import here to avoid circular import at module level
     from agents.alphazero import AlphaZeroAgent
     from engine.game import Game
 
-    agent = AlphaZeroAgent(net, simulations=simulations, temperature=temperature)
+    az_agent = AlphaZeroAgent(net, simulations=simulations, temperature=temperature)
+    az_scores: list[int] = []
 
     for game_num in range(num_games):
         game = Game()
         game.setup_round()
 
-        # Each entry: (player_index, state_tensor, policy_tensor)
+        if opponent is not None:
+            az_player = game_num % 2
+            agents: list[Agent] = (
+                [az_agent, opponent] if az_player == 0 else [opponent, az_agent]
+            )
+        else:
+            az_player = None
+            agents = [az_agent, az_agent]
+
         history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
 
         while not game.is_game_over():
@@ -105,20 +118,20 @@ def collect_self_play(
                 break
 
             current_player = game.state.current_player
-            state_vec = encode_state(game)  # (STATE_SIZE,) — current player POV
+            is_az_turn = az_player is None or current_player == az_player
 
-            move, policy_pairs = agent.get_policy_targets(game)
+            if is_az_turn:
+                state_vec = encode_state(game)
+                move, policy_pairs = az_agent.get_policy_targets(game)
+                policy_vec = torch.zeros(MOVE_SPACE_SIZE)
+                for m, prob in policy_pairs:
+                    policy_vec[encode_move(m, game)] = prob
+                history.append((current_player, state_vec, policy_vec))
+            else:
+                move = agents[current_player].choose_move(game)
 
-            # Build dense policy target vector
-            policy_vec = torch.zeros(MOVE_SPACE_SIZE)
-            for m, prob in policy_pairs:
-                idx = encode_move(m, game)
-                policy_vec[idx] = prob
-
-            history.append((current_player, state_vec, policy_vec))
             game.make_move(move)
 
-        # Determine outcome for each player
         scores = [p.score for p in game.state.players]
         if scores[0] > scores[1]:
             outcomes = {0: 1.0, 1: -1.0}
@@ -127,13 +140,91 @@ def collect_self_play(
         else:
             outcomes = {0: 0.0, 1: 0.0}
 
-        # Push all positions into the replay buffer
         for player_idx, state_vec, policy_vec in history:
-            value = outcomes[player_idx]
-            buf.push(state_vec, policy_vec, value)
+            buf.push(state_vec, policy_vec, outcomes[player_idx])
+
+        az_score = scores[az_player] if az_player is not None else max(scores)
+        az_scores.append(az_score)
+
+        mode = "warmup" if opponent is not None else "self-play"
+        logger.info(
+            "%s game %d/%d complete — scores %s — buffer size %d",
+            mode,
+            game_num + 1,
+            num_games,
+            scores,
+            len(buf),
+        )
+
+    return az_scores
+
+
+# ── Heuristic data collection ─────────────────────────────────────────────────
+
+
+def collect_heuristic_games(
+    buf: ReplayBuffer,
+    num_games: int = 200,
+) -> None:
+    """Pretrain the buffer with games played by heuristic agents.
+
+    Each position produces one training example:
+        state   — encoded game state (current player's POV)
+        policy  — one-hot vector for the move actually taken
+        value   — game outcome from that player's perspective
+
+    Agent mix: 50% GreedyAgent, 25% CautiousAgent, 25% EfficientAgent.
+    Using a mix avoids over-fitting to a single strategy while still
+    injecting the floor-avoidance knowledge that random self-play learns slowly.
+    """
+    from agents.cautious import CautiousAgent
+    from agents.efficient import EfficientAgent
+    from agents.greedy import GreedyAgent
+    from engine.game import Game
+
+    def _pick_agent() -> Agent:
+        r = _random.random()
+        if r < 0.50:
+            return GreedyAgent()
+        elif r < 0.75:
+            return CautiousAgent()
+        else:
+            return EfficientAgent()
+
+    for game_num in range(num_games):
+        game = Game()
+        game.setup_round()
+
+        agents: list[Agent] = [_pick_agent(), _pick_agent()]
+        history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+
+        while not game.is_game_over():
+            if not game.legal_moves():
+                break
+
+            current_player = game.state.current_player
+            state_vec = encode_state(game)
+            move = agents[current_player].choose_move(game)
+
+            policy_vec = torch.zeros(MOVE_SPACE_SIZE)
+            policy_vec[encode_move(move, game)] = 1.0
+
+            history.append((current_player, state_vec, policy_vec))
+            game.make_move(move)
+
+        scores = [p.score for p in game.state.players]
+        if scores[0] > scores[1]:
+            outcomes = {0: 1.0, 1: -1.0}
+        elif scores[1] > scores[0]:
+            outcomes = {0: -1.0, 1: 1.0}
+        else:
+            outcomes = {0: 0.0, 1: 0.0}
+
+        for player_idx, state_vec, policy_vec in history:
+            buf.push(state_vec, policy_vec, outcomes[player_idx])
 
         logger.info(
-            "self-play game %d/%d complete — scores %s — buffer size %d",
+            "heuristic game %d/%d complete — scores %s — buffer size %d",
             game_num + 1,
             num_games,
             scores,

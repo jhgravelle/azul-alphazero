@@ -11,7 +11,6 @@ from agents.random import RandomAgent
 from engine.game import Game
 from scripts.self_play import run_series
 
-
 # ── UCB1 formula ──────────────────────────────────────────────────────────────
 
 

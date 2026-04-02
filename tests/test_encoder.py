@@ -30,7 +30,6 @@ from neural.encoder import (
     OFF_DISCARD,
 )
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 

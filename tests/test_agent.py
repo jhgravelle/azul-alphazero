@@ -4,6 +4,7 @@
 
 import pytest
 import random
+from agents.greedy import GreedyAgent
 from engine.game import Game
 from agents.base import Agent
 from agents.random import RandomAgent
@@ -71,11 +72,11 @@ def test_random_agent_avoids_floor_when_other_moves_exist():
         assert any(m.destination != -2 for m in moves)
 
 
-def test_random_agent_prefers_partial_line_without_biasing_color_selection():
+def test_greedy_agent_prefers_partial_line_without_biasing_color_selection():
     """Partial line preference should affect destination, not color choice."""
     game = Game()
     game.setup_round()
-    agent = RandomAgent()
+    agent = GreedyAgent()
 
     player = game.state.players[game.state.current_player]
     # Put BLUE on row 2 (capacity 3, so not full)

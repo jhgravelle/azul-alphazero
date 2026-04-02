@@ -19,6 +19,14 @@ const WALL_PATTERN = [
   ["YELLOW", "RED",    "BLACK",  "WHITE",  "BLUE" ],
 ];
 
+const PLAYER_OPTIONS = [
+  { value: "human",     label: "Human" },
+  { value: "random",    label: "Random Bot" },
+  { value: "cautious",  label: "Cautious Bot" },
+  { value: "efficient", label: "Efficient Bot" },
+  { value: "greedy",    label: "Greedy Bot" },
+  { value: "mcts",      label: "MCTS Bot" },
+];
 // ── State ──────────────────────────────────────────────────────────────────
 
 let gameState = null;
@@ -133,10 +141,7 @@ function showNewGameDialog() {
   const dialog = createElement("div", "dialog");
   dialog.appendChild(createElement("h2", "dialog-title", "New Game"));
 
-  const PLAYER_OPTIONS = [
-    { value: "human",  label: "Human" },
-    { value: "random", label: "Random Bot" },
-  ];
+
 
   const selects = [0, 1].map(i => {
     const row = createElement("div", "dialog-row");
@@ -150,7 +155,7 @@ function showNewGameDialog() {
       select.appendChild(option);
     });
     // Default: P1 human, P2 random
-    select.value = i === 0 ? "human" : "random";
+    select.value = i === 0 ? "human" : "greedy";
     row.appendChild(select);
     dialog.appendChild(row);
     return select;
@@ -299,7 +304,7 @@ function renderWall(wall) {
 
 function renderBoard(board, index, isActive) {
   const playerType = gameState?.player_types?.[index] ?? "human";
-  const label = playerType === "human" ? "Human" : "Random Bot";
+  const label = PLAYER_OPTIONS.find(o => o.value === playerType)?.label ?? playerType;
 
   const wrapper = createElement("div",
     `player-board${isActive ? " active-player" : ""}`);

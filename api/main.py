@@ -9,6 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agents.base import Agent
 from agents.random import RandomAgent
+from agents.cautious import CautiousAgent
+from agents.efficient import EfficientAgent
+from agents.greedy import GreedyAgent
+from agents.mcts import MCTSAgent
 from engine.game import Game, Move
 from engine.tile import Tile
 from api.schemas import (
@@ -38,12 +42,19 @@ _player_types: list[PlayerType] = ["human", "human"]
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
     """Return an Agent instance for the given type, or None for human."""
-    if player_type == "random":
-        return RandomAgent()
-    return None
-
-
-_agents: list[Agent | None] = [_make_agent(t) for t in _player_types]
+    match player_type:
+        case "random":
+            return RandomAgent()
+        case "cautious":
+            return CautiousAgent()
+        case "efficient":
+            return EfficientAgent()
+        case "greedy":
+            return GreedyAgent()
+        case "mcts":
+            return MCTSAgent()
+        case _:
+            return None
 
 
 def _tile_to_str(tile: Tile) -> str:

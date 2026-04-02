@@ -9,13 +9,21 @@ from dataclasses import dataclass
 import time
 
 from agents.base import Agent
+from agents.cautious import CautiousAgent
+from agents.efficient import EfficientAgent
+from agents.greedy import GreedyAgent
+from agents.mcts import MCTSAgent
 from agents.random import RandomAgent
 from engine.game import Game
 
 logger = logging.getLogger(__name__)
 
-AGENT_REGISTRY: dict[str, type[Agent]] = {
+AGENT_REGISTRY = {
     "random": RandomAgent,
+    "cautious": CautiousAgent,
+    "efficient": EfficientAgent,
+    "greedy": GreedyAgent,
+    "mcts": MCTSAgent,
 }
 
 

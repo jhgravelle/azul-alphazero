@@ -229,3 +229,30 @@ def test_setup_round_places_first_player_token_in_center():
     game = Game()
     game.setup_round()
     assert Tile.FIRST_PLAYER in game.state.center
+
+
+def test_legal_moves_allow_color_when_different_color_already_on_wall_row():
+    # A different color being on the wall in row 0 should NOT block
+    # other colors from being placed on pattern line 0.
+    game = Game()
+    game.setup_round()
+    player = game.state.players[game.state.current_player]
+    # Fill factories with a known color so we control what's available
+    for factory in game.state.factories:
+        factory.clear()
+        factory.extend([Tile.BLUE] * TILES_PER_FACTORY)
+    # Place Yellow on row 0's wall (Yellow belongs in col 1, not col 0)
+    player.wall[0][1] = Tile.YELLOW
+    # Blue should still be placeable on pattern line 0
+    moves = game.legal_moves()
+    blue_to_row0 = [m for m in moves if m.destination == 0 and m.color == Tile.BLUE]
+    assert len(blue_to_row0) > 0
+
+
+def test_score_floor_does_not_send_first_player_tile_to_discard():
+    game = Game()
+    player = game.state.players[0]
+    player.floor_line = [Tile.FIRST_PLAYER, Tile.BLUE]
+    game._score_floor(player)
+    assert Tile.FIRST_PLAYER not in game.state.discard
+    assert Tile.BLUE in game.state.discard

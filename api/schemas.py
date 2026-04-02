@@ -5,7 +5,7 @@
 from typing import Literal
 from pydantic import BaseModel, field_validator
 
-PlayerType = Literal["human", "random"]
+PlayerType = Literal["human", "random", "cautious", "efficient", "greedy", "mcts"]
 
 
 class MoveRequest(BaseModel):
@@ -19,7 +19,7 @@ class MoveRequest(BaseModel):
 class NewGameRequest(BaseModel):
     """Configuration for starting a new game."""
 
-    player_types: list[PlayerType] = ["human", "human"]
+    player_types: list[PlayerType] = ["human", "greedy"]
 
     @field_validator("player_types")
     @classmethod

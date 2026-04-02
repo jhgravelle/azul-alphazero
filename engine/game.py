@@ -194,7 +194,9 @@ class Game:
             for i in range(min(len(player.floor_line), len(FLOOR_PENALTIES)))
         )
         player.score = max(0, player.score + penalty)
-        self.state.discard.extend(player.floor_line)
+        self.state.discard.extend(
+            t for t in player.floor_line if t != Tile.FIRST_PLAYER
+        )
         player.floor_line.clear()
 
     def score_round(self) -> None:

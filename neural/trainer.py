@@ -24,16 +24,12 @@ logger = logging.getLogger(__name__)
 def compute_loss(
     net: AzulNet,
     states: torch.Tensor,  # (B, STATE_SIZE)
-    policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE)  — target distributions
-    values: torch.Tensor,  # (B, 1)                — target outcomes in (-1, 1)
+    policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE) — target distributions
+    values: torch.Tensor,  # (B, 1)               — target outcomes in (-1, 1)
 ) -> torch.Tensor:
-    """Combined policy + value loss.
-
-    Policy loss: cross-entropy between network output and MCTS visit distribution.
-    Value  loss: MSE between network output and actual game outcome.
-    """
-    logits, pred_values = net(states)  # (B, MOVE), (B, 1)
-    log_probs = F.log_softmax(logits, dim=1)  # (B, MOVE)
+    """Combined policy + value loss."""
+    logits, pred_values = net(states)
+    log_probs = F.log_softmax(logits, dim=1)
     policy_loss = -(policies * log_probs).sum(dim=1).mean()
     value_loss = F.mse_loss(pred_values, values)
     return policy_loss + value_loss
@@ -50,10 +46,12 @@ class Trainer:
         net: AzulNet,
         lr: float = 1e-3,
         batch_size: int = 256,
+        device: torch.device = torch.device("cpu"),
     ) -> None:
         self.net = net
         self.lr = lr
         self.batch_size = batch_size
+        self.device = device
         self.optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
     def train_step(self, buf: ReplayBuffer) -> float:
@@ -61,6 +59,9 @@ class Trainer:
         if len(buf) < self.batch_size:
             return 0.0
         states, policies, values = buf.sample(self.batch_size)
+        states = states.to(self.device)
+        policies = policies.to(self.device)
+        values = values.to(self.device)
         self.net.train()
         self.optimizer.zero_grad()
         loss = compute_loss(self.net, states, policies, values)
@@ -79,24 +80,25 @@ def collect_self_play(
     simulations: int = 100,
     temperature: float = 1.0,
     opponent: Agent | None = None,
-) -> list[int]:
+    device: torch.device = torch.device("cpu"),
+) -> list[float]:
     """Play num_games games and push training examples into buf.
 
     If opponent is None, plays AlphaZero vs AlphaZero (pure self-play).
     If opponent is provided (e.g. GreedyAgent), AlphaZero plays as player 0
     in even games and player 1 in odd games, alternating sides.
 
-    Only AlphaZero's positions are recorded as training examples — the
-    opponent's moves are used to advance the game but not learned from.
+    Only AlphaZero's positions are recorded as training examples.
 
-    Returns a list of AlphaZero's scores from each game, for use in
-    deciding when to switch from warmup to self-play mode.
+    Returns a list of AlphaZero's scores from each game.
     """
     from agents.alphazero import AlphaZeroAgent
     from engine.game import Game
 
-    az_agent = AlphaZeroAgent(net, simulations=simulations, temperature=temperature)
-    az_scores: list[int] = []
+    az_agent = AlphaZeroAgent(
+        net, simulations=simulations, temperature=temperature, device=device
+    )
+    az_scores: list[float] = []
 
     for game_num in range(num_games):
         game = Game()
@@ -148,11 +150,14 @@ def collect_self_play(
 
         mode = "warmup" if opponent is not None else "self-play"
         logger.info(
-            "%s game %d/%d complete — scores %s — buffer size %d",
+            "%s game %d/%d -- az_player=%s -- scores %s -- az_score=%d -- buffer "
+            "size %d",
             mode,
             game_num + 1,
             num_games,
+            az_player,
             scores,
+            az_score,
             len(buf),
         )
 
@@ -166,27 +171,26 @@ def collect_heuristic_games(
     buf: ReplayBuffer,
     num_games: int = 200,
 ) -> None:
-    """Pretrain the buffer with games played by heuristic agents.
+    """Pretrain the buffer with games played by heuristic agents vs RandomAgent.
 
-    Each position produces one training example:
-        state   — encoded game state (current player's POV)
-        policy  — one-hot vector for the move actually taken
-        value   — game outcome from that player's perspective
+    Every game pairs a heuristic agent against RandomAgent, alternating which
+    side Random plays on. This ensures the buffer contains clear examples of
+    floor-dumping (Random) paired with losses, and floor-avoiding play paired
+    with wins.
 
-    Agent mix: 50% GreedyAgent, 25% CautiousAgent, 25% EfficientAgent.
-    Using a mix avoids over-fitting to a single strategy while still
-    injecting the floor-avoidance knowledge that random self-play learns slowly.
+    Heuristic agent mix: 60% GreedyAgent, 30% CautiousAgent, 10% EfficientAgent.
     """
     from agents.cautious import CautiousAgent
     from agents.efficient import EfficientAgent
     from agents.greedy import GreedyAgent
+    from agents.random import RandomAgent
     from engine.game import Game
 
-    def _pick_agent() -> Agent:
+    def _pick_heuristic_agent() -> Agent:
         r = _random.random()
-        if r < 0.50:
+        if r < 0.60:
             return GreedyAgent()
-        elif r < 0.75:
+        elif r < 0.90:
             return CautiousAgent()
         else:
             return EfficientAgent()
@@ -195,7 +199,14 @@ def collect_heuristic_games(
         game = Game()
         game.setup_round()
 
-        agents: list[Agent] = [_pick_agent(), _pick_agent()]
+        heuristic = _pick_heuristic_agent()
+        random_agent = RandomAgent()
+        # Alternate which side Random plays on so the network doesn't learn
+        # "player 1 loses" instead of "floor moves lose".
+        if game_num % 2 == 0:
+            agents: list[Agent] = [heuristic, random_agent]
+        else:
+            agents = [random_agent, heuristic]
         history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
 
         while not game.is_game_over():
@@ -223,10 +234,13 @@ def collect_heuristic_games(
         for player_idx, state_vec, policy_vec in history:
             buf.push(state_vec, policy_vec, outcomes[player_idx])
 
+        agent_names = [type(a).__name__ for a in agents]
         logger.info(
-            "heuristic game %d/%d complete — scores %s — buffer size %d",
+            "heuristic game %d/%d -- %s vs %s -- scores %s -- buffer size %d",
             game_num + 1,
             num_games,
+            agent_names[0],
+            agent_names[1],
             scores,
             len(buf),
         )

@@ -1,7 +1,5 @@
 # Claude Instructions — Azul AlphaZero Project
 
-Paste this into your Claude project instructions so every conversation starts with the right context.
-
 ---
 
 ## Project context
@@ -27,36 +25,15 @@ I am building an Azul board game engine with an AlphaZero AI in Python. This is 
 
 ## Current phase
 
-> **Phase 6b — Reward Shaping (up next)**
+> **Phase 6b Step 2 — Expose scoring breakdown in the API**
 
 ### What we are building
 
-Two new engine methods, plus UI changes, plus model integration:
+Add `carried_score`, `earned_score`, `bonus_score`, and `grand_total` per player to `BoardResponse` in `api/schemas.py`, and populate them in `api/main.py`.
 
-**`carried_score(board)`** — the official score carried from end of last round. Equals `board.score`. Named accessor for clarity.
+`bonus_score` is `score_wall_bonus(board.wall)` — the wall bonus component of `earned_score` broken out separately so the UI can display it distinctly.
 
-**`earned_score(board, wall_pattern)`** — points earned this round but not yet received:
-- Wall placement scores for all currently full pattern lines
-- Floor penalties for tiles currently on the floor line
-- End-of-game bonuses for completed rows/columns/colors already on the wall
-
-**`grand_total(board, wall_pattern)`** — `carried_score + earned_score`
-
-These belong in `engine/scoring.py`. They are pure game logic, not training artifacts.
-
-### UI changes planned
-- Wall tile preview: show `+N` on wall cell where a full pattern line will score. Refreshes as adjacencies change.
-- End-of-game bonus indicators: `+7` below completed columns, `+10` centered below completed color's last tile, `+2` right of completed rows
-- Four-part score display: Carried | Earned | Bonus | Total
-
-### Model integration (after UI)
-- Replace final-game-score value target in `collect_self_play` with `grand_total` delta per move
-- Model receives only `grand_total` — no breakdown — must learn that increases are good
-
-### Sequencing
-1. Engine methods + tests first
-2. UI second
-3. Model integration third
+After the API step: UI changes (wall tile preview annotations, bonus indicators, four-part score display), then model integration.
 
 ---
 
@@ -64,64 +41,88 @@ These belong in `engine/scoring.py`. They are pure game logic, not training arti
 
 ### Phase 1 — Game Engine ✅
 
-- `tile.py` — Tile enum, COLORS list
-- `constants.py` — BOARD_SIZE, PLAYERS, TILES_PER_COLOR, TILES_PER_FACTORY, FLOOR_PENALTIES
-- `board.py` — Board dataclass (pattern lines, wall, floor line, score)
-- `game_state.py` — GameState dataclass
-- `game.py` — WALL_PATTERN, wall_column_for, setup_round, legal_moves, _is_valid_destination, make_move, score_round, is_game_over, score_game
-- `cli/cli.py` — full terminal UI, human vs human, colored tiles, dim wall hints
+**`engine/constants.py`** — single source of truth for all fixed game data:
+- `Tile` enum (BLUE, YELLOW, RED, BLACK, WHITE, FIRST_PLAYER)
+- `COLOR_TILES` — list of the 5 non-marker tiles in enum order
+- `BOARD_SIZE`, `PLAYERS`, `TILES_PER_COLOR`, `NUMBER_OF_FACTORIES`, `TILES_PER_FACTORY`
+- `FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3]`
+- `WALL_PATTERN` — 5x5 grid, derived from `COLOR_TILES` and `BOARD_SIZE`
+- `CUMULATIVE_FLOOR_PENALTIES` — indexed 0..NUMBER_OF_FACTORIES*TILES_PER_FACTORY, no capping needed at call site
+- `COLUMN_FOR_COLOR_IN_ROW[tile][row]` — precomputed wall column lookup
+
+**`engine/tile.py`** — re-exports `Tile` and `COLOR_TILES` from `constants.py` for backwards compatibility only. All new code imports from `engine.constants` directly.
+
+**`engine/board.py`** — `Board` dataclass: `score`, `pattern_lines`, `wall`, `floor_line`.
+
+**`engine/game_state.py`** — `GameState` dataclass.
+
+**`engine/game.py`** — `WALL_PATTERN` re-exported for tests, `Game` class:
+- `setup_round`, `legal_moves`, `make_move`, `score_round`, `is_game_over`, `score_game`
+- `wall_column_for` uses `COLUMN_FOR_COLOR_IN_ROW`
+- `_score_floor` uses `CUMULATIVE_FLOOR_PENALTIES`
+- `score_round` calls `score_placement` from `scoring.py`
+- `score_game` calls `score_wall_bonus` from `scoring.py`
+
+**`engine/scoring.py`** — pure scoring functions (no state mutation):
+- `score_placement(wall, row, column)` — pointer-walk, precondition: tile already placed
+- `score_floor_penalty(floor_line)` — single lookup into `CUMULATIVE_FLOOR_PENALTIES`
+- `score_wall_bonus(wall)` — +2/+7/+10 bonuses for completed rows/columns/colors
+- `carried_score(board)` — returns `board.score`
+- `earned_score(board)` — simulates pending placements sequentially on temp wall copy, includes floor penalty and wall bonus on post-placement wall
+- `grand_total(board)` — `carried_score + earned_score`, not clamped
+
+**`cli/cli.py`** — full terminal UI, human vs human, colored tiles, dim wall hints.
 
 **Known engine gotchas:**
-- `_is_valid_destination` checks `player.wall[row][wall_column_for(row, color)] is not None` — not `color in player.wall[row]`
+- `_is_valid_destination` checks `player.wall[row][wall_column_for(row, tile)] is not None` — not `tile in player.wall[row]`
 - `_score_floor` must filter out `Tile.FIRST_PLAYER` before adding to discard
 - Empty `legal_moves()` mid-round is always a bug, not an edge case
+- `score_placement` precondition: tile must be placed in wall before calling
 
 ---
 
 ### Phase 2 — Graphical Front End ✅
 
-- `api/schemas.py` — MoveRequest, BoardResponse, GameStateResponse, NewGameRequest, PlayerType
-- `api/main.py` — GET /state, POST /move, POST /new-game, POST /agent-move, _make_agent()
-- `frontend/` — full click-to-move UI, New Game dialog, bot turns via maybeRunBot(), 2s inter-round pause
+- `api/schemas.py` — `MoveRequest`, `BoardResponse`, `GameStateResponse`, `NewGameRequest`, `PlayerType`
+- `api/main.py` — GET /state, POST /move, POST /new-game, POST /agent-move, `_make_agent()`
+- `frontend/` — full click-to-move UI, New Game dialog, bot turns via `maybeRunBot()`, 2s inter-round pause
 
 ---
 
 ### Phase 3 — Random Bot + Agent Interface ✅
 
-- `agents/base.py` — abstract Agent with `choose_move(game) -> Move`
+- `agents/base.py` — abstract `Agent` with `choose_move(game) -> Move`
 - `agents/random.py`, `cautious.py`, `efficient.py`, `greedy.py`
-- `scripts/self_play.py` — run_game, run_series, AGENT_REGISTRY
+- `scripts/self_play.py` — `run_game`, `run_series`, `AGENT_REGISTRY`
 
 ---
 
 ### Phase 4 — Monte Carlo Tree Search ✅
 
-- `agents/mcts.py` — UCB1, MCTSNode, _select/_expand/_simulate/_backpropagate
+- `agents/mcts.py` — UCB1, `MCTSNode`, `_select/_expand/_simulate/_backpropagate`
 
 ---
 
 ### Phase 5 — Neural Network ✅
 
-- `neural/encoder.py` — encode_state (116 floats), encode_move, decode_move, STATE_SIZE=116, MOVE_SPACE_SIZE=180
-- `neural/model.py` — AzulNet: stem + 3×ResBlock(256) + policy + value heads
-- `neural/replay.py` — ReplayBuffer: circular buffer, push/sample
-- `neural/trainer.py` — compute_loss, Trainer, collect_self_play, collect_heuristic_games
+- `neural/encoder.py` — `encode_state` (116 floats), `encode_move`, `decode_move`, `STATE_SIZE=116`, `MOVE_SPACE_SIZE=180`
+- `neural/model.py` — `AzulNet`: stem + 3×ResBlock(256) + policy + value heads
+- `neural/replay.py` — `ReplayBuffer`: circular buffer, push/sample
+- `neural/trainer.py` — `compute_loss`, `Trainer`, `collect_self_play`, `collect_heuristic_games`
 
 ---
 
-### Phase 6 — AlphaZero Self-Play Training 🔄 (in progress, paused for 6b)
+### Phase 6 — AlphaZero Self-Play Training 🔄 (paused for 6b)
 
 **`agents/alphazero.py`:**
-- AZNode dataclass, PUCT selection (C=1.5), expand/evaluate/backpropagate
+- `AZNode` dataclass, PUCT selection (C=1.5), expand/evaluate/backpropagate
 - `_evaluate` — value head only, no rollouts
 - `get_policy_targets` — visit-count distribution for training
 - temperature: 0.0 = greedy, 1.0 = proportional
 
 **`neural/trainer.py`:**
 - `collect_self_play(buf, net, num_games, simulations, temperature, opponent)`
-  - opponent=None → AZ vs AZ; opponent=Agent → warmup mode
-  - Returns list[int] of AZ scores for rolling average
-- `collect_heuristic_games(buf, num_games)` — 50/25/25 Greedy/Cautious/Efficient mix
+- `collect_heuristic_games(buf, num_games)`
 
 **`scripts/train.py`:**
 - `--pretrain-games`, `--greedy-warmup`, `--warmup-threshold`, `--warmup-window`
@@ -132,21 +133,11 @@ These belong in `engine/scoring.py`. They are pure game logic, not training arti
 - 100 train steps too few — increase to 500
 - 20 eval games too noisy — increase to 40 or lower threshold to 0.48
 
-**Training history:**
+---
 
-| Run | Result |
-|---|---|
-| Test run | Gen 0001: 55% vs prev, 32.5% vs random |
-| Overnight 1 | Interrupted by Windows sleep |
-| Overnight 2 | Regressed after iter 1 — [0,0] buffer poisoning |
-| Run 4 (160 iter) | 1 generation only — rolling avg bug, never switched to self-play |
+### Phase 6b Step 1 — Engine scoring functions ✅
 
-**Windows sleep prevention:**
-```powershell
-powercfg /requestsoverride process python.exe system
-# restore after:
-powercfg /requestsoverride process python.exe
-```
+See `engine/scoring.py` and `engine/constants.py` above.
 
 ---
 
@@ -154,10 +145,14 @@ powercfg /requestsoverride process python.exe
 
 - black formatting, isort, `extend-ignore = E203`
 - Type hints on all signatures, docstrings on all public classes/functions
-- American English: "color", "center"
+- American English: "tile", "center"
+- **Never abbreviate `column` as `col` or `c` in variable names** — column and color are both core game concepts and must be unambiguous
+- **Prefer `tile` over `color` in variable names** where referring to a `Tile` enum value
 - Slow tests: `@pytest.mark.slow`, excluded by default
 - `checkpoints/` is gitignored
 - Never use `print()` in engine code — use `logging`
 - Never import `api/` or `frontend/` from `engine/`
 - Never skip writing tests
+- When writing a new test file, give the most basic implementation file to get past import errors
 - No Unicode characters in log strings — use plain ASCII only (Windows console encoding)
+- **Windows:** use `python -m module.path` to run scripts, set `$env:PYTHONPATH = "."` if needed. Do not suggest grep — use `findstr` or VS Code search instead

@@ -3,6 +3,7 @@
 """Pydantic schemas for the Azul API request and response bodies."""
 
 from typing import Literal
+
 from pydantic import BaseModel, field_validator
 
 PlayerType = Literal["human", "random", "cautious", "efficient", "greedy", "mcts"]
@@ -12,7 +13,7 @@ class MoveRequest(BaseModel):
     """A move — used both for submitting moves and describing legal moves."""
 
     source: int
-    color: str
+    tile: str
     destination: int
 
 
@@ -29,6 +30,22 @@ class NewGameRequest(BaseModel):
         return v
 
 
+class PendingPlacement(BaseModel):
+    """Wall annotation for a single full pattern line awaiting end-of-round scoring."""
+
+    row: int
+    column: int
+    placement_points: int
+
+
+class PendingBonus(BaseModel):
+    """An end-of-game bonus already guaranteed by the current wall state."""
+
+    bonus_type: Literal["row", "column", "tile"]
+    index: int  # row index, column index, or Tile enum value
+    bonus_points: int  # +2, +7, or +10
+
+
 class BoardResponse(BaseModel):
     """The state of one player's board."""
 
@@ -36,6 +53,8 @@ class BoardResponse(BaseModel):
     pattern_lines: list[list[str]]
     wall: list[list[str | None]]
     floor_line: list[str]
+    pending_placements: list[PendingPlacement] = []
+    pending_bonuses: list[PendingBonus] = []
 
 
 class GameStateResponse(BaseModel):

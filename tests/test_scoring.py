@@ -3,34 +3,36 @@
 """Tests for scoring — pure functions in engine/scoring.py and Game scoring methods."""
 
 from engine.constants import (
-    Tile,
-    BONUS_ROW,
-    BONUS_COLUMN,
-    BONUS_COLOR,
     BOARD_SIZE,
+    BONUS_COLOR,
+    BONUS_COLUMN,
+    BONUS_ROW,
+    COLOR_TILES,
+    COLUMN_FOR_TILE_IN_ROW,
     FLOOR_PENALTIES,
+    Tile,
     WALL_PATTERN,
 )
 from engine.board import Board
 from engine.scoring import (
-    score_placement,
-    score_floor_penalty,
-    score_wall_bonus,
+    BonusDetail,
+    PlacementDetail,
     earned_score,
+    pending_bonus_details,
+    pending_placement_details,
+    score_floor_penalty,
+    score_placement,
+    score_wall_bonus,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 
 def _empty_wall() -> list[list[Tile | None]]:
     return [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
 
 
-# ---------------------------------------------------------------------------
-# score_placement — pure function
-# ---------------------------------------------------------------------------
+# ── score_placement ────────────────────────────────────────────────────────────
 
 
 def test_score_placement_lone_tile_scores_one():
@@ -117,9 +119,7 @@ def test_score_placement_l_shaped_one_directions_scores_one():
     assert score_placement(wall, 2, 3) == 2
 
 
-# ---------------------------------------------------------------------------
-# score_floor_penalty — pure function
-# ---------------------------------------------------------------------------
+# ── score_floor_penalty ────────────────────────────────────────────────────────
 
 
 def test_score_floor_penalty_empty_floor_is_zero():
@@ -154,9 +154,7 @@ def test_score_floor_penalty_is_negative_or_zero():
         assert score_floor_penalty([Tile.BLUE] * n) <= 0
 
 
-# ---------------------------------------------------------------------------
-# score_wall_bonus — pure function
-# ---------------------------------------------------------------------------
+# ── score_wall_bonus ───────────────────────────────────────────────────────────
 
 
 def test_score_wall_bonus_empty_wall_is_zero():
@@ -173,16 +171,16 @@ def test_score_wall_bonus_partial_row_is_zero():
 
 def test_score_wall_bonus_complete_row_scores_two():
     wall = _empty_wall()
-    for col in range(BOARD_SIZE):
-        wall[0][col] = WALL_PATTERN[0][col]
+    for column in range(BOARD_SIZE):
+        wall[0][column] = WALL_PATTERN[0][column]
     assert score_wall_bonus(wall) == BONUS_ROW
 
 
 def test_score_wall_bonus_two_complete_rows_scores_four():
     wall = _empty_wall()
-    for col in range(BOARD_SIZE):
-        wall[0][col] = WALL_PATTERN[0][col]
-        wall[1][col] = WALL_PATTERN[1][col]
+    for column in range(BOARD_SIZE):
+        wall[0][column] = WALL_PATTERN[0][column]
+        wall[1][column] = WALL_PATTERN[1][column]
     assert score_wall_bonus(wall) == BONUS_ROW * 2
 
 
@@ -217,15 +215,15 @@ def test_score_wall_bonus_partial_color_is_zero():
 def test_score_wall_bonus_complete_color_scores_ten():
     wall = _empty_wall()
     for row in range(BOARD_SIZE):
-        col = WALL_PATTERN[row].index(Tile.BLUE)
-        wall[row][col] = Tile.BLUE
+        column = WALL_PATTERN[row].index(Tile.BLUE)
+        wall[row][column] = Tile.BLUE
     assert score_wall_bonus(wall) == BONUS_COLOR
 
 
 def test_score_wall_bonus_row_and_column_overlap_counts_both():
     wall = _empty_wall()
-    for col in range(BOARD_SIZE):
-        wall[0][col] = WALL_PATTERN[0][col]
+    for column in range(BOARD_SIZE):
+        wall[0][column] = WALL_PATTERN[0][column]
     for row in range(BOARD_SIZE):
         wall[row][0] = WALL_PATTERN[row][0]
     assert score_wall_bonus(wall) == BONUS_ROW + BONUS_COLUMN
@@ -233,19 +231,152 @@ def test_score_wall_bonus_row_and_column_overlap_counts_both():
 
 def test_score_wall_bonus_all_three_bonuses():
     wall = _empty_wall()
-    for col in range(BOARD_SIZE):
-        wall[0][col] = WALL_PATTERN[0][col]
+    for column in range(BOARD_SIZE):
+        wall[0][column] = WALL_PATTERN[0][column]
     for row in range(BOARD_SIZE):
         wall[row][0] = WALL_PATTERN[row][0]
     for row in range(BOARD_SIZE):
-        col = WALL_PATTERN[row].index(Tile.BLUE)
-        wall[row][col] = Tile.BLUE
+        column = WALL_PATTERN[row].index(Tile.BLUE)
+        wall[row][column] = Tile.BLUE
     assert score_wall_bonus(wall) == BONUS_ROW + BONUS_COLUMN + BONUS_COLOR
 
 
-# ---------------------------------------------------------------------------
-# earned_score — full pattern lines (wall placement preview)
-# ---------------------------------------------------------------------------
+# ── pending_placement_details ──────────────────────────────────────────────────
+
+
+def test_pending_placement_details_empty_board_returns_empty():
+    board = Board()
+    details, _ = pending_placement_details(board)
+    assert details == []
+
+
+def test_pending_placement_details_returns_placement_detail_instances():
+    board = Board()
+    board.pattern_lines[0] = [Tile.BLUE]
+    details, _ = pending_placement_details(board)
+    assert len(details) == 1
+    assert isinstance(details[0], PlacementDetail)
+
+
+def test_pending_placement_details_correct_row_and_column():
+    board = Board()
+    board.pattern_lines[0] = [Tile.BLUE]
+    details, _ = pending_placement_details(board)
+    assert details[0].row == 0
+    assert details[0].column == COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+
+
+def test_pending_placement_details_lone_tile_scores_one():
+    board = Board()
+    board.pattern_lines[0] = [Tile.BLUE]
+    details, _ = pending_placement_details(board)
+    assert details[0].placement_points == 1
+
+
+def test_pending_placement_details_does_not_include_incomplete_lines():
+    board = Board()
+    board.pattern_lines[1] = [Tile.BLUE]  # row 1 capacity is 2 — not full
+    details, _ = pending_placement_details(board)
+    assert details == []
+
+
+def test_pending_placement_details_returns_temp_wall():
+    board = Board()
+    board.pattern_lines[0] = [Tile.BLUE]
+    details, temp_wall = pending_placement_details(board)
+    column = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert temp_wall[0][column] == Tile.BLUE
+
+
+def test_pending_placement_details_does_not_mutate_board_wall():
+    board = Board()
+    board.pattern_lines[0] = [Tile.BLUE]
+    pending_placement_details(board)
+    column = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert board.wall[0][column] is None
+
+
+def test_pending_placement_details_second_placement_sees_first():
+    """Second pending placement sees the first in the temp wall.
+
+    YELLOW lands in column 2 of row 1; BLUE lands in column 2 of row 2.
+    Both are pending — neither is on the real wall yet. Row 2's placement
+    should see row 1's tile directly above it in the temp wall, scoring 2
+    instead of 1.
+    """
+    board = Board()
+    assert COLUMN_FOR_TILE_IN_ROW[Tile.YELLOW][1] == 2
+    assert COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][2] == 2
+    board.pattern_lines[1] = [Tile.YELLOW, Tile.YELLOW]
+    board.pattern_lines[2] = [Tile.BLUE, Tile.BLUE, Tile.BLUE]
+    details, _ = pending_placement_details(board)
+    assert details[1].placement_points == 2
+
+
+# ── pending_bonus_details ──────────────────────────────────────────────────────
+
+
+def test_pending_bonus_details_empty_wall_returns_empty():
+    assert pending_bonus_details(_empty_wall()) == []
+
+
+def test_pending_bonus_details_returns_bonus_detail_instances():
+    wall = _empty_wall()
+    for column in range(BOARD_SIZE):
+        wall[0][column] = WALL_PATTERN[0][column]
+    bonuses = pending_bonus_details(wall)
+    assert len(bonuses) >= 1
+    assert isinstance(bonuses[0], BonusDetail)
+
+
+def test_pending_bonus_details_completed_row():
+    wall = _empty_wall()
+    for column in range(BOARD_SIZE):
+        wall[0][column] = WALL_PATTERN[0][column]
+    bonuses = pending_bonus_details(wall)
+    row_bonuses = [b for b in bonuses if b.bonus_type == "row"]
+    assert len(row_bonuses) == 1
+    assert row_bonuses[0].index == 0
+    assert row_bonuses[0].bonus_points == BONUS_ROW
+
+
+def test_pending_bonus_details_completed_column():
+    wall = _empty_wall()
+    for row in range(BOARD_SIZE):
+        wall[row][0] = WALL_PATTERN[row][0]
+    bonuses = pending_bonus_details(wall)
+    column_bonuses = [b for b in bonuses if b.bonus_type == "column"]
+    assert len(column_bonuses) == 1
+    assert column_bonuses[0].index == 0
+    assert column_bonuses[0].bonus_points == BONUS_COLUMN
+
+
+def test_pending_bonus_details_completed_tile_color():
+    wall = _empty_wall()
+    for row in range(BOARD_SIZE):
+        column = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]
+        wall[row][column] = Tile.BLUE
+    bonuses = pending_bonus_details(wall)
+    tile_bonuses = [b for b in bonuses if b.bonus_type == "tile"]
+    assert len(tile_bonuses) == 1
+    assert tile_bonuses[0].index == Tile.BLUE.value
+    assert tile_bonuses[0].bonus_points == BONUS_COLOR
+
+
+def test_pending_bonus_details_full_wall_yields_all_bonuses():
+    """A fully completed wall should yield exactly 5 row, 5 column, 5 tile bonuses."""
+    wall = _empty_wall()
+    for tile in COLOR_TILES:
+        for row in range(BOARD_SIZE):
+            column = COLUMN_FOR_TILE_IN_ROW[tile][row]
+            wall[row][column] = tile
+    bonuses = pending_bonus_details(wall)
+    assert len([b for b in bonuses if b.bonus_type == "row"]) == BOARD_SIZE
+    assert len([b for b in bonuses if b.bonus_type == "column"]) == BOARD_SIZE
+    assert len([b for b in bonuses if b.bonus_type == "tile"]) == BOARD_SIZE
+
+
+# ── earned_score ───────────────────────────────────────────────────────────────
 
 
 def test_earned_score_empty_board_is_zero():
@@ -253,21 +384,18 @@ def test_earned_score_empty_board_is_zero():
 
 
 def test_earned_score_partial_pattern_line_not_counted():
-    # Row 1 capacity = 2; one tile is not full — should contribute 0
     board = Board()
-    board.pattern_lines[1] = [Tile.YELLOW]
+    board.pattern_lines[1] = [Tile.YELLOW]  # row 1 capacity = 2 — not full
     assert earned_score(board) == 0
 
 
 def test_earned_score_lone_tile_on_empty_wall():
-    # Row 0 capacity = 1 and it's full — lone placement scores 1
     board = Board()
     board.pattern_lines[0] = [Tile.BLUE]
     assert earned_score(board) == 1
 
 
 def test_earned_score_full_pattern_line_with_wall_neighbor():
-    # Row 0: Blue → col 0. Yellow already at (0,1). Horizontal run = 2.
     board = Board()
     board.pattern_lines[0] = [Tile.BLUE]
     board.wall[0][1] = Tile.YELLOW
@@ -275,15 +403,13 @@ def test_earned_score_full_pattern_line_with_wall_neighbor():
 
 
 def test_earned_score_two_full_lines_sums_both():
-    # Two lone placements on an otherwise empty wall → 1 + 1 = 2
     board = Board()
-    board.pattern_lines[0] = [Tile.BLUE]  # → (0,0)
-    board.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]  # → (2,2)
+    board.pattern_lines[0] = [Tile.BLUE]
+    board.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
     assert earned_score(board) == 2
 
 
 def test_earned_score_two_full_lines_sums_both_joining():
-    # Two lone placements joined with existing wall tile → 2 + 3 = 5
     board = Board()
     board.wall[1][2] = Tile.YELLOW
     board.pattern_lines[0] = [Tile.RED]  # → (0,2)
@@ -309,7 +435,7 @@ def test_earned_score_floor_with_first_player_marker():
 def test_earned_score_placement_minus_floor():
     board = Board()
     board.pattern_lines[0] = [Tile.BLUE]  # +1
-    board.floor_line = [Tile.RED]  # FLOOR_PENALTIES[0]
+    board.floor_line = [Tile.RED]
     assert earned_score(board) == 1 + FLOOR_PENALTIES[0]
 
 

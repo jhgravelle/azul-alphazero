@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-04-03
-> Status: Phase 6 — AlphaZero Self-Play Training (in progress) + Phase 6b — Reward Shaping (up next)
+> Last updated: 2026-04-04
+> Status: Phase 6b Step 1 complete — engine scoring functions done. Step 2 (API) up next.
 
 ---
 
@@ -30,10 +30,12 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 ```
 azul-alphazero/
 ├── engine/
-│   ├── game.py
+│   ├── constants.py      # Tile enum, COLORS, WALL_PATTERN, precomputed lookups
 │   ├── board.py
-│   ├── factory.py
-│   └── scoring.py
+│   ├── game_state.py
+│   ├── game.py
+│   ├── scoring.py        # Pure scoring functions
+│   └── factory.py
 ├── agents/
 │   ├── base.py
 │   ├── random.py
@@ -58,6 +60,7 @@ azul-alphazero/
 │   ├── self_play.py
 │   └── train.py
 ├── tests/
+│   ├── test_constants.py
 │   ├── test_game.py
 │   ├── test_board.py
 │   ├── test_scoring.py
@@ -88,7 +91,7 @@ azul-alphazero/
 
 ---
 
-### Phase 6 — AlphaZero Self-Play Training 🔄 (in progress)
+### Phase 6 — AlphaZero Self-Play Training 🔄 (paused for 6b)
 
 #### What's built
 - `AlphaZeroAgent` — PUCT tree search, value head evaluation, no rollouts
@@ -96,26 +99,10 @@ azul-alphazero/
 - `collect_heuristic_games` — 50% Greedy, 25% Cautious, 25% Efficient, one-hot policy targets
 - `scripts/train.py` — full training loop with greedy warmup, auto-switch, per-game eval logging, `_MAX_MOVES=300`
 
-#### Training results so far
-
-| Run | Config | Result | Notes |
-|---|---|---|---|
-| Test run | 3 iter, 5 games, 20 sim | Gen 0001 | 55% vs prev, 32.5% vs random |
-| Overnight 1 | 30 iter, 20 games, 100 sim | Interrupted | Windows sleep |
-| Overnight 2 | 30 iter, 20 games, 100 sim, 50k pretrain | Regressed after iter 1 | [0,0] games poisoning buffer |
-| Run 4 | 160 iter, 20 games, 100 sim, greedy warmup | 1 generation only | See failure analysis below |
-
-#### Run 4 failure analysis
-- Rolling avg score bug: recording 0 for every game where AZ plays as player 1 → warmup threshold never reached → never switched to self-play
-- 100 train steps per iteration insufficient — network barely moves each iteration
-- 20-game eval too noisy to detect small improvements — new net kept getting reset
-- Win vs random stuck at 30-37% throughout — no meaningful learning signal
-
-#### Fixes needed before next run
-- Fix rolling average: track win rate vs Greedy rather than raw score, or only count AZ-as-p0 games
-- Increase `--train-steps` to 500
-- Lower `--win-threshold` to 0.48 for first 20 iterations, or raise `--eval-games` to 40
-- Implement reward shaping (see Phase 6b) — deferred scoring is the root cause of slow learning
+#### Known issues to fix before next training run
+- Rolling avg bug: records 0 for AZ-as-p1 games → warmup threshold never reached
+- 100 train steps too few — increase to 500
+- 20 eval games too noisy — increase to 40 or lower threshold to 0.48
 
 #### Remaining tasks
 - [ ] Fix rolling average bug in `collect_self_play`
@@ -126,49 +113,47 @@ azul-alphazero/
 
 ---
 
-### Phase 6b — Reward Shaping (up next)
+### Phase 6b — Reward Shaping 🔄 (in progress)
 
-**Motivation:** Azul's scoring is highly deferred. A floor penalty incurred on move 3 isn't applied until end of round (move ~15). A pattern line completed on move 5 doesn't score until end of round. The value head has no way to connect cause and effect across that gap with only 100 simulations. Moving the reward signal closer to the move that earned it should dramatically accelerate learning.
+**Motivation:** Azul's scoring is highly deferred. The value head has no signal until end of round or end of game. Moving the reward signal closer to the move that earned it should dramatically accelerate learning.
 
-#### Two new engine methods (belong in `engine/scoring.py` or `engine/game.py`)
+#### Engine (scoring.py) ✅
 
-**`carried_score(board: Board) -> int`**
-The official score carried forward from the end of the previous round. This is exactly `board.score` — no calculation needed, just a named accessor for clarity. It is what the scoreboard shows between rounds.
+**`carried_score(board) -> int`** — `board.score`. Named accessor for the four-part model.
 
-**`earned_score(board: Board, wall_pattern: list[list[Tile]]) -> int`**
-Points the player has earned this round but not yet received. Includes:
-- Wall placement scores for all currently full pattern lines (calculated as if end-of-round scoring happened now)
-- Floor penalties for tiles currently on the floor line
-- End-of-game bonuses for any completed rows, columns, or colors already on the wall
+**`score_floor_penalty(floor_line) -> int`** — penalty for current floor tiles. Uses `CUMULATIVE_FLOOR_PENALTIES` lookup.
 
-The key insight: `earned_score` is deterministic and lossless — once earned, these points cannot be taken away.
+**`score_placement(wall, row, column) -> int`** — score a single tile placement. Precondition: tile already placed in wall before calling. Uses pointer-walk for performance.
 
-**`grand_total(board: Board, wall_pattern) -> int`**
-`carried_score + earned_score` — the true picture of a player's position.
+**`score_wall_bonus(wall) -> int`** — end-of-game bonuses (+2 row, +7 column, +10 color) for tiles already on the wall.
 
-#### UI display (builds on engine methods)
+**`earned_score(board) -> int`** — points earned this round not yet in `board.score`. Simulates pending pattern line placements sequentially (row 0 first) on a temporary wall copy, so adjacency between pending placements is captured correctly. Includes floor penalties and wall bonuses on the post-placement wall.
 
-Wall tile preview annotations:
-- When a pattern line is full, show `+N` on the wall cell where that tile will go
-- `N` = wall placement score accounting for all current adjacencies on the wall
-- Annotations refresh after every move as adjacencies change
+**`grand_total(board) -> int`** — `carried_score + earned_score`. Not clamped — can be negative.
 
-End-of-game bonus indicators:
-- Completed column: `+7` below that column
-- Completed color: `+10` centered below the row where that color's last tile was placed (between columns)
-- Completed row: `+2` to the right of that row
+#### Precomputed lookups in constants.py ✅
+- `WALL_PATTERN` — moved here from `game.py`
+- `CUMULATIVE_FLOOR_PENALTIES` — indexed 0..NUMBER_OF_FACTORIES*TILES_PER_FACTORY, no capping needed
+- `COLUMN_FOR_COLOR_IN_ROW[tile][row]` — replaces all `.index()` calls on the wall pattern
 
-Score display (four values at top of board):
-- **Carried** — official score from end of last round (`board.score`)
-- **Earned** — points locked in this round not yet applied (`earned_score`)
-- **Bonus** — end-of-game bonuses already guaranteed
-- **Total** — carried + earned + bonus
+#### API — expose scoring breakdown per player (up next)
 
-#### Model integration
-- The model receives only `grand_total` for each player — no breakdown
-- `grand_total` is used as the value target in `collect_self_play` instead of final game score
-- This gives the value head a signal after every move rather than only at game end
-- Implementation: in `collect_self_play`, after each `game.make_move(move)`, compute `grand_total` delta and use as shaped reward blended with final outcome
+Add to `BoardResponse` (schemas.py):
+- `carried_score: int`
+- `earned_score: int`
+- `bonus_score: int`
+- `grand_total: int`
+
+`bonus_score` is the wall bonus component of `earned_score` broken out separately for the UI.
+
+#### UI (after API)
+- Wall tile preview: show `+N` on wall cell where a full pattern line will score
+- End-of-game bonus indicators: `+7` below completed columns, `+10` for completed colors, `+2` right of completed rows
+- Four-part score display: Carried | Earned | Bonus | Total
+
+#### Model integration (after UI)
+- Replace final-game-score value target in `collect_self_play` with `grand_total` delta per move
+- Model receives only `grand_total` — no breakdown
 
 ---
 
@@ -216,4 +201,5 @@ Score display (four values at top of board):
 | 2026-04-02 | Phase 5 complete |
 | 2026-04-02 | Phase 6 in progress |
 | 2026-04-03 | Phase 6 run 4 complete — failure analysis, reward shaping planned |
-| 2026-04-03 | Phase 6b defined — carried_score, earned_score, grand_total, UI display |
+| 2026-04-03 | Phase 6b defined |
+| 2026-04-04 | Phase 6b Step 1 complete — scoring.py, constants.py refactor, game.py cleanup |

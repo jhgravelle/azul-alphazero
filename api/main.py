@@ -13,13 +13,20 @@ from agents.cautious import CautiousAgent
 from agents.efficient import EfficientAgent
 from agents.greedy import GreedyAgent
 from agents.mcts import MCTSAgent
+from engine.board import Board
+from engine.constants import Tile
 from engine.game import Game, Move
-from engine.tile import Tile
+from engine.scoring import (
+    pending_bonus_details,
+    pending_placement_details,
+)
 from api.schemas import (
     BoardResponse,
     GameStateResponse,
     MoveRequest,
     NewGameRequest,
+    PendingBonus,
+    PendingPlacement,
     PlayerType,
 )
 
@@ -38,6 +45,7 @@ app.add_middleware(
 _game = Game()
 _game.setup_round()
 _player_types: list[PlayerType] = ["human", "human"]
+_agents: list[Agent | None] = [None, None]
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -68,6 +76,28 @@ def _str_to_tile(name: str) -> Tile:
         raise HTTPException(status_code=422, detail=f"Unknown tile color: {name!r}")
 
 
+def _build_pending(
+    board: Board,
+) -> tuple[list[PendingPlacement], list[PendingBonus]]:
+    """Compute pending placements and bonuses for a board without mutating it."""
+    placement_details, temp_wall = pending_placement_details(board)
+    bonus_details = pending_bonus_details(temp_wall)
+
+    placements = [
+        PendingPlacement(
+            row=d.row, column=d.column, placement_points=d.placement_points
+        )
+        for d in placement_details
+    ]
+    bonuses = [
+        PendingBonus(
+            bonus_type=d.bonus_type, index=d.index, bonus_points=d.bonus_points
+        )
+        for d in bonus_details
+    ]
+    return placements, bonuses
+
+
 def _build_response(game: Game) -> GameStateResponse:
     """Translate the engine Game object into a GameStateResponse."""
     boards = []
@@ -78,12 +108,15 @@ def _build_response(game: Game) -> GameStateResponse:
             for row in player.wall
         ]
         floor_line = [_tile_to_str(t) for t in player.floor_line]
+        pending_placements, pending_bonuses = _build_pending(player)
         boards.append(
             BoardResponse(
                 score=player.score,
                 pattern_lines=pattern_lines,
                 wall=wall,
                 floor_line=floor_line,
+                pending_placements=pending_placements,
+                pending_bonuses=pending_bonuses,
             )
         )
 
@@ -93,10 +126,9 @@ def _build_response(game: Game) -> GameStateResponse:
         scores = [p.score for p in game.state.players]
         if scores.count(max(scores)) == 1:
             winner = scores.index(max(scores))
-        # else winner stays None — it's a tie
 
     legal = [
-        MoveRequest(source=m.source, color=m.tile.name, destination=m.destination)
+        MoveRequest(source=m.source, tile=m.tile.name, destination=m.destination)
         for m in game.legal_moves()
     ]
 
@@ -109,7 +141,7 @@ def _build_response(game: Game) -> GameStateResponse:
         winner=winner,
         legal_moves=legal,
         player_types=_player_types,
-        round=game.state.round,  # add this
+        round=game.state.round,
     )
 
 
@@ -122,9 +154,9 @@ def get_state() -> GameStateResponse:
 @app.post("/move", response_model=GameStateResponse)
 def make_move(move_request: MoveRequest) -> GameStateResponse:
     """Apply a move and return the updated game state."""
-    color = _str_to_tile(move_request.color)
+    tile = _str_to_tile(move_request.tile)
     move = Move(
-        source=move_request.source, tile=color, destination=move_request.destination
+        source=move_request.source, tile=tile, destination=move_request.destination
     )
     if move not in _game.legal_moves():
         raise HTTPException(status_code=422, detail="Illegal move")
@@ -151,7 +183,7 @@ def agent_move() -> GameStateResponse:
     if agent is None:
         raise HTTPException(
             status_code=422,
-            detail=f"Player {current + 1} is human — use /move instead",
+            detail=f"Player {current + 1} is human -- use /move instead",
         )
     move = agent.choose_move(_game)
     _game.make_move(move)

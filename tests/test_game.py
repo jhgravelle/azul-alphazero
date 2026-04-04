@@ -12,7 +12,6 @@ from engine.constants import (
     WALL_PATTERN,
 )
 
-
 # region setup_round -------------------------------------------------------
 
 

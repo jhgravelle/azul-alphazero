@@ -23,8 +23,8 @@ Offset  Size  Section
 101       1   I hold the first-player token   — 1.0 / 0.0
 102       1   My floor         — tiles on floor / 7
 103       1   Opponent floor   — same
-104       1   My score         — score / 100
-105       1   Opponent score   — same
+104       1   My earned score  — earned_score / 100
+105       1   Opponent earned score — same
 106       5   Bag totals       — count of each color / TILES_PER_COLOR
 111       5   Discard totals   — count of each color / TILES_PER_COLOR
 ------  ----
@@ -54,6 +54,7 @@ from engine.constants import (
     TILES_PER_COLOR,
     TILES_PER_FACTORY,
 )
+from engine.scoring import earned_score
 
 # ── Move-space constants ───────────────────────────────────────────────────
 
@@ -162,9 +163,10 @@ def encode_state(game: Game) -> torch.Tensor:
     v[OFF_MY_FLOOR] = len(my.floor_line) / 7
     v[OFF_OPP_FLOOR] = len(op.floor_line) / 7
 
-    # Scores
-    v[OFF_MY_SCORE] = my.score / 100
-    v[OFF_OPP_SCORE] = op.score / 100
+    # Earned scores — carried score plus points locked in this round but not
+    # yet applied, including pending placements, floor penalty, and wall bonuses.
+    v[OFF_MY_SCORE] = earned_score(my) / 100
+    v[OFF_OPP_SCORE] = earned_score(op) / 100
 
     # Bag and discard totals
     for color_idx, color in enumerate(COLOR_TILES):
@@ -172,7 +174,6 @@ def encode_state(game: Game) -> torch.Tensor:
         v[OFF_DISCARD + color_idx] = game.state.discard.count(color) / TILES_PER_COLOR
 
     return v
-    # raise NotImplementedError
 
 
 def encode_move(move: Move, game: Game) -> int:

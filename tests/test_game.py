@@ -4,6 +4,7 @@
 
 from engine.game import CENTER, FLOOR, Game, Move
 from engine.constants import (
+    BONUS_ROW,
     Tile,
     BOARD_SIZE,
     COLOR_TILES,
@@ -486,6 +487,53 @@ def test_score_game_applies_to_all_players():
     game.score_game()
     for p in game.state.players:
         assert p.score == 2
+
+
+def test_score_game_bonuses_applied_on_game_over():
+    """End-of-game wall bonuses are applied automatically when the game ends.
+
+    Player 0 has 4 tiles already in wall row 0 and a full pattern line that
+    will place the 5th tile, completing the row and triggering game over.
+    After the move resolves, player 0's score must include the +BONUS_ROW
+    bonus on top of the placement score.
+    """
+    game = Game()
+    game.setup_round()
+    player = game.state.players[0]
+
+    # Fill wall row 0 columns 1-4 — placing BLUE at column 0 completes the row.
+    for column in range(1, BOARD_SIZE):
+        player.wall[0][column] = WALL_PATTERN[0][column]
+
+    # One BLUE tile in factory 0 — this is the only remaining source tile.
+    # BLUE goes to column 0 of row 0 per WALL_PATTERN.
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+    game.state.factories[0] = [Tile.BLUE]
+    game.state.current_player = 0
+
+    # Make the move — takes BLUE into pattern line 0 (capacity 1, so it's full).
+    game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
+
+    # score_round fires (sources empty), places BLUE on wall, then
+    # is_game_over returns True (row 0 complete), then score_game fires.
+    assert game.is_game_over()
+    assert player.score >= BONUS_ROW
+
+
+def test_score_game_not_applied_mid_game():
+    """Wall bonuses are not applied while the game is still in progress."""
+    game = Game()
+    game.setup_round()
+    player = game.state.players[0]
+
+    # Give player 0 a nearly complete wall row but don't finish it.
+    for column in range(1, BOARD_SIZE):
+        player.wall[0][column] = WALL_PATTERN[0][column]
+
+    # Score at this point should be 0 — no bonuses yet.
+    assert player.score == 0
 
 
 # endregion

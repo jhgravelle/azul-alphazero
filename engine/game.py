@@ -156,6 +156,8 @@ class Game:
             self.score_round()
             if not self.is_game_over():
                 self.setup_round()
+            else:
+                self.score_game()
 
     def make_move(self, move: Move) -> None:
         """Apply a move to the current game state."""

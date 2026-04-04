@@ -42,7 +42,7 @@ def test_random_agent_returns_different_moves_over_many_calls():
     game.setup_round()
     agent = RandomAgent()
     moves = [agent.choose_move(game) for _ in range(50)]
-    assert len(set((m.source, m.color, m.destination) for m in moves)) > 1
+    assert len(set((m.source, m.tile, m.destination) for m in moves)) > 1
 
 
 def test_random_agent_respects_seeded_randomness():
@@ -54,9 +54,9 @@ def test_random_agent_respects_seeded_randomness():
     move_a = agent.choose_move(game)
     random.seed(42)
     move_b = agent.choose_move(game)
-    assert (move_a.source, move_a.color, move_a.destination) == (
+    assert (move_a.source, move_a.tile, move_a.destination) == (
         move_b.source,
-        move_b.color,
+        move_b.tile,
         move_b.destination,
     )
 
@@ -87,7 +87,7 @@ def test_greedy_agent_prefers_partial_line_without_biasing_color_selection():
     moves = [agent.choose_move(game) for _ in range(100)]
 
     # Among blue moves, majority should go to row 2
-    blue_moves = [m for m in moves if m.color == Tile.BLUE and m.destination >= 0]
+    blue_moves = [m for m in moves if m.tile == Tile.BLUE and m.destination >= 0]
     if blue_moves:
         partial_picks = sum(1 for m in blue_moves if m.destination == 2)
         assert partial_picks / len(blue_moves) > 0.5, (
@@ -97,7 +97,7 @@ def test_greedy_agent_prefers_partial_line_without_biasing_color_selection():
 
     # But BLUE should not dominate color selection overall
     non_floor = [m for m in moves if m.destination != -2]
-    blue_non_floor = [m for m in non_floor if m.color == Tile.BLUE]
+    blue_non_floor = [m for m in non_floor if m.tile == Tile.BLUE]
     if non_floor:
         assert (
             len(blue_non_floor) / len(non_floor) < 0.9

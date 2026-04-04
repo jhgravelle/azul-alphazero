@@ -96,7 +96,7 @@ def _build_response(game: Game) -> GameStateResponse:
         # else winner stays None — it's a tie
 
     legal = [
-        MoveRequest(source=m.source, color=m.color.name, destination=m.destination)
+        MoveRequest(source=m.source, color=m.tile.name, destination=m.destination)
         for m in game.legal_moves()
     ]
 
@@ -124,7 +124,7 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
     """Apply a move and return the updated game state."""
     color = _str_to_tile(move_request.color)
     move = Move(
-        source=move_request.source, color=color, destination=move_request.destination
+        source=move_request.source, tile=color, destination=move_request.destination
     )
     if move not in _game.legal_moves():
         raise HTTPException(status_code=422, detail="Illegal move")

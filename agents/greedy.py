@@ -34,9 +34,9 @@ class GreedyAgent(Agent):
         candidates = non_floor if non_floor else moves
 
         # Pick a random color from the available candidates
-        available_colors = list({m.color for m in candidates})
+        available_colors = list({m.tile for m in candidates})
         chosen_color = random.choice(available_colors)
-        color_moves = [m for m in candidates if m.color == chosen_color]
+        color_moves = [m for m in candidates if m.tile == chosen_color]
 
         # Heuristic 2 — among moves for that color, prefer a partial line
         player = game.state.players[game.state.current_player]

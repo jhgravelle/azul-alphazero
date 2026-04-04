@@ -178,7 +178,7 @@ def encode_state(game: Game) -> torch.Tensor:
 def encode_move(move: Move, game: Game) -> int:
     """Encode a Move as a unique integer index in [0, MOVE_SPACE_SIZE)."""
     source_idx = _source_to_idx(move.source)
-    color_idx = COLOR_TILES.index(move.color)
+    color_idx = COLOR_TILES.index(move.tile)
     dest_idx = _dest_to_idx(move.destination)
     return (
         source_idx * (BOARD_SIZE * NUM_DESTINATIONS)
@@ -193,6 +193,6 @@ def decode_move(index: int, game: Game) -> Move:
     color_idx, dest_idx = divmod(remainder, NUM_DESTINATIONS)
     return Move(
         source=_idx_to_source(source_idx),
-        color=COLOR_TILES[color_idx],
+        tile=COLOR_TILES[color_idx],
         destination=_idx_to_dest(dest_idx),
     )

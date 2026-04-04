@@ -343,7 +343,7 @@ def test_encode_decode_move_roundtrip():
     for move in g.legal_moves():
         recovered = decode_move(encode_move(move, g), g)
         assert recovered.source == move.source
-        assert recovered.color == move.color
+        assert recovered.tile == move.tile
         assert recovered.destination == move.destination
 
 

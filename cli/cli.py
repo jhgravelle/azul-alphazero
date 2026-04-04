@@ -209,7 +209,7 @@ def get_move_choice(moves: list[Move], current_player: int) -> Move:
         source = _SOURCE_INPUT[src_ch]
         destination = FLOOR if dst_ch == "0" else int(dst_ch) - 1
 
-        move = Move(source=source, color=color, destination=destination)
+        move = Move(source=source, tile=color, destination=destination)
         if move in moves:
             return move
         print("  That's not a legal move — try again.")

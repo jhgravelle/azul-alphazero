@@ -8,9 +8,7 @@ body {
   background: #f5f0e8;
   color: #2c2c2c;
 }
-
 h1 { margin-bottom: 8px; }
-
 .status-line {
   font-size: 1.1rem;
   font-weight: bold;
@@ -18,16 +16,33 @@ h1 { margin-bottom: 8px; }
 }
 
 /* ── Tiles ── */
-
 .tile {
   width: 36px;
   height: 36px;
   border-radius: 6px;
   box-sizing: border-box;
+  position: relative;
+}
+
+/* ── Pending tile (full pattern line, not yet scored) ── */
+.pending-tile {
+  opacity: 0.75;
+  outline: 2px dashed rgba(255,255,255,0.6);
+}
+.pending-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: bold;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+  pointer-events: none;
 }
 
 /* ── Factories ── */
-
 .sources {
   display: flex;
   flex-wrap: wrap;
@@ -35,33 +50,28 @@ h1 { margin-bottom: 8px; }
   align-items: flex-start;
   margin-bottom: 24px;
 }
-
 .factory {
   background: #e0d8c8;
   border-radius: 8px;
   padding: 8px;
 }
-
 .factory-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
 }
-
 .center-pool {
   background: #e0d8c8;
   border-radius: 8px;
   padding: 8px;
   min-width: 80px;
 }
-
 .center-tiles {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
 }
-
 .pool-label {
   font-size: 0.75rem;
   font-weight: bold;
@@ -70,7 +80,6 @@ h1 { margin-bottom: 8px; }
   margin-bottom: 4px;
   opacity: 0.6;
 }
-
 .empty-label {
   font-size: 0.75rem;
   opacity: 0.4;
@@ -78,36 +87,35 @@ h1 { margin-bottom: 8px; }
 }
 
 /* ── Player boards ── */
-
 .boards {
   display: flex;
   gap: 32px;
   flex-wrap: wrap;
 }
-
 .player-board {
   background: #e8e0d0;
   border-radius: 10px;
   padding: 16px;
   border: 3px solid transparent;
 }
-
 .player-board.active-player {
   border-color: #3a7abf;
 }
-
 .player-heading {
   margin: 0 0 12px 0;
-  font-size: 1rem;
 }
-
+.player-name {
+  display: block;
+  font-size: 1rem;
+  font-weight: bold;
+  margin-bottom: 4px;
+}
 .board-middle {
   display: flex;
   gap: 8px;
   align-items: flex-start;
   margin-bottom: 12px;
 }
-
 .board-divider {
   width: 2px;
   background: #c8bfaf;
@@ -115,75 +123,116 @@ h1 { margin-bottom: 8px; }
   margin: 0 4px;
 }
 
-/* ── Pattern lines ── */
+/* ── Score bar ── */
+.score-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+.score-carried { font-weight: bold; font-size: 1rem; }
+.score-pending { color: #2e7d32; }
+.score-floor   { color: #c0392b; }
+.score-bonus   { color: #7b4f9e; }
+.score-total   { font-weight: bold; font-size: 1rem; margin-left: 2px; }
 
+/* ── Pattern lines ── */
 .pattern-lines {
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-items: flex-end;
 }
-
 .pattern-row {
   display: flex;
   gap: 4px;
 }
 
 /* ── Wall ── */
-
+.wall-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.wall-and-row-bonuses {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
 .wall {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-
 .wall-row {
   display: flex;
   gap: 4px;
 }
 
-/* ── Floor line ── */
+/* ── Row bonus column ── */
+.row-bonus-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: flex-start;
+}
+.row-bonus-slot {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  padding-left: 4px;
+}
 
+/* ── Below-wall bonus strip ── */
+.below-wall-strip {
+  height: 20px;
+  margin-top: 4px;
+  position: relative;
+}
+
+/* ── Bonus labels ── */
+.bonus-label {
+  font-size: 0.65rem;
+  font-weight: bold;
+  white-space: nowrap;
+}
+.bonus-label:not(.bonus-color) { color: #7b4f9e; }
+.bonus-color                   { color: #b07d00; }
+
+/* ── Floor line ── */
 .floor-line {
   margin-top: 8px;
 }
-
 .floor-tiles {
   display: flex;
   gap: 4px;
   margin-top: 4px;
 }
-
 .floor-slot {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
 }
-
 .penalty-label {
   font-size: 0.65rem;
   opacity: 0.6;
 }
 
 /* ── Interaction ── */
-
 .clickable {
   cursor: pointer;
   transition: transform 0.1s, box-shadow 0.1s;
 }
-
 .clickable:hover {
   transform: scale(1.15);
   box-shadow: 0 2px 8px rgba(0,0,0,0.25);
 }
-
 .selected {
   outline: 3px solid #fff;
   box-shadow: 0 0 0 5px #3a7abf;
   transform: scale(1.15);
 }
-
 .clickable-row {
   cursor: pointer;
   border-radius: 6px;
@@ -191,26 +240,9 @@ h1 { margin-bottom: 8px; }
   padding: 2px;
   transition: background 0.1s;
 }
-
 .clickable-row:hover {
   background: rgba(58, 122, 191, 0.15);
 }
-
-.floor-btn {
-  margin-top: 8px;
-  padding: 4px 10px;
-  border: none;
-  border-radius: 6px;
-  background: #c0392b;
-  color: white;
-  cursor: pointer;
-  font-size: 0.8rem;
-}
-
-.floor-btn:hover {
-  background: #a93226;
-}
-
 .new-game-btn {
   padding: 6px 14px;
   border: none;
@@ -221,18 +253,58 @@ h1 { margin-bottom: 8px; }
   font-size: 0.9rem;
   margin-bottom: 12px;
 }
-
 .new-game-btn:hover {
   background: #2e6299;
 }
-
 .header {
   margin-bottom: 8px;
 }
-
 .selection-hint {
   font-size: 0.9rem;
   color: #555;
   margin: 0 0 8px 0;
   font-style: italic;
+}
+
+/* ── New game dialog ── */
+.dialog {
+  background: #e8e0d0;
+  border-radius: 10px;
+  padding: 24px;
+  max-width: 320px;
+}
+.dialog-title {
+  margin: 0 0 16px 0;
+}
+.dialog-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dialog-label {
+  width: 70px;
+  font-size: 0.9rem;
+}
+.dialog-select {
+  flex: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #c8bfaf;
+  background: #f5f0e8;
+  font-size: 0.9rem;
+}
+.start-btn {
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: 6px;
+  background: #3a7abf;
+  color: white;
+  cursor: pointer;
+  font-size: 1rem;
+  margin-top: 8px;
+}
+.start-btn:hover {
+  background: #2e6299;
 }

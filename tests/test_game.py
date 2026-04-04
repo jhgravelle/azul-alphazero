@@ -261,3 +261,218 @@ def test_score_floor_does_not_send_first_player_tile_to_discard():
     game._score_floor(player)
     assert Tile.FIRST_PLAYER not in game.state.discard
     assert Tile.BLUE in game.state.discard
+
+
+# ---------------------------------------------------------------------------
+# Game.score_round — integration tests (tests mutation through Game)
+# ---------------------------------------------------------------------------
+
+
+def test_full_pattern_line_moves_tile_to_wall():
+    game = Game()
+    player = game.state.players[0]
+    player.pattern_lines[0] = [Tile.BLUE]
+    game.score_round()
+    assert player.wall[0][0] == Tile.BLUE
+
+
+def test_completed_line_remaining_tiles_go_to_discard():
+    game = Game()
+    player = game.state.players[0]
+    player.pattern_lines[1] = [Tile.YELLOW, Tile.YELLOW]
+    game.score_round()
+    assert game.state.discard.count(Tile.YELLOW) == 1
+
+
+def test_incomplete_pattern_line_is_unchanged():
+    game = Game()
+    player = game.state.players[0]
+    player.pattern_lines[2] = [Tile.RED]
+    game.score_round()
+    assert player.pattern_lines[2] == [Tile.RED]
+    assert player.wall[2][2] is None
+
+
+def test_tile_with_no_neighbours_scores_one_point():
+    game = Game()
+    player = game.state.players[0]
+    player.pattern_lines[0] = [Tile.BLUE]
+    game.score_round()
+    assert player.score == 1
+
+
+def test_tile_with_horizontal_neighbours_scores_run_length():
+    game = Game()
+    player = game.state.players[0]
+    player.wall[0][1] = Tile.YELLOW
+    player.pattern_lines[0] = [Tile.BLUE]
+    game.score_round()
+    assert player.score == 2
+
+
+def test_tile_with_vertical_neighbours_scores_run_length():
+    game = Game()
+    player = game.state.players[0]
+    player.wall[1][0] = Tile.WHITE
+    player.pattern_lines[0] = [Tile.BLUE]
+    game.score_round()
+    assert player.score == 2
+
+
+def test_tile_with_both_neighbours_scores_combined_run_lengths():
+    game = Game()
+    player = game.state.players[0]
+    player.wall[0][1] = Tile.YELLOW
+    player.wall[1][0] = Tile.WHITE
+    player.pattern_lines[0] = [Tile.BLUE]
+    game.score_round()
+    assert player.score == 4
+
+
+def test_floor_penalties_are_applied():
+    game = Game()
+    player = game.state.players[0]
+    player.score = 10
+    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -1, -1, -2 = -4
+    game.score_round()
+    assert player.score == 6
+
+
+def test_score_does_not_go_below_zero():
+    game = Game()
+    player = game.state.players[0]
+    player.score = 1
+    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game.score_round()
+    assert player.score == 0
+
+
+def test_floor_line_is_cleared_after_scoring():
+    game = Game()
+    player = game.state.players[0]
+    player.floor_line = [Tile.BLUE, Tile.RED]
+    game.score_round()
+    assert player.floor_line == []
+
+
+def test_score_floor_does_not_send_first_player_tile_to_discard():
+    game = Game()
+    player = game.state.players[0]
+    player.floor_line = [Tile.FIRST_PLAYER, Tile.BLUE]
+    game._score_floor(player)
+    assert Tile.FIRST_PLAYER not in game.state.discard
+    assert Tile.BLUE in game.state.discard
+
+
+def test_player_with_first_player_tile_starts_next_round():
+    game = Game()
+    game.state.players[1].floor_line = [Tile.FIRST_PLAYER]
+    game.score_round()
+    assert game.state.current_player == 1
+
+
+# ---------------------------------------------------------------------------
+# Game.is_game_over
+# ---------------------------------------------------------------------------
+
+
+def test_game_is_not_over_with_empty_walls():
+    assert Game().is_game_over() is False
+
+
+def test_game_is_not_over_with_incomplete_row():
+    game = Game()
+    game.state.players[0].wall[0] = [Tile.BLUE, Tile.YELLOW, None, None, None]
+    assert game.is_game_over() is False
+
+
+def test_game_is_over_when_one_player_completes_a_row():
+    game = Game()
+    game.state.players[0].wall[0] = [
+        Tile.BLUE,
+        Tile.YELLOW,
+        Tile.RED,
+        Tile.BLACK,
+        Tile.WHITE,
+    ]
+    assert game.is_game_over() is True
+
+
+def test_game_is_over_when_second_player_completes_a_row():
+    game = Game()
+    game.state.players[1].wall[2] = [
+        Tile.BLACK,
+        Tile.WHITE,
+        Tile.BLUE,
+        Tile.YELLOW,
+        Tile.RED,
+    ]
+    assert game.is_game_over() is True
+
+
+# ---------------------------------------------------------------------------
+# Game.score_game — end-of-game bonus scoring
+# ---------------------------------------------------------------------------
+
+
+def test_complete_row_scores_two_points():
+    game = Game()
+    game.state.players[0].wall[0] = [
+        Tile.BLUE,
+        Tile.YELLOW,
+        Tile.RED,
+        Tile.BLACK,
+        Tile.WHITE,
+    ]
+    game.score_game()
+    assert game.state.players[0].score == 2
+
+
+def test_two_complete_rows_scores_four_points():
+    game = Game()
+    p = game.state.players[0]
+    p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
+    p.wall[1] = [Tile.WHITE, Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK]
+    game.score_game()
+    assert p.score == 4
+
+
+def test_complete_column_scores_seven_points():
+    game = Game()
+    p = game.state.players[0]
+    for row in range(BOARD_SIZE):
+        p.wall[row][0] = WALL_PATTERN[row][0]
+    game.score_game()
+    assert p.score == 7
+
+
+def test_complete_color_scores_ten_points():
+    game = Game()
+    p = game.state.players[0]
+    for row in range(BOARD_SIZE):
+        col = game.wall_column_for(row=row, color=Tile.BLUE)
+        p.wall[row][col] = Tile.BLUE
+    game.score_game()
+    assert p.score == 10
+
+
+def test_score_game_combines_all_bonuses():
+    game = Game()
+    p = game.state.players[0]
+    p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
+    for row in range(BOARD_SIZE):
+        p.wall[row][0] = WALL_PATTERN[row][0]
+    for row in range(BOARD_SIZE):
+        col = game.wall_column_for(row=row, color=Tile.BLUE)
+        p.wall[row][col] = Tile.BLUE
+    game.score_game()
+    assert p.score == 2 + 7 + 10
+
+
+def test_score_game_applies_to_all_players():
+    game = Game()
+    for p in game.state.players:
+        p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
+    game.score_game()
+    for p in game.state.players:
+        assert p.score == 2

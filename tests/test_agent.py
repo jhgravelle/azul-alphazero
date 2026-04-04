@@ -8,7 +8,7 @@ from agents.greedy import GreedyAgent
 from engine.game import Game
 from agents.base import Agent
 from agents.random import RandomAgent
-from engine.tile import Tile
+from engine.constants import Tile
 
 
 def test_agent_cannot_be_instantiated_directly():

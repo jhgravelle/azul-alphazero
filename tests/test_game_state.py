@@ -3,12 +3,12 @@
 """Tests for core game state dataclasses."""
 
 from engine.game import Game
-from engine.tile import Tile
 from engine.game_state import (
     GameState,
 )
 
 from engine.constants import (
+    Tile,
     BOARD_SIZE,
     PLAYERS,
     TILES_PER_COLOR,

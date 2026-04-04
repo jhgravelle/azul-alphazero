@@ -4,8 +4,13 @@
 
 from dataclasses import dataclass
 from engine.board import Board
-from engine.tile import Tile, COLORS
-from engine.constants import BOARD_SIZE, TILES_PER_FACTORY, FLOOR_PENALTIES
+from engine.constants import (
+    Tile,
+    COLOR_TILES,
+    BOARD_SIZE,
+    TILES_PER_FACTORY,
+    FLOOR_PENALTIES,
+)
 from engine.game_state import GameState
 import random
 import logging
@@ -258,7 +263,7 @@ class Game:
                     player.score += 7
 
             # Complete colors — 10 points each
-            for color in COLORS:
+            for color in COLOR_TILES:
                 if all(
                     player.wall[row][self.wall_column_for(row=row, color=color)]
                     == color

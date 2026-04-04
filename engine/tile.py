@@ -14,4 +14,4 @@ class Tile(Enum):
     FIRST_PLAYER = auto()
 
 
-COLORS = [t for t in Tile if t != Tile.FIRST_PLAYER]  # the 5 colors of tiles
+COLOR_TILES = [t for t in Tile if t != Tile.FIRST_PLAYER]  # the 5 colors of tiles

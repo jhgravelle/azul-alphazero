@@ -1,7 +1,7 @@
 # engine/board.py
 
-from engine.tile import Tile
-from engine.constants import BOARD_SIZE
+
+from engine.constants import Tile, BOARD_SIZE
 from dataclasses import dataclass, field
 
 
@@ -23,7 +23,9 @@ class Board:
     )
 
     wall: list[list[Tile | None]] = field(
-        default_factory=lambda: [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        default_factory=lambda: [
+            [None for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)
+        ]
     )
 
     floor_line: list[Tile] = field(default_factory=list)

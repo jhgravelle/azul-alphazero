@@ -3,8 +3,7 @@
 """Tests for core game methods."""
 
 from engine.game import CENTER, FLOOR, WALL_PATTERN, Game, Move
-from engine.constants import BOARD_SIZE, TILES_PER_FACTORY
-from engine.tile import COLORS, Tile
+from engine.constants import Tile, BOARD_SIZE, COLOR_TILES, TILES_PER_FACTORY
 
 
 def test_setup_round_fills_factories():
@@ -145,7 +144,7 @@ def test_wall_column_for_known_positions():
 def test_wall_column_for_every_row_returns_unique_columns():
     game = Game()
     for row in range(BOARD_SIZE):
-        cols = [game.wall_column_for(row=row, color=c) for c in COLORS]
+        cols = [game.wall_column_for(row=row, color=c) for c in COLOR_TILES]
         assert sorted(cols) == list(
             range(BOARD_SIZE)
         ), f"Row {row} columns not unique: {cols}"

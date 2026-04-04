@@ -4,8 +4,7 @@
 
 from dataclasses import dataclass, field
 from engine.board import Board
-from engine.tile import Tile
-from engine.constants import PLAYERS, TILES_PER_COLOR
+from engine.constants import Tile, COLOR_TILES, PLAYERS, TILES_PER_COLOR
 import random
 import logging
 
@@ -44,8 +43,6 @@ class GameState:
             logger.debug(f"Created {num_factories} factories")
 
         if not self.bag:
-            self.bag = [
-                color for color in Tile if color != Tile.FIRST_PLAYER
-            ] * TILES_PER_COLOR
+            self.bag = [color for color in COLOR_TILES] * TILES_PER_COLOR
             logger.debug(f"Created bag with {len(self.bag)} tiles")
             random.shuffle(self.bag)  # Shuffle the bag at the start of the game

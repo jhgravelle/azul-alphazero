@@ -6,8 +6,7 @@ import torch
 import pytest
 
 from engine.game import Game, CENTER, FLOOR
-from engine.tile import Tile, COLORS
-from engine.constants import BOARD_SIZE, TILES_PER_COLOR
+from engine.constants import Tile, BOARD_SIZE, COLOR_TILES, TILES_PER_COLOR
 from neural.encoder import (
     encode_state,
     encode_move,
@@ -151,7 +150,7 @@ def test_my_pattern_line_color_unique_per_color():
     g = fresh_game()
     g.state.current_player = 0
     values = set()
-    for i, color in enumerate(COLORS):
+    for i, color in enumerate(COLOR_TILES):
         g.state.players[0].pattern_lines[i] = [color]
         t = encode_state(g)
         val = t[OFF_MY_PL_COLOR + i].item()
@@ -180,7 +179,7 @@ def test_factory_color_count_normalized():
     g = Game()
     g.state.factories[0] = [Tile.BLUE] * 4
     t = encode_state(g)
-    blue_idx = COLORS.index(Tile.BLUE)
+    blue_idx = COLOR_TILES.index(Tile.BLUE)
     assert t[OFF_FACTORIES + 0 * BOARD_SIZE + blue_idx].item() == pytest.approx(1.0)
 
 
@@ -197,7 +196,7 @@ def test_center_color_count_correct():
     g = Game()
     g.state.center = [Tile.RED, Tile.RED, Tile.RED]
     t = encode_state(g)
-    red_idx = COLORS.index(Tile.RED)
+    red_idx = COLOR_TILES.index(Tile.RED)
     assert t[OFF_CENTER + red_idx].item() == pytest.approx(3 / TILES_PER_COLOR)
 
 
@@ -312,9 +311,9 @@ def test_bag_and_discard_correct_counts():
     g.state.bag = [Tile.BLUE] * 10 + [Tile.RED] * 5
     g.state.discard = [Tile.YELLOW] * 8
     t = encode_state(g)
-    blue_idx = COLORS.index(Tile.BLUE)
-    red_idx = COLORS.index(Tile.RED)
-    yellow_idx = COLORS.index(Tile.YELLOW)
+    blue_idx = COLOR_TILES.index(Tile.BLUE)
+    red_idx = COLOR_TILES.index(Tile.RED)
+    yellow_idx = COLOR_TILES.index(Tile.YELLOW)
     assert t[OFF_BAG + blue_idx].item() == pytest.approx(10 / TILES_PER_COLOR)
     assert t[OFF_BAG + red_idx].item() == pytest.approx(5 / TILES_PER_COLOR)
     assert t[OFF_DISCARD + yellow_idx].item() == pytest.approx(8 / TILES_PER_COLOR)

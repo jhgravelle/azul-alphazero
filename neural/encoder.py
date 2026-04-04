@@ -46,8 +46,14 @@ MOVE_SPACE_SIZE = NUM_SOURCES * BOARD_SIZE * NUM_DESTINATIONS
 
 import torch
 from engine.game import Game, Move, CENTER, FLOOR
-from engine.tile import Tile, COLORS
-from engine.constants import BOARD_SIZE, PLAYERS, TILES_PER_COLOR, TILES_PER_FACTORY
+from engine.constants import (
+    Tile,
+    BOARD_SIZE,
+    COLOR_TILES,
+    PLAYERS,
+    TILES_PER_COLOR,
+    TILES_PER_FACTORY,
+)
 
 # ── Move-space constants ───────────────────────────────────────────────────
 
@@ -126,7 +132,7 @@ def encode_state(game: Game) -> torch.Tensor:
         capacity = row + 1
         if line:
             v[OFF_MY_PL_FILL + row] = len(line) / capacity
-            v[OFF_MY_PL_COLOR + row] = (COLORS.index(line[0]) + 1) / 5
+            v[OFF_MY_PL_COLOR + row] = (COLOR_TILES.index(line[0]) + 1) / 5
 
     # Opponent pattern lines (fill ratio + color)
     for row in range(BOARD_SIZE):
@@ -134,18 +140,18 @@ def encode_state(game: Game) -> torch.Tensor:
         capacity = row + 1
         if line:
             v[OFF_OPP_PL_FILL + row] = len(line) / capacity
-            v[OFF_OPP_PL_COLOR + row] = (COLORS.index(line[0]) + 1) / 5
+            v[OFF_OPP_PL_COLOR + row] = (COLOR_TILES.index(line[0]) + 1) / 5
 
     # Factories — count of each color per factory, normalized by TILES_PER_FACTORY
     for f_idx, factory in enumerate(game.state.factories):
-        for color_idx, color in enumerate(COLORS):
+        for color_idx, color in enumerate(COLOR_TILES):
             count = factory.count(color)
             v[OFF_FACTORIES + f_idx * BOARD_SIZE + color_idx] = (
                 count / TILES_PER_FACTORY
             )
 
     # Center — count of each color, normalized by TILES_PER_COLOR
-    for color_idx, color in enumerate(COLORS):
+    for color_idx, color in enumerate(COLOR_TILES):
         v[OFF_CENTER + color_idx] = game.state.center.count(color) / TILES_PER_COLOR
 
     # First player token
@@ -161,7 +167,7 @@ def encode_state(game: Game) -> torch.Tensor:
     v[OFF_OPP_SCORE] = op.score / 100
 
     # Bag and discard totals
-    for color_idx, color in enumerate(COLORS):
+    for color_idx, color in enumerate(COLOR_TILES):
         v[OFF_BAG + color_idx] = game.state.bag.count(color) / TILES_PER_COLOR
         v[OFF_DISCARD + color_idx] = game.state.discard.count(color) / TILES_PER_COLOR
 
@@ -172,7 +178,7 @@ def encode_state(game: Game) -> torch.Tensor:
 def encode_move(move: Move, game: Game) -> int:
     """Encode a Move as a unique integer index in [0, MOVE_SPACE_SIZE)."""
     source_idx = _source_to_idx(move.source)
-    color_idx = COLORS.index(move.color)
+    color_idx = COLOR_TILES.index(move.color)
     dest_idx = _dest_to_idx(move.destination)
     return (
         source_idx * (BOARD_SIZE * NUM_DESTINATIONS)
@@ -187,6 +193,6 @@ def decode_move(index: int, game: Game) -> Move:
     color_idx, dest_idx = divmod(remainder, NUM_DESTINATIONS)
     return Move(
         source=_idx_to_source(source_idx),
-        color=COLORS[color_idx],
+        color=COLOR_TILES[color_idx],
         destination=_idx_to_dest(dest_idx),
     )

@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-04-02
-> Status: Phase 6 — AlphaZero Self-Play Training (up next)
+> Last updated: 2026-04-03
+> Status: Phase 6 — AlphaZero Self-Play Training (in progress) + Phase 6b — Reward Shaping (up next)
 
 ---
 
@@ -29,34 +29,35 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 
 ```
 azul-alphazero/
-├── engine/          # Pure Python game logic (no UI dependencies)
-│   ├── game.py      # Game state, rules, legal moves
-│   ├── board.py     # Player board, pattern lines, wall
-│   ├── factory.py   # Factory displays and center pool
-│   └── scoring.py   # End-of-round and end-of-game scoring
-├── agents/          # AI agent implementations
-│   ├── base.py      # Abstract Agent interface
-│   ├── random.py    # True uniform random agent (baseline)
-│   ├── cautious.py  # Floor-avoidance heuristic only
-│   ├── efficient.py # Partial-line preference heuristic only
-│   ├── greedy.py    # Both heuristics (default UI opponent)
-│   ├── mcts.py      # Pure MCTS agent (UCB1)
-│   └── alphazero.py # Neural net + MCTS agent (Phase 6)
-├── neural/          # PyTorch model and training
-│   ├── encoder.py   # State vector and move index encoding
-│   ├── model.py     # Residual MLP policy + value network
-│   ├── trainer.py   # Loss function and training step
-│   └── replay.py    # Circular experience replay buffer
-├── api/             # FastAPI web server
-│   ├── main.py      # App entry point, routes
-│   └── schemas.py   # Pydantic request/response models
-├── frontend/        # HTML/JS/CSS game UI
+├── engine/
+│   ├── game.py
+│   ├── board.py
+│   ├── factory.py
+│   └── scoring.py
+├── agents/
+│   ├── base.py
+│   ├── random.py
+│   ├── cautious.py
+│   ├── efficient.py
+│   ├── greedy.py
+│   ├── mcts.py
+│   └── alphazero.py
+├── neural/
+│   ├── encoder.py
+│   ├── model.py
+│   ├── trainer.py
+│   └── replay.py
+├── api/
+│   ├── main.py
+│   └── schemas.py
+├── frontend/
 │   ├── index.html
 │   ├── game.js
 │   └── style.css
-├── scripts/         # Standalone utilities
-│   └── self_play.py # Self-play harness CLI
-├── tests/           # pytest test suite
+├── scripts/
+│   ├── self_play.py
+│   └── train.py
+├── tests/
 │   ├── test_game.py
 │   ├── test_board.py
 │   ├── test_scoring.py
@@ -67,192 +68,122 @@ azul-alphazero/
 │   ├── test_encoder.py
 │   ├── test_model.py
 │   ├── test_replay.py
-│   └── test_trainer.py
-├── docs/            # Project documentation
-│   └── PROJECT_PLAN.md  (this file)
-├── .github/
-│   └── workflows/
-│       └── ci.yml   # GitHub Actions CI pipeline
-├── .gitignore
-├── requirements.txt
-├── requirements-dev.txt
-└── README.md
+│   ├── test_trainer.py
+│   └── test_alphazero.py
+├── checkpoints/     # gitignored
+└── docs/
+    └── PROJECT_PLAN.md
 ```
 
 ---
 
 ## Development Phases
 
-### Phase 0 — Project Setup ✅ (complete)
-*Goal: professional project skeleton before any game code*
-
-- [x] Create GitHub repository
-- [x] Clone to local machine
-- [x] Create and activate Python virtual environment
-- [x] Install dev dependencies (pytest, black, flake8, isort, pytest-watch)
-- [x] Create folder structure
-- [x] Configure pytest (`pytest.ini`)
-- [x] Configure code formatter (`pyproject.toml`)
-- [x] Set up GitHub Actions CI (runs tests on every push)
-- [x] Write and pass first dummy test (proves CI works)
-- [x] Commit and push — CI goes green
+### Phase 0 — Project Setup ✅
+### Phase 1 — Game Engine ✅
+### Phase 2 — Graphical Front End ✅
+### Phase 3 — Random Bot + Agent Interface ✅
+### Phase 4 — Monte Carlo Tree Search ✅
+### Phase 5 — Neural Network ✅
 
 ---
 
-### Phase 1 — Game Engine ✅ (complete)
-*Goal: a complete, fully-tested Azul rule engine with no UI*
+### Phase 6 — AlphaZero Self-Play Training 🔄 (in progress)
 
-- [x] Model game state as Python dataclasses
-- [x] Implement factory display setup and tile drawing
-- [x] Implement legal move generation
-- [x] Implement tile placement (pattern lines → wall)
-- [x] Implement end-of-round scoring
-- [x] Implement end-of-game bonus scoring
-- [x] Implement game-over detection
-- [x] Text-based CLI so a human can play both sides
-- [x] Full test suite — every rule covered
+#### What's built
+- `AlphaZeroAgent` — PUCT tree search, value head evaluation, no rollouts
+- `collect_self_play` — opponent=None (AZ vs AZ) or opponent=Agent (warmup mode)
+- `collect_heuristic_games` — 50% Greedy, 25% Cautious, 25% Efficient, one-hot policy targets
+- `scripts/train.py` — full training loop with greedy warmup, auto-switch, per-game eval logging, `_MAX_MOVES=300`
 
----
+#### Training results so far
 
-### Phase 2 — Graphical Front End ✅ (complete)
-*Goal: a proper visual game board in the browser*
+| Run | Config | Result | Notes |
+|---|---|---|---|
+| Test run | 3 iter, 5 games, 20 sim | Gen 0001 | 55% vs prev, 32.5% vs random |
+| Overnight 1 | 30 iter, 20 games, 100 sim | Interrupted | Windows sleep |
+| Overnight 2 | 30 iter, 20 games, 100 sim, 50k pretrain | Regressed after iter 1 | [0,0] games poisoning buffer |
+| Run 4 | 160 iter, 20 games, 100 sim, greedy warmup | 1 generation only | See failure analysis below |
 
-- [x] FastAPI server that serves the frontend and exposes a game API
-- [x] HTML/JS frontend that renders the full Azul board
-- [x] Clicking tiles and factory displays makes legal moves
-- [x] Game state updates are reflected visually
-- [x] Human vs human (passing the keyboard)
-- [x] Clean separation: UI calls API, API calls engine
+#### Run 4 failure analysis
+- Rolling avg score bug: recording 0 for every game where AZ plays as player 1 → warmup threshold never reached → never switched to self-play
+- 100 train steps per iteration insufficient — network barely moves each iteration
+- 20-game eval too noisy to detect small improvements — new net kept getting reset
+- Win vs random stuck at 30-37% throughout — no meaningful learning signal
 
----
+#### Fixes needed before next run
+- Fix rolling average: track win rate vs Greedy rather than raw score, or only count AZ-as-p0 games
+- Increase `--train-steps` to 500
+- Lower `--win-threshold` to 0.48 for first 20 iterations, or raise `--eval-games` to 40
+- Implement reward shaping (see Phase 6b) — deferred scoring is the root cause of slow learning
 
-### Phase 3 — Random Bot + Agent Interface ✅ (complete)
-*Goal: a pluggable agent system and a baseline opponent*
-
-- [x] Define abstract `Agent` base class with a `choose_move(game_state)` method
-- [x] Implement `RandomAgent` (true uniform random — standard benchmark baseline)
-- [x] Wire agent into the game loop via `/agent-move` API endpoint
-- [x] New Game dialog with per-player dropdowns
-- [x] Bot turns trigger automatically in the UI with inter-round pause
-- [x] Add a self-play harness (`scripts/self_play.py`) — bot vs bot, N games
-- [x] Log game statistics (win rate, game length, score distributions)
-- [x] `AGENT_REGISTRY` for easy addition of future agents
+#### Remaining tasks
+- [ ] Fix rolling average bug in `collect_self_play`
+- [ ] Increase train steps, tune eval threshold
+- [ ] Wire best checkpoint into API `_make_agent()`
+- [ ] Add AlphaZero as UI opponent option
+- [ ] Elo rating system
 
 ---
 
-### Phase 4 — Monte Carlo Tree Search ✅ (complete)
-*Goal: a competent bot using pure MCTS (no neural net yet)*
+### Phase 6b — Reward Shaping (up next)
 
-- [x] Implement MCTS with UCB1 selection
-- [x] Implement random rollout policy
-- [x] `MCTSAgent` beats true `RandomAgent` >80% over 200 games (achieved 94%)
-- [x] Add MCTS bot as an opponent option in the UI
-- [x] Refactor heuristic agents into distinct classes: `CautiousAgent`, `EfficientAgent`, `GreedyAgent`
-- [x] All agents available in New Game dialog and `AGENT_REGISTRY`
-- [x] Round-robin benchmark: 100 games per matchup, 200 simulations
+**Motivation:** Azul's scoring is highly deferred. A floor penalty incurred on move 3 isn't applied until end of round (move ~15). A pattern line completed on move 5 doesn't score until end of round. The value head has no way to connect cause and effect across that gap with only 100 simulations. Moving the reward signal closer to the move that earned it should dramatically accelerate learning.
 
-**Round-robin results (200 simulations, 100 games each):**
+#### Two new engine methods (belong in `engine/scoring.py` or `engine/game.py`)
 
-| Rank | Agent | Win rate vs all opponents |
-|---|---|---|
-| 1 | Greedy | 72.3% |
-| 2 | MCTS (200 sim) | 68.5% |
-| 3 | Cautious | 58.3% |
-| 4 | Efficient | 26.8% |
-| 5 | Random | 9.5% |
+**`carried_score(board: Board) -> int`**
+The official score carried forward from the end of the previous round. This is exactly `board.score` — no calculation needed, just a named accessor for clarity. It is what the scoreboard shows between rounds.
 
-**Known limitation of pure MCTS:** Azul has a high branching factor in early rounds (50+ legal moves). At 200 simulations, each child of the root receives only a few visits, so value estimates are too noisy to overcome a well-tuned heuristic opponent. MCTS earns its strength in the late game when branching factor drops and rollouts become more informative. This is the primary motivation for the neural network policy head in Phase 6 — it concentrates simulations on promising moves immediately, bypassing the branching factor problem.
+**`earned_score(board: Board, wall_pattern: list[list[Tile]]) -> int`**
+Points the player has earned this round but not yet received. Includes:
+- Wall placement scores for all currently full pattern lines (calculated as if end-of-round scoring happened now)
+- Floor penalties for tiles currently on the floor line
+- End-of-game bonuses for any completed rows, columns, or colors already on the wall
 
----
+The key insight: `earned_score` is deterministic and lossless — once earned, these points cannot be taken away.
 
-### Phase 5 — Neural Network ✅ (complete)
-*Goal: a trained policy + value network for Azul*
+**`grand_total(board: Board, wall_pattern) -> int`**
+`carried_score + earned_score` — the true picture of a player's position.
 
-- [x] Design Azul state encoding — dense 116-float normalized vector
-- [x] Build residual MLP with policy head and value head
-- [x] Implement circular experience replay buffer
-- [x] Implement loss function (MSE value loss + cross-entropy policy loss)
-- [x] Implement training step with Adam optimizer
-- [x] Unit tests for all neural network components
+#### UI display (builds on engine methods)
 
-**State vector layout (116 floats, all normalized to [0, 1]):**
+Wall tile preview annotations:
+- When a pattern line is full, show `+N` on the wall cell where that tile will go
+- `N` = wall placement score accounting for all current adjacencies on the wall
+- Annotations refresh after every move as adjacencies change
 
-| Section | Size | Encoding |
-|---|---|---|
-| My wall | 25 | 1.0/0.0 per cell, row-major |
-| Opponent wall | 25 | same |
-| My pattern line fill ratios | 5 | tiles present / row capacity |
-| My pattern line colors | 5 | color index / 5, or 0.0 if empty |
-| Opponent pattern line fill ratios | 5 | same |
-| Opponent pattern line colors | 5 | same |
-| Factories | 25 | count of each color per factory / 4 |
-| Center color counts | 5 | count / TILES_PER_COLOR |
-| First player token in center | 1 | 1.0 / 0.0 |
-| I hold first player token | 1 | 1.0 / 0.0 |
-| My floor | 1 | tiles on floor / 7 |
-| Opponent floor | 1 | same |
-| My score | 1 | score / 100 |
-| Opponent score | 1 | same |
-| Bag totals | 5 | count of each color / 20 |
-| Discard totals | 5 | count of each color / 20 |
+End-of-game bonus indicators:
+- Completed column: `+7` below that column
+- Completed color: `+10` centered below the row where that color's last tile was placed (between columns)
+- Completed row: `+2` to the right of that row
 
-Always encoded from the current player's perspective — "my" = current player, "opp" = other player.
+Score display (four values at top of board):
+- **Carried** — official score from end of last round (`board.score`)
+- **Earned** — points locked in this round not yet applied (`earned_score`)
+- **Bonus** — end-of-game bonuses already guaranteed
+- **Total** — carried + earned + bonus
 
-**Network architecture:**
-- Input: 116-float vector
-- Stem: Linear(116 → 256) → LayerNorm → ReLU
-- Trunk: 3 × ResBlock(256) — each block: Linear → LayerNorm → ReLU → Linear → LayerNorm → skip add → ReLU
-- Policy head: Linear(256 → 180) — raw logits; softmax applied externally after masking illegal moves
-- Value head: Linear(256 → 64) → ReLU → Linear(64 → 1) → Tanh — scalar in (-1, 1)
-
-**Move space:** 180 indices = 6 sources × 5 colors × 6 destinations (5 pattern lines + floor).
-
-**Key design decisions:**
-- Dense float vector over sparse binary planes — trains faster on consumer hardware; Azul's relationships are more combinatorial than spatial
-- LayerNorm over BatchNorm — BatchNorm requires batch size > 1, LayerNorm works with any batch size including single-sample inference
-- Logits not probabilities from policy head — allows illegal move masking before softmax
-- `collect_self_play()` stubbed in `trainer.py` — will be completed in Phase 6 once `AlphaZeroAgent` exists
-
----
-
-### Phase 6 — AlphaZero Self-Play Training
-*Goal: iterative self-play that produces a strong Azul AI*
-
-- [ ] Implement `AlphaZeroAgent` — PUCT tree search guided by the neural network
-- [ ] Replace UCB1 with PUCT (adds prior probability from policy head to exploration term)
-- [ ] Replace random rollouts with neural net value estimates
-- [ ] Complete `collect_self_play()` in `trainer.py`
-- [ ] Iterative training loop: generate data → train → evaluate → keep if better
-- [ ] Model checkpointing (save/load network weights)
-- [ ] Elo rating system to track model strength over generations
-- [ ] Add AlphaZero agent as a UI opponent option
-
-**Definition of done:** Generation N+1 beats Generation N at a statistically significant rate (>55% over 200 games).
+#### Model integration
+- The model receives only `grand_total` for each player — no breakdown
+- `grand_total` is used as the value target in `collect_self_play` instead of final game score
+- This gives the value head a signal after every move rather than only at game end
+- Implementation: in `collect_self_play`, after each `game.make_move(move)`, compute `grand_total` delta and use as shaped reward blended with final outcome
 
 ---
 
 ### Phase 7 — Evaluation and Iteration
-*Goal: a measurably strong, tunable AI*
-
 - [ ] Elo ladder across all agent versions
-- [ ] Hyperparameter search (MCTS simulations, network size, learning rate)
-- [ ] Add difficulty levels in the UI (maps to MCTS simulation count)
-- [ ] Optional: opening book or curriculum learning
-
----
+- [ ] Hyperparameter search
+- [ ] Difficulty levels in UI
 
 ### Phase 8 — Polish and Release
-*Goal: something you'd be proud to share*
-
 - [ ] Animated tile placement
-- [ ] Sound effects (optional)
+- [ ] Sound effects
 - [ ] Game history / move replay
-- [ ] Deploy to a cloud host (Render, Railway, or Fly.io — all have free tiers)
-- [ ] Capacitor packaging for iOS / Android App Store
-- [ ] README with screenshots and instructions
-- [ ] Show round number in the UI header
-- [ ] Label winner more clearly on game over (highlight winning board)
-- [ ] Bot vs bot: inter-round pause timing polish
+- [ ] Cloud deployment
+- [ ] Capacitor iOS/Android packaging
+- [ ] README with screenshots
 
 ---
 
@@ -260,36 +191,18 @@ Always encoded from the current player's perspective — "my" = current player, 
 
 | Agent | Heuristics | Purpose |
 |---|---|---|
-| `RandomAgent` | None — true uniform random | Standard benchmark baseline |
-| `CautiousAgent` | Floor-avoidance only | Avoids penalties, no planning |
-| `EfficientAgent` | Partial-line preference only | Completes lines faster, ignores floor cost |
-| `GreedyAgent` | Both heuristics | Strongest heuristic agent; default UI opponent |
-| `MCTSAgent` | UCB1 tree search + random rollouts | Lookahead without a neural net |
-| `AlphaZeroAgent` | PUCT tree search + neural net | Final goal |
-
-`GreedyAgent` is the recommended default opponent for human players. It is stronger than `MCTSAgent` at low simulation counts due to Azul's high early-game branching factor.
+| `RandomAgent` | None | Benchmark baseline |
+| `CautiousAgent` | Floor-avoidance | Avoids penalties |
+| `EfficientAgent` | Partial-line preference | Completes lines faster |
+| `GreedyAgent` | Both heuristics | Default UI opponent |
+| `MCTSAgent` | UCB1 + random rollouts | Lookahead without neural net |
+| `AlphaZeroAgent` | PUCT + neural net | Final goal |
 
 ---
 
 ## Key Principles
 
-**Test-Driven Development (TDD):** Write the failing test first, then write the code to make it pass. Never write engine code without a test.
-
-**Engine independence:** The game engine (`engine/`) must never import from `api/` or `frontend/`. It is pure Python logic. This is what makes it testable, and what will make the AI training fast.
-
-**Commit often:** A commit should represent one coherent thing ("add end-of-round scoring", "fix tile draw bug"). If your commit message needs the word "and" more than once, split it up.
-
-**CI is the source of truth:** If GitHub Actions is red, the branch is broken. Don't move forward until it's green.
-
----
-
-## Reference Links
-
-- [Azul rulebook (PDF)](https://www.nextmovegames.com/en/index.php?controller=attachment&id_attachment=11)
-- [AlphaZero paper](https://arxiv.org/abs/1712.01815)
-- [FastAPI docs](https://fastapi.tiangolo.com/)
-- [PyTorch docs](https://pytorch.org/docs/)
-- [GitHub Actions docs](https://docs.github.com/en/actions)
+**TDD always.** Engine independence. Commit often. CI is the source of truth.
 
 ---
 
@@ -297,7 +210,10 @@ Always encoded from the current player's perspective — "my" = current player, 
 
 | Date | Change |
 |---|---|
-| 2026-03-29 | Initial project plan created |
-| 2026-04-01 | Phases 1–3 complete |
-| 2026-04-01 | Phase 4 complete — MCTSAgent, heuristic agent refactor, round-robin benchmark |
-| 2026-04-02 | Phase 5 complete — encoder, AzulNet, replay buffer, trainer |
+| 2026-03-29 | Initial plan |
+| 2026-04-01 | Phases 1-3 complete |
+| 2026-04-01 | Phase 4 complete |
+| 2026-04-02 | Phase 5 complete |
+| 2026-04-02 | Phase 6 in progress |
+| 2026-04-03 | Phase 6 run 4 complete — failure analysis, reward shaping planned |
+| 2026-04-03 | Phase 6b defined — carried_score, earned_score, grand_total, UI display |

@@ -273,7 +273,7 @@ def main() -> None:
 
     for iteration in range(1, args.iterations + 1):
         t0 = time.time()
-        logger.info("═" * 60)
+        logger.info("-" * 60)
         logger.info("iteration %d / %d", iteration, args.iterations)
 
         # ── 1. Self-play data generation ──────────────────────────────────
@@ -358,8 +358,8 @@ def main() -> None:
         elapsed = time.time() - t0
         logger.info("iteration time: %.1fs", elapsed)
 
-    logger.info("═" * 60)
-    logger.info("training complete — %d generations produced", generation)
+    logger.info("-" * 60)
+    logger.info("training complete -- %d generations produced", generation)
     if generation > 0:
         logger.info("best checkpoint: checkpoints/gen_%04d.pt", generation)
 

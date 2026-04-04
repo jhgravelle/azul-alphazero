@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from engine.board import Board
 from engine.constants import (
     Tile,
-    COLOR_TILES,
     BOARD_SIZE,
     TILES_PER_FACTORY,
-    FLOOR_PENALTIES,
+    COLUMN_FOR_TILE_IN_ROW,
+    CUMULATIVE_FLOOR_PENALTIES,
 )
 from engine.game_state import GameState
+from engine.scoring import score_placement, score_wall_bonus
 import random
 import logging
 
@@ -19,12 +20,6 @@ logger = logging.getLogger(__name__)
 
 CENTER = -1
 FLOOR = -2
-_WALL_SEQUENCE = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
-
-WALL_PATTERN: list[list[Tile]] = [
-    [_WALL_SEQUENCE[(col - row) % BOARD_SIZE] for col in range(BOARD_SIZE)]
-    for row in range(BOARD_SIZE)
-]
 
 
 @dataclass
@@ -108,7 +103,7 @@ class Game:
 
     def wall_column_for(self, *, row: int, color: Tile) -> int:
         """Return the column index where a color tile belongs in a given wall row."""
-        return WALL_PATTERN[row].index(color)
+        return COLUMN_FOR_TILE_IN_ROW[color][row]
 
     def make_move(self, move: Move) -> None:
         """Apply a move to the current game state.
@@ -159,46 +154,11 @@ class Game:
             if not self.is_game_over():
                 self.setup_round()
 
-    def _score_placement(
-        self, wall: list[list[Tile | None]], row: int, col: int
-    ) -> int:
-        """Score a single tile just placed at (row, col) on the wall.
-
-        Counts the horizontal and vertical runs through that cell.
-        A lone tile (no neighbours) scores 1.
-        """
-
-        def run_length(dr: int, dc: int) -> int:
-            """Count tiles in one direction from (row, col), excluding the origin."""
-            length = 0
-            r, c = row + dr, col + dc
-            while (
-                0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and wall[r][c] is not None
-            ):
-                length += 1
-                r += dr
-                c += dc
-            return length
-
-        h = run_length(0, -1) + 1 + run_length(0, 1)  # left + self + right
-        v = run_length(-1, 0) + 1 + run_length(1, 0)  # up + self + down
-
-        if h == 1 and v == 1:
-            return 1  # no neighbours — lone tile
-        score = 0
-        if h > 1:
-            score += h
-        if v > 1:
-            score += v
-        return score
-
     def _score_floor(self, player: "Board") -> None:
         """Apply floor line penalties to the player and clear the floor."""
-        penalty = sum(
-            FLOOR_PENALTIES[i]
-            for i in range(min(len(player.floor_line), len(FLOOR_PENALTIES)))
+        player.score = max(
+            0, player.score + CUMULATIVE_FLOOR_PENALTIES[len(player.floor_line)]
         )
-        player.score = max(0, player.score + penalty)
         self.state.discard.extend(
             t for t in player.floor_line if t != Tile.FIRST_PLAYER
         )
@@ -222,7 +182,7 @@ class Game:
                 color = line[0]
                 col = self.wall_column_for(row=row, color=color)
                 player.wall[row][col] = color
-                player.score += self._score_placement(player.wall, row, col)
+                player.score += score_placement(player.wall, row, col)
                 self.state.discard.extend(line[1:])
                 player.pattern_lines[row] = []
 
@@ -244,29 +204,6 @@ class Game:
         return False
 
     def score_game(self) -> None:
-        """Apply end-of-game bonus scoring to all players.
-
-        Awards:
-        - 2 points per complete horizontal wall row
-        - 7 points per complete vertical wall column
-        - 10 points per color with all 5 tiles placed on the wall
-        """
+        """Apply end-of-game bonus scoring to all players."""
         for player in self.state.players:
-            # Complete rows — 2 points each
-            for row in player.wall:
-                if all(cell is not None for cell in row):
-                    player.score += 2
-
-            # Complete columns — 7 points each
-            for col in range(BOARD_SIZE):
-                if all(player.wall[row][col] is not None for row in range(BOARD_SIZE)):
-                    player.score += 7
-
-            # Complete colors — 10 points each
-            for color in COLOR_TILES:
-                if all(
-                    player.wall[row][self.wall_column_for(row=row, color=color)]
-                    == color
-                    for row in range(BOARD_SIZE)
-                ):
-                    player.score += 10
+            player.score += score_wall_bonus(player.wall)

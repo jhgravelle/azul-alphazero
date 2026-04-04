@@ -2,8 +2,14 @@
 
 """Tests for core game methods."""
 
-from engine.game import CENTER, FLOOR, WALL_PATTERN, Game, Move
-from engine.constants import Tile, BOARD_SIZE, COLOR_TILES, TILES_PER_FACTORY
+from engine.game import CENTER, FLOOR, Game, Move
+from engine.constants import (
+    Tile,
+    BOARD_SIZE,
+    COLOR_TILES,
+    TILES_PER_FACTORY,
+    WALL_PATTERN,
+)
 
 
 def test_setup_round_fills_factories():

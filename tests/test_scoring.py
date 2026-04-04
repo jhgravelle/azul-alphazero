@@ -9,9 +9,10 @@ from engine.constants import (
     Tile,
     BOARD_SIZE,
     FLOOR_PENALTIES,
+    WALL_PATTERN,
 )
 from engine.board import Board
-from engine.game import Game, WALL_PATTERN
+from engine.game import Game
 from engine.scoring import (
     score_placement,
     score_floor_penalty,

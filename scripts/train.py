@@ -211,6 +211,19 @@ def main() -> None:
         help="heuristic games to fill buffer before self-play (default 0)",
     )
     parser.add_argument(
+        "--pretrain-steps",
+        type=int,
+        default=0,
+        help="gradient steps to train on heuristic buffer before self-play (default 0)",
+    )
+    parser.add_argument(
+        "--heuristic-iterations",
+        type=int,
+        default=0,
+        help="iterations of heuristic-only generate+train before self-play begins "
+        "(default 0)",
+    )
+    parser.add_argument(
         "--greedy-warmup",
         action="store_true",
         help="start by playing AlphaZero vs GreedyAgent; auto-switch to self-play once "
@@ -274,6 +287,54 @@ def main() -> None:
         )
         collect_heuristic_games(buf, num_games=args.pretrain_games)
         logger.info("pretraining complete -- buffer size: %d", len(buf))
+
+    if args.pretrain_steps > 0 and len(buf) >= args.batch_size:
+        logger.info(
+            "pretraining network for %d steps on heuristic buffer...",
+            args.pretrain_steps,
+        )
+        total_loss = 0.0
+        for step in range(1, args.pretrain_steps + 1):
+            total_loss += trainer.train_step(buf)
+            if step % 500 == 0:
+                logger.info(
+                    "  pretrain step %d/%d -- avg loss: %.4f",
+                    step,
+                    args.pretrain_steps,
+                    total_loss / step,
+                )
+        logger.info(
+            "pretraining complete -- %d steps -- final avg loss: %.4f",
+            args.pretrain_steps,
+            total_loss / args.pretrain_steps,
+        )
+
+    if args.heuristic_iterations > 0:
+        logger.info(
+            "running %d heuristic-only iterations (%d games each, %d steps each)...",
+            args.heuristic_iterations,
+            args.games_per_iter,
+            args.train_steps,
+        )
+        for h_iter in range(1, args.heuristic_iterations + 1):
+            collect_heuristic_games(buf, num_games=args.games_per_iter)
+            if len(buf) < args.batch_size:
+                logger.info(
+                    "  heuristic iter %d -- buffer too small, skipping train", h_iter
+                )
+                continue
+            total_loss = 0.0
+            for _ in range(args.train_steps):
+                total_loss += trainer.train_step(buf)
+            avg_loss = total_loss / args.train_steps
+            logger.info(
+                "  heuristic iter %d/%d -- buffer size %d -- avg loss: %.4f",
+                h_iter,
+                args.heuristic_iterations,
+                len(buf),
+                avg_loss,
+            )
+        logger.info("heuristic iterations complete")
 
     logger.info(
         "starting training -- %d iterations, %d games/iter, %d sims/move",

@@ -2,9 +2,9 @@
 
 """Encodes Azul game states and moves as tensors / indices for the neural network.
 
-State vector layout  (STATE_SIZE = 116 floats)
+State vector layout  (STATE_SIZE = 117 floats)
 ----------------------------------------------
-All values normalized to [0.0, 1.0].
+All values normalized to [0.0, 1.0] unless noted.
 Encoded from the *current player's* perspective — "my" always means the
 player whose turn it is; "opp" always means the other player.
 
@@ -27,8 +27,9 @@ Offset  Size  Section
 105       1   Opponent earned score — same
 106       5   Bag totals       — count of each color / TILES_PER_COLOR
 111       5   Discard totals   — count of each color / TILES_PER_COLOR
+116       1   Score delta      — (my_earned - opp_earned) / 20, clamped [-1, 1]
 ------  ----
-Total: 116
+Total: 117
 
 Move index layout
 -----------------
@@ -81,8 +82,9 @@ OFF_MY_SCORE: int = 104
 OFF_OPP_SCORE: int = 105
 OFF_BAG: int = 106
 OFF_DISCARD: int = 111
+OFF_SCORE_DELTA: int = 116
 
-STATE_SIZE: int = 116
+STATE_SIZE: int = 117
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────
@@ -119,7 +121,7 @@ def encode_state(game: Game) -> torch.Tensor:
     my = game.state.players[cur]
     op = game.state.players[opp]
 
-    # My wall (planes 0–24) and opponent wall (25–49)
+    # My wall (planes 0-24) and opponent wall (25-49)
     for row in range(BOARD_SIZE):
         for col in range(BOARD_SIZE):
             if my.wall[row][col] is not None:
@@ -163,10 +165,15 @@ def encode_state(game: Game) -> torch.Tensor:
     v[OFF_MY_FLOOR] = len(my.floor_line) / 7
     v[OFF_OPP_FLOOR] = len(op.floor_line) / 7
 
-    # Earned scores — carried score plus points locked in this round but not
-    # yet applied, including pending placements, floor penalty, and wall bonuses.
-    v[OFF_MY_SCORE] = earned_score(my) / 100
-    v[OFF_OPP_SCORE] = earned_score(op) / 100
+    # Earned scores
+    my_earned = earned_score(my)
+    opp_earned = earned_score(op)
+    v[OFF_MY_SCORE] = my_earned / 100
+    v[OFF_OPP_SCORE] = opp_earned / 100
+
+    # Score delta — who is winning right now, from current player's perspective.
+    # Divided by 20 (typical mid-game gap) and clamped to [-1, 1].
+    v[OFF_SCORE_DELTA] = max(-1.0, min(1.0, (my_earned - opp_earned) / 20))
 
     # Bag and discard totals
     for color_idx, color in enumerate(COLOR_TILES):

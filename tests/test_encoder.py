@@ -27,6 +27,7 @@ from neural.encoder import (
     OFF_OPP_SCORE,
     OFF_BAG,
     OFF_DISCARD,
+    OFF_SCORE_DELTA,
 )
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -55,9 +56,17 @@ def test_encode_state_dtype_is_float32():
 
 
 def test_encode_state_values_in_range():
+    """Most features are in [0, 1]; score delta is in [-1, 1]."""
     t = encode_state(fresh_game())
-    assert t.min().item() >= 0.0
+    assert t.min().item() >= -1.0
     assert t.max().item() <= 1.0
+
+
+def test_encode_state_non_delta_features_non_negative():
+    """All features except the score delta must be >= 0."""
+    t = encode_state(fresh_game())
+    non_delta = torch.cat([t[:OFF_SCORE_DELTA], t[OFF_SCORE_DELTA + 1 :]])
+    assert non_delta.min().item() >= 0.0
 
 
 # ── Wall ───────────────────────────────────────────────────────────────────
@@ -76,7 +85,6 @@ def test_my_wall_reflects_current_player_not_player_zero():
     g.state.players[1].wall[0][0] = Tile.BLUE
     g.state.current_player = 1
     t = encode_state(g)
-    # Cell (row=0, col=0) of my wall — flat index = OFF_MY_WALL + 0*5 + 0
     assert t[OFF_MY_WALL + 0].item() == 1.0
 
 
@@ -95,7 +103,6 @@ def test_my_wall_and_opp_wall_swap_when_current_player_changes():
     t0 = encode_state(g)
     g.state.current_player = 1
     t1 = encode_state(g)
-    # From player 0's perspective it's my wall; from player 1's it's opp wall
     assert t0[OFF_MY_WALL + 0].item() == 1.0
     assert t0[OFF_OPP_WALL + 0].item() == 0.0
     assert t1[OFF_MY_WALL + 0].item() == 0.0
@@ -156,7 +163,7 @@ def test_my_pattern_line_color_unique_per_color():
         val = t[OFF_MY_PL_COLOR + i].item()
         assert val != 0.0
         values.add(round(val, 6))
-        g.state.players[0].pattern_lines[i] = []  # reset
+        g.state.players[0].pattern_lines[i] = []
     assert len(values) == BOARD_SIZE
 
 
@@ -164,7 +171,7 @@ def test_my_pattern_line_color_unique_per_color():
 
 
 def test_factories_all_zero_before_setup():
-    g = Game()  # no setup_round
+    g = Game()
     t = encode_state(g)
     assert t[OFF_FACTORIES : OFF_FACTORIES + 25].sum().item() == 0.0
 
@@ -283,13 +290,75 @@ def test_scores_swap_with_current_player():
     assert t1[OFF_OPP_SCORE].item() == pytest.approx(30 / 100)
 
 
+# ── Score delta ────────────────────────────────────────────────────────────
+
+
+def test_score_delta_zero_when_scores_equal():
+    g = fresh_game()
+    g.state.current_player = 0
+    t = encode_state(g)
+    assert t[OFF_SCORE_DELTA].item() == pytest.approx(0.0)
+
+
+def test_score_delta_positive_when_ahead():
+    g = fresh_game()
+    g.state.players[0].score = 30
+    g.state.players[1].score = 10
+    g.state.current_player = 0
+    t = encode_state(g)
+    assert t[OFF_SCORE_DELTA].item() == pytest.approx((30 - 10) / 20)
+
+
+def test_score_delta_negative_when_behind():
+    g = fresh_game()
+    g.state.players[0].score = 10
+    g.state.players[1].score = 30
+    g.state.current_player = 0
+    t = encode_state(g)
+    assert t[OFF_SCORE_DELTA].item() == pytest.approx((10 - 30) / 20)
+
+
+def test_score_delta_clamped_at_positive_one():
+    g = fresh_game()
+    g.state.players[0].score = 100
+    g.state.players[1].score = 0
+    g.state.current_player = 0
+    t = encode_state(g)
+    assert t[OFF_SCORE_DELTA].item() == pytest.approx(1.0)
+
+
+def test_score_delta_clamped_at_negative_one():
+    g = fresh_game()
+    g.state.players[0].score = 0
+    g.state.players[1].score = 100
+    g.state.current_player = 0
+    t = encode_state(g)
+    assert t[OFF_SCORE_DELTA].item() == pytest.approx(-1.0)
+
+
+def test_score_delta_flips_with_current_player():
+    """Delta from player 1's perspective is the negative of player 0's."""
+    g = fresh_game()
+    g.state.players[0].score = 30
+    g.state.players[1].score = 10
+    g.state.current_player = 0
+    t0 = encode_state(g)
+    g.state.current_player = 1
+    t1 = encode_state(g)
+    assert t0[OFF_SCORE_DELTA].item() == pytest.approx(-t1[OFF_SCORE_DELTA].item())
+
+
+def test_score_delta_is_at_last_offset():
+    """Score delta must be the last feature in the state vector."""
+    assert OFF_SCORE_DELTA == STATE_SIZE - 1
+
+
 # ── Bag and discard ────────────────────────────────────────────────────────
 
 
 def test_bag_full_at_start():
     g = Game()
     t = encode_state(g)
-    # Each color starts with TILES_PER_COLOR tiles → normalized = 1.0
     assert t[OFF_BAG : OFF_BAG + BOARD_SIZE].sum().item() == pytest.approx(
         BOARD_SIZE * 1.0
     )

@@ -15,7 +15,10 @@ from __future__ import annotations
 import argparse
 import copy
 import logging
+import math
 import time
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -28,16 +31,62 @@ from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
+LOG_DIR = Path("logs")
 _MAX_MOVES = 300
+
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+
+
+def setup_logging() -> Path:
+    """Configure console (INFO) and file (DEBUG) handlers.
+
+    Per-game lines are logged at DEBUG so they appear in the file only.
+    Returns the path of the log file created.
+    """
+    LOG_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = LOG_DIR / f"run_{timestamp}.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    fmt = logging.Formatter(
+        "%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S"
+    )
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+
+    root.addHandler(console)
+    root.addHandler(fh)
+
+    return log_path
+
+
+logger = logging.getLogger(__name__)
+
+
+# ── Iteration result ──────────────────────────────────────────────────────────
+
+
+@dataclass
+class IterResult:
+    iteration: int
+    mode: str  # "warmup" or "self-play"
+    avg_loss: float
+    win_rate: float
+    promoted: bool  # did this iteration produce a new generation?
+    generation: int  # generation number if promoted, else 0
+    az_avg: float  # rolling avg AZ score
+    elapsed: float  # seconds
 
 
 # ── Checkpoint helpers ────────────────────────────────────────────────────────
@@ -63,9 +112,15 @@ def evaluate(
     new_net: AzulNet,
     old_net: AzulNet,
     num_games: int = 40,
-    simulations: int = 50,
+    simulations: int = 25,
+    win_threshold: float = 0.52,
 ) -> float:
-    """Play new vs old; return new_net win rate (ties count as 0.5)."""
+    """Play new vs old; return new_net win rate (ties count as 0.5).
+
+    Exits early if the outcome is already decided:
+      - early pass: new_net has won enough to clear the threshold regardless
+      - early fail: new_net has lost too many to clear the threshold
+    """
     new_agent = AlphaZeroAgent(
         new_net, simulations=simulations, temperature=0.0, device=DEVICE
     )
@@ -73,7 +128,13 @@ def evaluate(
         old_net, simulations=simulations, temperature=0.0, device=DEVICE
     )
 
+    wins_needed = math.ceil(num_games * win_threshold)
+    losses_allowed = num_games - wins_needed
+
     new_wins = 0.0
+    losses = 0
+    games_played = 0
+
     for i in range(num_games):
         game = Game()
         game.setup_round()
@@ -89,9 +150,13 @@ def evaluate(
             moves += 1
 
         if moves >= _MAX_MOVES:
-            logger.warning("game %d hit move cap (%d) -- scoring as tie", i, _MAX_MOVES)
+            logger.warning(
+                "eval game %d hit move cap (%d) -- scoring as tie", i, _MAX_MOVES
+            )
 
         scores = [p.score for p in game.state.players]
+        games_played += 1
+
         if scores[0] == scores[1]:
             result = "tie"
             new_wins += 0.5
@@ -100,14 +165,36 @@ def evaluate(
             new_wins += 1.0
         else:
             result = "old ✗"
-        logger.info(
+            losses += 1
+
+        logger.debug(
             "  eval game %d/%d -- scores %s -- %s (new win rate so far: %.0f%%)",
             i + 1,
             num_games,
             scores,
             result,
-            new_wins / (i + 1) * 100,
+            new_wins / games_played * 100,
         )
+
+        # Early exit checks
+        if new_wins >= wins_needed:
+            logger.info(
+                "  eval early pass after %d/%d games -- %.0f wins >= %d needed",
+                games_played,
+                num_games,
+                new_wins,
+                wins_needed,
+            )
+            break
+        if losses > losses_allowed:
+            logger.info(
+                "  eval early fail after %d/%d games -- %d losses > %d allowed",
+                games_played,
+                num_games,
+                losses,
+                losses_allowed,
+            )
+            break
 
     return new_wins / num_games
 
@@ -115,7 +202,7 @@ def evaluate(
 def evaluate_vs_random(
     net: AzulNet,
     num_games: int = 20,
-    simulations: int = 50,
+    simulations: int = 25,
 ) -> float:
     """Quick sanity check: win rate vs RandomAgent."""
     az_agent = AlphaZeroAgent(
@@ -140,6 +227,34 @@ def evaluate_vs_random(
         elif (scores[0] > scores[1]) == az_is_p0:
             wins += 1.0
     return wins / num_games
+
+
+# ── Summary helpers ───────────────────────────────────────────────────────────
+
+
+def _summary_line(r: IterResult) -> str:
+    promoted = f"✓ gen{r.generation:04d}" if r.promoted else "✗      "
+    return (
+        f"iter {r.iteration:3d} | loss {r.avg_loss:.4f} | "
+        f"win {r.win_rate * 100:5.1f}% {promoted} | "
+        f"az-avg {r.az_avg:5.1f} | {r.mode} | {r.elapsed:.0f}s"
+    )
+
+
+def print_summary(results: list[IterResult], generation: int) -> None:
+    sep = "-" * 72
+    logger.info(sep)
+    logger.info("Training Summary")
+    logger.info(sep)
+    for r in results:
+        logger.info(_summary_line(r))
+    logger.info(sep)
+    logger.info(
+        "total generations: %d | best checkpoint: checkpoints/gen_%04d.pt",
+        generation,
+        generation,
+    )
+    logger.info(sep)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -174,8 +289,8 @@ def main() -> None:
     parser.add_argument(
         "--eval-simulations",
         type=int,
-        default=50,
-        help="MCTS simulations per move during evaluation (default 50)",
+        default=25,
+        help="MCTS simulations per move during evaluation (default 25)",
     )
     parser.add_argument(
         "--eval-games",
@@ -256,9 +371,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # ── Setup ──────────────────────────────────────────────────────────────
+    # ── Logging ────────────────────────────────────────────────────────────
+    log_path = setup_logging()
     logger.info("using device: %s", DEVICE)
+    logger.info("log file: %s", log_path)
+    logger.info("run parameters:")
+    for key, value in sorted(vars(args).items()):
+        logger.info("  %-24s %s", key, value)
 
+    # ── Setup ──────────────────────────────────────────────────────────────
     net = AzulNet().to(DEVICE)
     if args.load:
         load_checkpoint(net, args.load)
@@ -272,6 +393,7 @@ def main() -> None:
     warmup_mode = args.greedy_warmup
     greedy_opponent = GreedyAgent()
     recent_az_scores: list[float] = []
+    iter_results: list[IterResult] = []
 
     if warmup_mode:
         logger.info(
@@ -281,6 +403,7 @@ def main() -> None:
             args.warmup_window,
         )
 
+    # ── Heuristic pretraining ──────────────────────────────────────────────
     if args.pretrain_games > 0:
         logger.info(
             "pretraining buffer with %d heuristic games...", args.pretrain_games
@@ -336,6 +459,7 @@ def main() -> None:
             )
         logger.info("heuristic iterations complete")
 
+    # ── Self-play loop ─────────────────────────────────────────────────────
     logger.info(
         "starting training -- %d iterations, %d games/iter, %d sims/move",
         args.iterations,
@@ -404,6 +528,7 @@ def main() -> None:
             best_net,
             num_games=args.eval_games,
             simulations=args.eval_simulations,
+            win_threshold=args.win_threshold,
         )
         logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
 
@@ -414,7 +539,8 @@ def main() -> None:
             logger.info("new net win rate vs random: %.1f%%", rng_wr * 100)
 
         # ── 4. Keep if better ──────────────────────────────────────────────
-        if win_rate >= args.win_threshold:
+        promoted = win_rate >= args.win_threshold
+        if promoted:
             generation += 1
             best_net = copy.deepcopy(net)
             save_checkpoint(net, generation)
@@ -432,10 +558,21 @@ def main() -> None:
         elapsed = time.time() - t0
         logger.info("iteration time: %.1fs", elapsed)
 
-    logger.info("-" * 60)
-    logger.info("training complete -- %d generations produced", generation)
-    if generation > 0:
-        logger.info("best checkpoint: checkpoints/gen_%04d.pt", generation)
+        result = IterResult(
+            iteration=iteration,
+            mode=mode_label,
+            avg_loss=avg_loss,
+            win_rate=win_rate,
+            promoted=promoted,
+            generation=generation if promoted else 0,
+            az_avg=rolling_avg,
+            elapsed=elapsed,
+        )
+        iter_results.append(result)
+        logger.info(_summary_line(result))
+
+    # ── Final summary ──────────────────────────────────────────────────────
+    print_summary(iter_results, generation)
 
 
 if __name__ == "__main__":

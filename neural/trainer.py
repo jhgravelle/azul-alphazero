@@ -151,7 +151,7 @@ def collect_self_play(
             type(opponent).__name__ if opponent is not None else "AlphaZeroAgent"
         )
         az_side = f"p{az_player}" if az_player is not None else "both"
-        logger.info(
+        logger.debug(
             "%s game %d/%d -- AZ(%s) vs %s -- scores %s -- az_score=%d -- buffer "
             "size %d",
             mode,
@@ -245,7 +245,7 @@ def collect_heuristic_games(
 
         greedy_label = "GreedyAgent" if greedy_is_p0 else "RandomAgent"
         random_label = "RandomAgent" if greedy_is_p0 else "GreedyAgent"
-        logger.info(
+        logger.debug(
             "heuristic game %d/%d -- %s vs %s -- scores %s -- buffer size %d",
             game_num + 1,
             num_games,
@@ -257,7 +257,7 @@ def collect_heuristic_games(
 
     avg_greedy = sum(greedy_scores) / len(greedy_scores)
     avg_random = sum(random_scores) / len(random_scores)
-    logger.info(
+    logger.debug(
         "heuristic summary -- GreedyAgent: %d W / %d L / %d T -- "
         "avg score: Greedy %.1f, Random %.1f",
         greedy_wins,

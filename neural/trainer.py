@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import logging
-import random as _random
-
 import torch
 import torch.nn.functional as F
 
@@ -149,13 +147,18 @@ def collect_self_play(
         az_scores.append(az_score)
 
         mode = "warmup" if opponent is not None else "self-play"
+        opponent_name = (
+            type(opponent).__name__ if opponent is not None else "AlphaZeroAgent"
+        )
+        az_side = f"p{az_player}" if az_player is not None else "both"
         logger.info(
-            "%s game %d/%d -- az_player=%s -- scores %s -- az_score=%d -- buffer "
+            "%s game %d/%d -- AZ(%s) vs %s -- scores %s -- az_score=%d -- buffer "
             "size %d",
             mode,
             game_num + 1,
             num_games,
-            az_player,
+            az_side,
+            opponent_name,
             scores,
             az_score,
             len(buf),
@@ -171,42 +174,37 @@ def collect_heuristic_games(
     buf: ReplayBuffer,
     num_games: int = 200,
 ) -> None:
-    """Pretrain the buffer with games played by heuristic agents vs RandomAgent.
+    """Pretrain the buffer with GreedyAgent vs RandomAgent games.
 
-    Every game pairs a heuristic agent against RandomAgent, alternating which
-    side Random plays on. This ensures the buffer contains clear examples of
-    floor-dumping (Random) paired with losses, and floor-avoiding play paired
-    with wins.
+    Every game pairs GreedyAgent against RandomAgent, alternating sides.
+    This gives the network a clear signal: floor-dumping (Random) loses,
+    floor-avoiding pattern-line completion (Greedy) wins.
 
-    Heuristic agent mix: 60% GreedyAgent, 30% CautiousAgent, 10% EfficientAgent.
+    Logs a summary of average scores and win/loss record at the end.
     """
-    from agents.cautious import CautiousAgent
-    from agents.efficient import EfficientAgent
     from agents.greedy import GreedyAgent
     from agents.random import RandomAgent
     from engine.game import Game
 
-    def _pick_heuristic_agent() -> Agent:
-        r = _random.random()
-        if r < 0.60:
-            return GreedyAgent()
-        elif r < 0.90:
-            return CautiousAgent()
-        else:
-            return EfficientAgent()
+    greedy_wins = 0
+    random_wins = 0
+    ties = 0
+    greedy_scores: list[float] = []
+    random_scores: list[float] = []
 
     for game_num in range(num_games):
         game = Game()
         game.setup_round()
 
-        heuristic = _pick_heuristic_agent()
+        greedy = GreedyAgent()
         random_agent = RandomAgent()
-        # Alternate which side Random plays on so the network doesn't learn
-        # "player 1 loses" instead of "floor moves lose".
         if game_num % 2 == 0:
-            agents: list[Agent] = [heuristic, random_agent]
+            agents: list[Agent] = [greedy, random_agent]
+            greedy_is_p0 = True
         else:
-            agents = [random_agent, heuristic]
+            agents = [random_agent, greedy]
+            greedy_is_p0 = False
+
         history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
 
         while not game.is_game_over():
@@ -234,13 +232,37 @@ def collect_heuristic_games(
         for player_idx, state_vec, policy_vec in history:
             buf.push(state_vec, policy_vec, outcomes[player_idx])
 
-        agent_names = [type(a).__name__ for a in agents]
+        greedy_score = scores[0] if greedy_is_p0 else scores[1]
+        random_score = scores[1] if greedy_is_p0 else scores[0]
+        greedy_scores.append(greedy_score)
+        random_scores.append(random_score)
+        if greedy_score > random_score:
+            greedy_wins += 1
+        elif random_score > greedy_score:
+            random_wins += 1
+        else:
+            ties += 1
+
+        greedy_label = "GreedyAgent" if greedy_is_p0 else "RandomAgent"
+        random_label = "RandomAgent" if greedy_is_p0 else "GreedyAgent"
         logger.info(
             "heuristic game %d/%d -- %s vs %s -- scores %s -- buffer size %d",
             game_num + 1,
             num_games,
-            agent_names[0],
-            agent_names[1],
+            greedy_label,
+            random_label,
             scores,
             len(buf),
         )
+
+    avg_greedy = sum(greedy_scores) / len(greedy_scores)
+    avg_random = sum(random_scores) / len(random_scores)
+    logger.info(
+        "heuristic summary -- GreedyAgent: %d W / %d L / %d T -- "
+        "avg score: Greedy %.1f, Random %.1f",
+        greedy_wins,
+        random_wins,
+        ties,
+        avg_greedy,
+        avg_random,
+    )

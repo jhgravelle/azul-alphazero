@@ -2,7 +2,7 @@
 
 """Encodes Azul game states and moves as tensors / indices for the neural network.
 
-State vector layout  (STATE_SIZE = 117 floats)
+State vector layout  (STATE_SIZE = 157 floats)
 ----------------------------------------------
 All values normalized to [0.0, 1.0] unless noted.
 Encoded from the *current player's* perspective — "my" always means the
@@ -13,23 +13,23 @@ Offset  Size  Section
   0      25   My wall          — 1.0 if tile present, row-major (row*5+col)
  25      25   Opponent wall    — same
  50       5   My pattern line fill ratios     — tiles_present / row_capacity
- 55       5   My pattern line colors          — color_index / 5, or 0.0 if empty
- 60       5   Opponent pattern line fill ratios
- 65       5   Opponent pattern line colors
- 70      25   Factories        — count of each color per factory / 4,
+ 55      25   My pattern line colors          — one-hot per row (5 floats each)
+ 80       5   Opponent pattern line fill ratios
+ 85      25   Opponent pattern line colors    — one-hot per row (5 floats each)
+110      25   Factories        — count of each color per factory / 4,
                                  laid out as factory_idx * 5 + color_idx
- 95       5   Center color counts             — count / TILES_PER_COLOR
-100       1   First-player token in center    — 1.0 / 0.0
-101       1   I hold the first-player token   — 1.0 / 0.0
-102       1   My floor         — tiles on floor / 7
-103       1   Opponent floor   — same
-104       1   My earned score  — earned_score / 100
-105       1   Opponent earned score — same
-106       5   Bag totals       — count of each color / TILES_PER_COLOR
-111       5   Discard totals   — count of each color / TILES_PER_COLOR
-116       1   Score delta      — (my_earned - opp_earned) / 20, clamped [-1, 1]
+135       5   Center color counts             — count / TILES_PER_COLOR
+140       1   First-player token in center    — 1.0 / 0.0
+141       1   I hold the first-player token   — 1.0 / 0.0
+142       1   My floor         — tiles on floor / 7
+143       1   Opponent floor   — same
+144       1   My earned score  — earned_score / 100
+145       1   Opponent earned score — same
+146       5   Bag totals       — count of each color / TILES_PER_COLOR
+151       5   Discard totals   — count of each color / TILES_PER_COLOR
+156       1   Score delta      — (my_earned - opp_earned) / 20, clamped [-1, 1]
 ------  ----
-Total: 117
+Total: 157
 
 Move index layout
 -----------------
@@ -70,21 +70,21 @@ OFF_MY_WALL: int = 0
 OFF_OPP_WALL: int = 25
 OFF_MY_PL_FILL: int = 50
 OFF_MY_PL_COLOR: int = 55
-OFF_OPP_PL_FILL: int = 60
-OFF_OPP_PL_COLOR: int = 65
-OFF_FACTORIES: int = 70
-OFF_CENTER: int = 95
-OFF_FP_CENTER: int = 100
-OFF_FP_MINE: int = 101
-OFF_MY_FLOOR: int = 102
-OFF_OPP_FLOOR: int = 103
-OFF_MY_SCORE: int = 104
-OFF_OPP_SCORE: int = 105
-OFF_BAG: int = 106
-OFF_DISCARD: int = 111
-OFF_SCORE_DELTA: int = 116
+OFF_OPP_PL_FILL: int = 80
+OFF_OPP_PL_COLOR: int = 85
+OFF_FACTORIES: int = 110
+OFF_CENTER: int = 135
+OFF_FP_CENTER: int = 140
+OFF_FP_MINE: int = 141
+OFF_MY_FLOOR: int = 142
+OFF_OPP_FLOOR: int = 143
+OFF_MY_SCORE: int = 144
+OFF_OPP_SCORE: int = 145
+OFF_BAG: int = 146
+OFF_DISCARD: int = 151
+OFF_SCORE_DELTA: int = 156
 
-STATE_SIZE: int = 117
+STATE_SIZE: int = 157
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ def encode_state(game: Game) -> torch.Tensor:
     my = game.state.players[cur]
     op = game.state.players[opp]
 
-    # My wall (planes 0-24) and opponent wall (25-49)
+    # My wall (0-24) and opponent wall (25-49)
     for row in range(BOARD_SIZE):
         for col in range(BOARD_SIZE):
             if my.wall[row][col] is not None:
@@ -129,21 +129,23 @@ def encode_state(game: Game) -> torch.Tensor:
             if op.wall[row][col] is not None:
                 v[OFF_OPP_WALL + row * BOARD_SIZE + col] = 1.0
 
-    # My pattern lines (fill ratio + color)
+    # My pattern lines (fill ratio + one-hot color)
     for row in range(BOARD_SIZE):
         line = my.pattern_lines[row]
         capacity = row + 1
         if line:
             v[OFF_MY_PL_FILL + row] = len(line) / capacity
-            v[OFF_MY_PL_COLOR + row] = (COLOR_TILES.index(line[0]) + 1) / 5
+            color_idx = COLOR_TILES.index(line[0])
+            v[OFF_MY_PL_COLOR + row * BOARD_SIZE + color_idx] = 1.0
 
-    # Opponent pattern lines (fill ratio + color)
+    # Opponent pattern lines (fill ratio + one-hot color)
     for row in range(BOARD_SIZE):
         line = op.pattern_lines[row]
         capacity = row + 1
         if line:
             v[OFF_OPP_PL_FILL + row] = len(line) / capacity
-            v[OFF_OPP_PL_COLOR + row] = (COLOR_TILES.index(line[0]) + 1) / 5
+            color_idx = COLOR_TILES.index(line[0])
+            v[OFF_OPP_PL_COLOR + row * BOARD_SIZE + color_idx] = 1.0
 
     # Factories — count of each color per factory, normalized by TILES_PER_FACTORY
     for f_idx, factory in enumerate(game.state.factories):
@@ -172,7 +174,6 @@ def encode_state(game: Game) -> torch.Tensor:
     v[OFF_OPP_SCORE] = opp_earned / 100
 
     # Score delta — who is winning right now, from current player's perspective.
-    # Divided by 20 (typical mid-game gap) and clamped to [-1, 1].
     v[OFF_SCORE_DELTA] = max(-1.0, min(1.0, (my_earned - opp_earned) / 20))
 
     # Bag and discard totals

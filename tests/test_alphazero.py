@@ -169,14 +169,17 @@ def test_select_fully_expanded_node_picks_by_puct():
     agent = fresh_agent(simulations=5)
     node = AZNode(game=fresh_game())
     agent._expand(node)
-    # Exhaust all untried moves
     while node._untried_moves:
         agent._select(node)
-    # Give one child many visits and high value so it dominates
+    # Give all children baseline visits so exploration doesn't dominate
+    for c in node.children:
+        c.visits = 10
+        c.total_value = 0.0
+    # Make one child clearly dominant
     best = node.children[0]
     best.visits = 100
     best.total_value = 90.0
-    node.visits = 100
+    node.visits = sum(c.visits for c in node.children)
     selected = agent._select(node)
     assert selected is best
 

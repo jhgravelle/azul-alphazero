@@ -18,6 +18,8 @@ from neural.encoder import (
     OFF_OPP_WALL,
     OFF_MY_PL_FILL,
     OFF_MY_PL_COLOR,
+    #    OFF_OPP_PL_FILL,
+    OFF_OPP_PL_COLOR,
     OFF_FACTORIES,
     OFF_CENTER,
     OFF_FP_CENTER,
@@ -41,6 +43,11 @@ def fresh_game() -> Game:
 
 
 # ── Shape and type ─────────────────────────────────────────────────────────
+
+
+def test_state_size_is_157():
+    """State vector should be 157 floats after one-hot pattern line colors."""
+    assert STATE_SIZE == 157
 
 
 def test_encode_state_returns_tensor():
@@ -136,35 +143,60 @@ def test_my_pattern_line_fill_ratio_full():
     assert t[OFF_MY_PL_FILL + 4].item() == pytest.approx(1.0)
 
 
-def test_my_pattern_line_color_empty_is_zero():
+def test_my_pattern_line_color_empty_is_all_zeros():
+    """An empty pattern line should have all zeros for its color one-hot."""
     g = fresh_game()
     g.state.current_player = 0
     t = encode_state(g)
-    assert t[OFF_MY_PL_COLOR : OFF_MY_PL_COLOR + BOARD_SIZE].sum().item() == 0.0
+    # All 25 color floats (5 rows × 5 colors) should be zero
+    assert t[OFF_MY_PL_COLOR : OFF_MY_PL_COLOR + 25].sum().item() == 0.0
 
 
-def test_my_pattern_line_color_nonzero_when_filled():
-    """Any non-empty pattern line must produce a color value > 0."""
+def test_my_pattern_line_color_is_one_hot():
+    """A pattern line with Blue tiles should have a one-hot at the Blue index."""
     g = fresh_game()
-    g.state.players[0].pattern_lines[1] = [Tile.YELLOW]
+    g.state.players[0].pattern_lines[0] = [Tile.BLUE]
     g.state.current_player = 0
     t = encode_state(g)
-    assert t[OFF_MY_PL_COLOR + 1].item() > 0.0
+
+    blue_idx = COLOR_TILES.index(Tile.BLUE)
+    for i in range(BOARD_SIZE):
+        if i == blue_idx:
+            assert t[OFF_MY_PL_COLOR + 0 * BOARD_SIZE + i] == 1.0
+        else:
+            assert t[OFF_MY_PL_COLOR + 0 * BOARD_SIZE + i] == 0.0
 
 
-def test_my_pattern_line_color_unique_per_color():
-    """Each color must produce a distinct encoded value."""
+def test_my_pattern_line_color_each_color_distinct():
+    """Each color should activate a different position in the one-hot vector."""
     g = fresh_game()
     g.state.current_player = 0
-    values = set()
+    hot_positions = set()
     for i, color in enumerate(COLOR_TILES):
         g.state.players[0].pattern_lines[i] = [color]
         t = encode_state(g)
-        val = t[OFF_MY_PL_COLOR + i].item()
-        assert val != 0.0
-        values.add(round(val, 6))
+        # Find which of the 5 floats is 1.0 for this row
+        row_start = OFF_MY_PL_COLOR + i * BOARD_SIZE
+        for j in range(BOARD_SIZE):
+            if t[row_start + j].item() == 1.0:
+                hot_positions.add(j)
         g.state.players[0].pattern_lines[i] = []
-    assert len(values) == BOARD_SIZE
+    assert len(hot_positions) == BOARD_SIZE
+
+
+def test_opp_pattern_line_color_is_one_hot():
+    """Opponent pattern line colors should also be one-hot encoded."""
+    g = fresh_game()
+    g.state.players[1].pattern_lines[2] = [Tile.RED, Tile.RED]
+    g.state.current_player = 0
+    t = encode_state(g)
+
+    red_idx = COLOR_TILES.index(Tile.RED)
+    for i in range(BOARD_SIZE):
+        if i == red_idx:
+            assert t[OFF_OPP_PL_COLOR + 2 * BOARD_SIZE + i] == 1.0
+        else:
+            assert t[OFF_OPP_PL_COLOR + 2 * BOARD_SIZE + i] == 0.0
 
 
 # ── Factories ──────────────────────────────────────────────────────────────

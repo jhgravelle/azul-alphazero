@@ -5,6 +5,7 @@
 import random
 
 from agents.base import Agent
+from agents.move_filters import non_floor_moves
 from engine.game import Game, Move
 
 
@@ -30,8 +31,7 @@ class GreedyAgent(Agent):
         moves = game.legal_moves()
 
         # Heuristic 1 — avoid the floor if possible
-        non_floor = [m for m in moves if m.destination != -2]
-        candidates = non_floor if non_floor else moves
+        candidates = non_floor_moves(moves)
 
         # Pick a random color from the available candidates
         available_colors = list({m.tile for m in candidates})

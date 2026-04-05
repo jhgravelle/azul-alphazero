@@ -1,11 +1,6 @@
 [tool.black]
 line-length = 88
 target-version = ["py312"]
-extend-exclude = '''
-/(
-    \.venv312
-)/
-'''
 
 [tool.isort]
 profile = "black"

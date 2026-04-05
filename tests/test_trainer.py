@@ -181,3 +181,78 @@ def test_collect_heuristic_games_policy_is_one_hot():
     _, policies, _ = buf.sample(min(len(buf), 10))
     sums = policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums))
+
+
+def test_collect_heuristic_games_filters_random_wins():
+    """When Random wins, that game's examples are not added to the buffer.
+
+    We run 40 games. Random wins roughly 5-10% of the time, so we expect
+    some games to be filtered. The returned stats should account for all games,
+    and the buffer should only contain examples from games Greedy won or tied.
+    """
+    buf = ReplayBuffer(capacity=100_000)
+    stats = collect_heuristic_games(buf, num_games=40)
+
+    assert stats["greedy_wins"] + stats["random_wins"] + stats["ties"] == 40
+    assert stats["games_recorded"] == stats["greedy_wins"] + stats["ties"]
+
+
+def test_collect_heuristic_games_values_are_score_differential():
+    """Value targets should be normalized score differential, not binary win/loss.
+
+    Greedy typically scores 20-40 and Random scores 0-5, so the value for
+    Greedy's positions should be positive but less than 1.0 (not exactly 1.0).
+    """
+    buf = ReplayBuffer(capacity=100_000)
+    collect_heuristic_games(buf, num_games=10)
+
+    _, _, values = buf.sample(min(len(buf), 50))
+
+    # Values should be in [-1, 1]
+    assert values.min() >= -1.0
+    assert values.max() <= 1.0
+
+    # With score differential, values should NOT all be exactly +1/-1/0.
+    # Binary win/loss would give only those three values.
+    unique_values = set(values.squeeze().tolist())
+    assert len(unique_values) > 3, (
+        f"Expected continuous values, got only {unique_values}. "
+        f"Still using binary win/loss?"
+    )
+
+
+def test_collect_self_play_warmup_records_both_players():
+    """In warmup mode, both AZ and opponent positions should be recorded.
+
+    With only AZ positions, the buffer gets ~50% of the moves per game.
+    With both players, it should get roughly twice as many examples.
+    """
+    from neural.model import AzulNet
+    from neural.trainer import collect_self_play
+    from agents.greedy import GreedyAgent
+
+    net = AzulNet()
+
+    # AZ-only buffer
+    # buf_az_only = ReplayBuffer(capacity=100_000)
+    # We need the old behavior to compare, so we'll just check the new buffer
+    # has a reasonable number of examples
+
+    buf = ReplayBuffer(capacity=100_000)
+    collect_self_play(
+        buf,
+        net=net,
+        num_games=4,
+        simulations=2,
+        temperature=1.0,
+        opponent=GreedyAgent(),
+    )
+
+    # A typical Azul game has ~30-60 total moves (both players combined).
+    # 4 games × ~40 moves = ~160 examples if recording both players.
+    # If only recording AZ, we'd get ~80.
+    # Use 100 as threshold — comfortably above AZ-only, below both-players.
+    assert len(buf) > 100, (
+        f"Buffer has {len(buf)} examples from 4 games. "
+        f"Expected >100 if recording both players."
+    )

@@ -537,3 +537,101 @@ def test_score_game_not_applied_mid_game():
 
 
 # endregion
+
+
+# ── Game.clone ─────────────────────────────────────────────────────────────
+
+
+def test_clone_returns_different_object():
+    game = Game()
+    game.setup_round()
+    assert game.clone() is not game
+
+
+def test_clone_state_is_equal():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    assert clone.state.current_player == game.state.current_player
+    assert clone.state.round == game.state.round
+    assert clone.state.center == game.state.center
+    assert clone.state.bag == game.state.bag
+    assert clone.state.discard == game.state.discard
+
+
+def test_clone_factories_equal_but_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    assert clone.state.factories == game.state.factories
+    clone.state.factories[0].clear()
+    assert game.state.factories[0] != clone.state.factories[0]
+
+
+def test_clone_center_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    clone.state.center.append(Tile.BLUE)
+    assert Tile.BLUE not in game.state.center
+
+
+def test_clone_bag_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    original_len = len(game.state.bag)
+    clone.state.bag.pop()
+    assert len(game.state.bag) == original_len
+
+
+def test_clone_discard_independent():
+    game = Game()
+    game.setup_round()
+    game.state.discard = [Tile.RED, Tile.BLUE]
+    clone = game.clone()
+    clone.state.discard.append(Tile.BLACK)
+    assert len(game.state.discard) == 2
+
+
+def test_clone_player_score_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    clone.state.players[0].score = 99
+    assert game.state.players[0].score != 99
+
+
+def test_clone_player_wall_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    clone.state.players[0].wall[0][0] = Tile.BLUE
+    assert game.state.players[0].wall[0][0] is None
+
+
+def test_clone_player_pattern_lines_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    clone.state.players[0].pattern_lines[0].append(Tile.BLUE)
+    assert game.state.players[0].pattern_lines[0] == []
+
+
+def test_clone_player_floor_line_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    clone.state.players[0].floor_line.append(Tile.RED)
+    assert game.state.players[0].floor_line == []
+
+
+def test_clone_make_move_does_not_affect_original():
+    game = Game()
+    game.setup_round()
+    clone = game.clone()
+    move = clone.legal_moves()[0]
+    clone.make_move(move)
+    # Original game state should be unchanged
+    assert game.state.current_player == 0
+    assert game.state.factories == game.clone().state.factories

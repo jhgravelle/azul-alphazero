@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import copy
 import math
 from dataclasses import dataclass, field
 
@@ -69,7 +68,7 @@ class AlphaZeroAgent(Agent):
     # ── public API ────────────────────────────────────────────────────────
 
     def choose_move(self, game: Game) -> Move:
-        root = AZNode(game=copy.deepcopy(game))
+        root = AZNode(game=game.clone())
         self._expand(root)
 
         for _ in range(self.simulations):
@@ -85,7 +84,7 @@ class AlphaZeroAgent(Agent):
 
     def get_policy_targets(self, game: Game) -> tuple[Move, list[tuple[Move, float]]]:
         """Run simulations and return (chosen_move, [(move, visit_fraction), ...])."""
-        root = AZNode(game=copy.deepcopy(game))
+        root = AZNode(game=game.clone())
         self._expand(root)
 
         for _ in range(self.simulations):
@@ -124,7 +123,7 @@ class AlphaZeroAgent(Agent):
         priors = self._policy_priors(node.game, legal)
         node._untried_moves = []
         for move, prior in zip(legal, priors):
-            child_game = copy.deepcopy(node.game)
+            child_game = node.game.clone()
             child_game.make_move(move)
             child = AZNode(game=child_game, parent=node, move=move, prior=prior)
             node.children.append(child)

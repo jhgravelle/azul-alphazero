@@ -29,3 +29,16 @@ class Board:
     )
 
     floor_line: list[Tile] = field(default_factory=list)
+
+    def clone(self) -> "Board":
+        """Return a fast independent copy of this board.
+
+        Uses direct list copies rather than deepcopy to avoid Python's
+        object-graph traversal overhead.
+        """
+        b = object.__new__(Board)
+        b.score = self.score
+        b.wall = [row[:] for row in self.wall]
+        b.pattern_lines = [line[:] for line in self.pattern_lines]
+        b.floor_line = self.floor_line[:]
+        return b

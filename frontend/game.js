@@ -238,7 +238,8 @@ function renderLive() {
   ));
 
   layout.appendChild(renderSources(
-    { factories: state.factories, center: state.center },
+    { factories: state.factories, center: state.center,
+      bagCounts: state.bag_counts, discardCounts: state.discard_counts },
     { interactive: humanTurn, selection, onTileClick: handleSourceClick }
   ));
 

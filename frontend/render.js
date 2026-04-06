@@ -72,11 +72,11 @@ function floorPenalty(floorLine) {
 /**
  * Render the factory displays and center pool.
  *
- * @param {object} sources        - { factories: string[][], center: string[] }
+ * @param {object} sources        - { factories, center, bagCounts?, discardCounts? }
  * @param {object} [opts]
- * @param {boolean} [opts.interactive=false]  - If true, tiles fire onTileClick.
- * @param {object}  [opts.selection=null]     - { source, color } currently selected.
- * @param {function} [opts.onTileClick]       - Called with (source, color) on click.
+ * @param {boolean} [opts.interactive=false]
+ * @param {object}  [opts.selection=null]
+ * @param {function} [opts.onTileClick]
  */
 function renderSources(sources, { interactive = false, selection = null, onTileClick = null } = {}) {
   const section = createElement("section", "sources");
@@ -110,21 +110,80 @@ function renderSources(sources, { interactive = false, selection = null, onTileC
   if (sortedCenter.length === 0) {
     centerTiles.appendChild(createElement("span", "empty-label", "empty"));
   } else {
-    sortedCenter.forEach(color => {
-      const tile = makeTile(color);
-      if (interactive && color !== "FIRST_PLAYER") {
-        tile.classList.add("clickable");
-        if (selection?.source === -1 && selection?.color === color) {
-          tile.classList.add("selected");
-        }
-        tile.addEventListener("click", () => onTileClick(-1, color));
+    // Group into runs of the same color.
+    const groups = [];
+    for (const color of sortedCenter) {
+      if (groups.length && groups[groups.length - 1].color === color) {
+        groups[groups.length - 1].count++;
+      } else {
+        groups.push({ color, count: 1 });
       }
-      centerTiles.appendChild(tile);
+    }
+
+    const STACK_OFFSET = 5;   // px per tile behind the front
+    const TILE_SIZE   = 36;   // must match .tile in CSS
+
+    groups.forEach(({ color, count }) => {
+      const stackHeight = TILE_SIZE + STACK_OFFSET * (count - 1);
+      const wrapper = createElement("div", "center-stack");
+      wrapper.style.position = "relative";
+      wrapper.style.width    = `${TILE_SIZE}px`;
+      wrapper.style.height   = `${stackHeight}px`;
+      wrapper.style.flexShrink = "0";
+
+      // Render back-to-front so front tile is on top.
+      for (let i = count - 1; i >= 0; i--) {
+        const tile = makeTile(color);
+        tile.style.position = "absolute";
+        tile.style.top      = `${i * STACK_OFFSET}px`;
+        tile.style.left     = "0";
+
+        if (i === 0) {
+          // Front tile: count badge + interaction.
+          if (count > 1) {
+            const badge = createElement("div", "stack-badge", `${count}`);
+            tile.appendChild(badge);
+          }
+          if (interactive && color !== "FIRST_PLAYER") {
+            tile.classList.add("clickable");
+            if (selection?.source === -1 && selection?.color === color) {
+              tile.classList.add("selected");
+            }
+            tile.addEventListener("click", () => onTileClick(-1, color));
+          }
+        }
+        wrapper.appendChild(tile);
+      }
+      centerTiles.appendChild(wrapper);
     });
   }
 
   centerPool.appendChild(centerTiles);
   section.appendChild(centerPool);
+
+  // Bag and discard counts — shown below center if provided.
+  if (sources.bagCounts || sources.discardCounts) {
+    const COLOR_ORDER = ["BLUE", "YELLOW", "RED", "BLACK", "WHITE"];
+    const renderPile = (label, counts) => {
+      const pile = createElement("div", "pile-counts");
+      pile.appendChild(createElement("div", "pool-label", label));
+      const row = createElement("div", "pile-row");
+      COLOR_ORDER.forEach(color => {
+        const cell = createElement("div", "pile-cell");
+        const chip = createElement("div", "pile-chip");
+        chip.style.background = TILE_COLORS[color];
+        if (color === "WHITE") chip.style.border = "1px solid #ccc";
+        cell.appendChild(chip);
+        cell.appendChild(createElement("span", "pile-count", `${counts?.[color] ?? 0}`));
+        row.appendChild(cell);
+      });
+      pile.appendChild(row);
+      return pile;
+    };
+    section.appendChild(renderPile("Bag", sources.bagCounts));
+    section.appendChild(renderPile("Discard", sources.discardCounts));
+  }
+
   return section;
 }
 

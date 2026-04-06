@@ -69,6 +69,8 @@ class GameStateResponse(BaseModel):
     legal_moves: list[MoveRequest]
     player_types: list[PlayerType]
     round: int
+    bag_counts: dict[str, int]
+    discard_counts: dict[str, int]
 
 
 # ── Recording schemas ──────────────────────────────────────────────────────

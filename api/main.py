@@ -140,6 +140,11 @@ def _build_response(game: Game) -> GameStateResponse:
         for m in game.legal_moves()
     ]
 
+    colors = [t for t in Tile if t != Tile.FIRST_PLAYER]
+
+    def _counts(tile_list: list[Tile]) -> dict[str, int]:
+        return {t.name: tile_list.count(t) for t in colors}
+
     return GameStateResponse(
         current_player=game.state.current_player,
         factories=[[_tile_to_str(t) for t in f] for f in game.state.factories],
@@ -150,6 +155,8 @@ def _build_response(game: Game) -> GameStateResponse:
         legal_moves=legal,
         player_types=_player_types,
         round=game.state.round,
+        bag_counts=_counts(game.state.bag),
+        discard_counts=_counts(game.state.discard),
     )
 
 

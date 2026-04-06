@@ -13,6 +13,7 @@ from engine.board import Board
 from engine.game import Game, Move
 from engine.constants import PLAYERS
 
+
 # ── Board state capture ────────────────────────────────────────────────────
 
 
@@ -33,7 +34,14 @@ def _capture_board(board: Board) -> dict[str, Any]:
     }
 
 
-# ── Dataclasses ────────────────────────────────────────────────────────────
+def _capture_source_state(game: Game) -> dict[str, Any]:
+    """Return a snapshot of the shared tile sources before a move is applied."""
+    return {
+        "factories": [
+            [tile.name for tile in factory] for factory in game.state.factories
+        ],
+        "center": [tile.name for tile in game.state.center],
+    }
 
 
 @dataclass
@@ -43,6 +51,7 @@ class TurnRecord:
     Attributes:
         player_index: Which player took this turn.
         board_states: One snapshot dict per player, captured before the move.
+        source_state: Shared game state before the move -- factories and center.
         move_source: Factory index, or CENTER (-1), or FLOOR (-2).
         move_tile: Tile color name (e.g. 'BLUE').
         move_destination: Pattern line index, or FLOOR (-2).
@@ -51,6 +60,7 @@ class TurnRecord:
 
     player_index: int
     board_states: list[dict[str, Any]]
+    source_state: dict[str, Any]
     move_source: int
     move_tile: str
     move_destination: int
@@ -87,6 +97,7 @@ class GameRecord:
                 {
                     "player_index": turn.player_index,
                     "board_states": turn.board_states,
+                    "source_state": turn.source_state,
                     "move_source": turn.move_source,
                     "move_tile": turn.move_tile,
                     "move_destination": turn.move_destination,
@@ -105,6 +116,7 @@ class GameRecord:
             TurnRecord(
                 player_index=turn["player_index"],
                 board_states=turn["board_states"],
+                source_state=turn.get("source_state", {"factories": [], "center": []}),
                 move_source=turn["move_source"],
                 move_tile=turn["move_tile"],
                 move_destination=turn["move_destination"],
@@ -177,9 +189,11 @@ class GameRecorder:
             analysis: Optional agent-specific data to attach to this turn.
         """
         board_states = [_capture_board(player) for player in game.state.players]
+        source_state = _capture_source_state(game)
         turn = TurnRecord(
             player_index=game.state.current_player,
             board_states=board_states,
+            source_state=source_state,
             move_source=move.source,
             move_tile=move.tile.name,
             move_destination=move.destination,

@@ -231,6 +231,90 @@ def test_record_turn_captures_state_before_move_is_applied():
     assert recorded_score == score_before
 
 
+# Add these tests to the "record_turn" section of test_game_recorder.py
+
+
+def test_record_turn_captures_factories():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    turn = recorder.record.turns[0]
+    assert "factories" in turn.source_state
+    assert len(turn.source_state["factories"]) == len(game.state.factories)
+
+
+def test_record_turn_captures_center():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    turn = recorder.record.turns[0]
+    assert "center" in turn.source_state
+
+
+def test_record_turn_factories_use_tile_names():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    turn = recorder.record.turns[0]
+    for factory in turn.source_state["factories"]:
+        for tile_name in factory:
+            assert tile_name in (
+                "BLUE",
+                "YELLOW",
+                "RED",
+                "BLACK",
+                "WHITE",
+                "FIRST_PLAYER",
+            )
+
+
+def test_record_turn_source_state_matches_game_state_before_move():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    expected_factories = [list(f) for f in game.state.factories]
+    recorder.record_turn(game, move)
+    game.make_move(move)
+    turn = recorder.record.turns[0]
+    recorded_factories = turn.source_state["factories"]
+    for i, factory in enumerate(expected_factories):
+        assert recorded_factories[i] == [t.name for t in factory]
+
+
+def test_record_turn_center_uses_tile_names():
+    game = Game()
+    game.setup_round()
+    # Manually put a tile in center so we have something to check.
+    game.state.center.append(Tile.RED)
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    turn = recorder.record.turns[0]
+    assert "RED" in turn.source_state["center"]
+
+
+def test_round_trip_preserves_factories(tmp_path):
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+
+    path = tmp_path / "game.json"
+    recorder.save(path)
+    loaded = GameRecord.load(path)
+
+    assert "factories" in loaded.turns[0].source_state
+    assert len(loaded.turns[0].source_state["factories"]) == len(game.state.factories)
+
+
 # ── finalize ───────────────────────────────────────────────────────────────
 
 

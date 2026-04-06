@@ -2,24 +2,19 @@
 
 """FastAPI application for the Azul game."""
 
+import json
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.base import Agent
-from agents.random import RandomAgent
 from agents.cautious import CautiousAgent
 from agents.efficient import EfficientAgent
 from agents.greedy import GreedyAgent
 from agents.mcts import MCTSAgent
-from engine.board import Board
-from engine.constants import Tile
-from engine.game import Game, Move
-from engine.scoring import (
-    pending_bonus_details,
-    pending_placement_details,
-)
+from agents.random import RandomAgent
 from api.schemas import (
     BoardResponse,
     GameStateResponse,
@@ -28,6 +23,15 @@ from api.schemas import (
     PendingBonus,
     PendingPlacement,
     PlayerType,
+    RecordingSummary,
+)
+from engine.board import Board
+from engine.constants import Tile
+from engine.game import Game, Move
+from engine.game_recorder import GameRecorder  # GameRecord,
+from engine.scoring import (
+    pending_bonus_details,
+    pending_placement_details,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,11 +45,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Game state — one game at a time.
+# Recordings directory -- one JSON file per completed game.
+_RECORDINGS_DIR = Path("recordings")
+
+# Game state -- one game at a time.
 _game = Game()
 _game.setup_round()
 _player_types: list[PlayerType] = ["human", "human"]
 _agents: list[Agent | None] = [None, None]
+_recorder: GameRecorder | None = None
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -145,6 +153,21 @@ def _build_response(game: Game) -> GameStateResponse:
     )
 
 
+def _save_recording(recorder: GameRecorder, game: Game) -> None:
+    """Finalize and save the recording to disk. Silently skips on error."""
+    try:
+        recorder.finalize(game)
+        _RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _RECORDINGS_DIR / f"{recorder.record.game_id}.json"
+        recorder.save(path)
+        logger.info("saved recording %s", recorder.record.game_id)
+    except Exception:
+        logger.exception("failed to save recording")
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────
+
+
 @app.get("/state", response_model=GameStateResponse)
 def get_state() -> GameStateResponse:
     """Return the current game state."""
@@ -154,30 +177,44 @@ def get_state() -> GameStateResponse:
 @app.post("/move", response_model=GameStateResponse)
 def make_move(move_request: MoveRequest) -> GameStateResponse:
     """Apply a move and return the updated game state."""
+    global _recorder
+
     tile = _str_to_tile(move_request.tile)
     move = Move(
         source=move_request.source, tile=tile, destination=move_request.destination
     )
     if move not in _game.legal_moves():
         raise HTTPException(status_code=422, detail="Illegal move")
+
+    if _recorder is not None:
+        _recorder.record_turn(_game, move)
+
     _game.make_move(move)
+
+    if _game.is_game_over() and _recorder is not None:
+        _save_recording(_recorder, _game)
+        _recorder = None
+
     return _build_response(_game)
 
 
 @app.post("/new-game", response_model=GameStateResponse)
 def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
     """Reset the game with the given player configuration."""
-    global _game, _player_types, _agents
+    global _game, _player_types, _agents, _recorder
     _player_types = request.player_types
     _agents = [_make_agent(t) for t in _player_types]
     _game = Game()
     _game.setup_round()
+    _recorder = GameRecorder(player_names=list(_player_types))
     return _build_response(_game)
 
 
 @app.post("/agent-move", response_model=GameStateResponse)
 def agent_move() -> GameStateResponse:
     """Ask the current player's agent to pick and apply a move."""
+    global _recorder
+
     current = _game.state.current_player
     agent = _agents[current]
     if agent is None:
@@ -186,5 +223,48 @@ def agent_move() -> GameStateResponse:
             detail=f"Player {current + 1} is human -- use /move instead",
         )
     move = agent.choose_move(_game)
+
+    if _recorder is not None:
+        _recorder.record_turn(_game, move)
+
     _game.make_move(move)
+
+    if _game.is_game_over() and _recorder is not None:
+        _save_recording(_recorder, _game)
+        _recorder = None
+
     return _build_response(_game)
+
+
+@app.get("/recordings", response_model=list[RecordingSummary])
+def list_recordings() -> list[RecordingSummary]:
+    """Return a summary of every saved game, newest first."""
+    if not _RECORDINGS_DIR.exists():
+        return []
+    summaries = []
+    for path in sorted(
+        _RECORDINGS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    ):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            summaries.append(
+                RecordingSummary(
+                    game_id=data["game_id"],
+                    timestamp=data["timestamp"],
+                    player_names=data["player_names"],
+                    final_scores=data.get("final_scores", []),
+                    winner=data.get("winner"),
+                )
+            )
+        except Exception:
+            logger.warning("skipping unreadable recording: %s", path.name)
+    return summaries
+
+
+@app.get("/recordings/{game_id}")
+def get_recording(game_id: str) -> dict:
+    """Return the full JSON record for one game."""
+    path = _RECORDINGS_DIR / f"{game_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")
+    return json.loads(path.read_text(encoding="utf-8"))

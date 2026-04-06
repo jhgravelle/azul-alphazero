@@ -10,7 +10,7 @@ PlayerType = Literal["human", "random", "cautious", "efficient", "greedy", "mcts
 
 
 class MoveRequest(BaseModel):
-    """A move — used both for submitting moves and describing legal moves."""
+    """A move -- used both for submitting moves and describing legal moves."""
 
     source: int
     tile: str
@@ -42,8 +42,8 @@ class PendingBonus(BaseModel):
     """An end-of-game bonus already guaranteed by the current wall state."""
 
     bonus_type: Literal["row", "column", "tile"]
-    index: int  # row index, column index, or Tile enum value
-    bonus_points: int  # +2, +7, or +10
+    index: int
+    bonus_points: int
 
 
 class BoardResponse(BaseModel):
@@ -69,3 +69,16 @@ class GameStateResponse(BaseModel):
     legal_moves: list[MoveRequest]
     player_types: list[PlayerType]
     round: int
+
+
+# ── Recording schemas ──────────────────────────────────────────────────────
+
+
+class RecordingSummary(BaseModel):
+    """Minimal info about a saved game -- used to populate the replay dropdown."""
+
+    game_id: str
+    timestamp: str
+    player_names: list[str]
+    final_scores: list[int]
+    winner: int | None

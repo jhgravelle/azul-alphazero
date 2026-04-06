@@ -3,8 +3,11 @@
 """Tests for the FastAPI endpoints."""
 
 import pytest
+import json
 from engine.game import Game
 from fastapi.testclient import TestClient
+
+# from pathlib import Path
 
 
 @pytest.fixture
@@ -69,3 +72,202 @@ def test_tied_game_reports_no_winner(client):
     game.state.players[1].score = 10
     response = _build_response(game)
     assert response.winner is None
+
+
+@pytest.fixture
+def client_with_recordings(tmp_path, monkeypatch):
+    """Client with recordings directory redirected to a temp folder."""
+    from api import main
+    from api.main import app
+
+    monkeypatch.setattr(main, "_RECORDINGS_DIR", tmp_path)
+    main._game = Game()
+    main._game.setup_round()
+    main._player_types = ["human", "human"]
+    main._agents = [None, None]
+    main._recorder = None
+    return TestClient(app), tmp_path
+
+
+# ── GET /recordings ────────────────────────────────────────────────────────
+
+
+def test_list_recordings_returns_empty_list_when_no_games_saved(
+    client_with_recordings,
+):
+    client, _ = client_with_recordings
+    response = client.get("/recordings")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_recordings_returns_entry_after_game_saved(client_with_recordings):
+    client, tmp_path = client_with_recordings
+    # Write a fake recording directly into the temp dir
+    record = {
+        "game_id": "abc-123",
+        "timestamp": "2026-04-05T00:00:00+00:00",
+        "player_names": ["Alice", "Bob"],
+        "turns": [],
+        "final_scores": [10, 8],
+        "winner": 0,
+    }
+    (tmp_path / "abc-123.json").write_text(json.dumps(record))
+    response = client.get("/recordings")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["game_id"] == "abc-123"
+    assert data[0]["player_names"] == ["Alice", "Bob"]
+    assert data[0]["final_scores"] == [10, 8]
+    assert data[0]["winner"] == 0
+
+
+def test_list_recordings_returns_multiple_entries(client_with_recordings):
+    client, tmp_path = client_with_recordings
+    for i in range(3):
+        record = {
+            "game_id": f"game-{i}",
+            "timestamp": "2026-04-05T00:00:00+00:00",
+            "player_names": ["Alice", "Bob"],
+            "turns": [],
+            "final_scores": [10, 8],
+            "winner": 0,
+        }
+        (tmp_path / f"game-{i}.json").write_text(json.dumps(record))
+    response = client.get("/recordings")
+    assert response.status_code == 200
+    assert len(response.json()) == 3
+
+
+# ── GET /recordings/{game_id} ──────────────────────────────────────────────
+
+
+def test_get_recording_returns_full_record(client_with_recordings):
+    client, tmp_path = client_with_recordings
+    record = {
+        "game_id": "abc-123",
+        "timestamp": "2026-04-05T00:00:00+00:00",
+        "player_names": ["Alice", "Bob"],
+        "turns": [],
+        "final_scores": [10, 8],
+        "winner": 0,
+    }
+    (tmp_path / "abc-123.json").write_text(json.dumps(record))
+    response = client.get("/recordings/abc-123")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["game_id"] == "abc-123"
+    assert data["player_names"] == ["Alice", "Bob"]
+
+
+def test_get_recording_returns_404_for_unknown_game_id(client_with_recordings):
+    client, _ = client_with_recordings
+    response = client.get("/recordings/does-not-exist")
+    assert response.status_code == 404
+
+
+# ── Recording during play ──────────────────────────────────────────────────
+
+
+def test_new_game_creates_recorder(client_with_recordings):
+    client, _ = client_with_recordings
+    from api import main
+
+    client.post("/new-game", json={})
+    assert main._recorder is not None
+
+
+def test_move_is_recorded(client_with_recordings):
+    client, _ = client_with_recordings
+    from api import main
+
+    client.post("/new-game", json={})
+    moves = main._game.legal_moves()
+    move = moves[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+    assert main._recorder is not None
+    assert len(main._recorder.record.turns) == 1
+
+
+def test_multiple_moves_are_all_recorded(client_with_recordings):
+    client, _ = client_with_recordings
+    from api import main
+
+    client.post("/new-game", json={})
+    for _ in range(3):
+        if main._game.legal_moves():
+            move = main._game.legal_moves()[0]
+            client.post(
+                "/move",
+                json={
+                    "source": move.source,
+                    "tile": move.tile.name,
+                    "destination": move.destination,
+                },
+            )
+    assert main._recorder is not None
+    assert len(main._recorder.record.turns) == 3
+
+
+def test_completed_game_saves_recording_to_disk(client_with_recordings):
+    """Play moves until the game ends and verify a file was written."""
+    client, tmp_path = client_with_recordings
+    from api import main
+
+    client.post("/new-game", json={})
+    max_moves = 500
+    for _ in range(max_moves):
+        if main._game.is_game_over():
+            break
+        moves = main._game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        client.post(
+            "/move",
+            json={
+                "source": move.source,
+                "tile": move.tile.name,
+                "destination": move.destination,
+            },
+        )
+
+    saved_files = list(tmp_path.glob("*.json"))
+    assert len(saved_files) == 1
+
+
+def test_saved_recording_is_valid_json(client_with_recordings):
+    client, tmp_path = client_with_recordings
+    from api import main
+
+    client.post("/new-game", json={})
+    max_moves = 500
+    for _ in range(max_moves):
+        if main._game.is_game_over():
+            break
+        moves = main._game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        client.post(
+            "/move",
+            json={
+                "source": move.source,
+                "tile": move.tile.name,
+                "destination": move.destination,
+            },
+        )
+
+    saved_files = list(tmp_path.glob("*.json"))
+    assert len(saved_files) == 1
+    data = json.loads(saved_files[0].read_text())
+    assert "game_id" in data
+    assert "turns" in data

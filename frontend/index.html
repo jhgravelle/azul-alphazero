@@ -9,7 +9,44 @@
 </head>
 <body>
   <h1>Azul</h1>
-  <pre id="app"></pre>
+  <div id="menu-overlay" class="menu-overlay">
+    <div class="menu-card">
+      <button class="menu-close" id="menu-close-btn" disabled title="No game in progress">✕</button>
+
+      <section class="menu-section">
+        <h2 class="menu-heading">New Game</h2>
+        <div class="dialog-row">
+          <label class="dialog-label">Player 1</label>
+          <select class="dialog-select" id="player1-select"></select>
+        </div>
+        <div class="dialog-row">
+          <label class="dialog-label">Player 2</label>
+          <select class="dialog-select" id="player2-select"></select>
+        </div>
+        <div class="dialog-row">
+          <label class="dialog-label checkbox-label">
+            <input type="checkbox" id="manual-factories-checkbox" />
+            Manual factory setup
+          </label>
+        </div>
+        <button class="start-btn" id="start-game-btn">Start New Game</button>
+      </section>
+
+      <div class="menu-divider"></div>
+
+      <section class="menu-section">
+        <h2 class="menu-heading">Replay</h2>
+        <select class="dialog-select" id="replay-select" style="width:100%;margin-bottom:10px;">
+          <option value="" disabled selected>Select a saved game…</option>
+        </select>
+        <button class="start-btn" id="watch-replay-btn">Watch Replay</button>
+      </section>
+    </div>
+  </div>
+
+  <div id="app"></div>
+
+  <script src="render.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

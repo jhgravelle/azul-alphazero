@@ -2,7 +2,7 @@
 
 body {
   font-family: sans-serif;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 40px auto;
   padding: 0 20px;
   background: #f5f0e8;
@@ -42,13 +42,25 @@ h1 { margin-bottom: 8px; }
   pointer-events: none;
 }
 
-/* ── Factories ── */
+/* ── Game layout — three columns ── */
+.game-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  flex-wrap: nowrap;
+}
+.game-layout .player-board {
+  flex: 0 0 auto;
+}
+
+/* ── Factories (middle column) ── */
 .sources {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: flex-start;
-  margin-bottom: 24px;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  flex: 0 0 auto;
+  padding-top: 4px;
 }
 .factory {
   background: #e0d8c8;
@@ -87,11 +99,6 @@ h1 { margin-bottom: 8px; }
 }
 
 /* ── Player boards ── */
-.boards {
-  display: flex;
-  gap: 32px;
-  flex-wrap: wrap;
-}
 .player-board {
   background: #e8e0d0;
   border-radius: 10px;
@@ -243,21 +250,16 @@ h1 { margin-bottom: 8px; }
 .clickable-row:hover {
   background: rgba(58, 122, 191, 0.15);
 }
-.new-game-btn {
-  padding: 6px 14px;
-  border: none;
-  border-radius: 6px;
-  background: #3a7abf;
-  color: white;
-  cursor: pointer;
-  font-size: 0.9rem;
-  margin-bottom: 12px;
-}
-.new-game-btn:hover {
-  background: #2e6299;
-}
 .header {
-  margin-bottom: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.status-line {
+  margin: 0;
+  flex: 1;
 }
 .selection-hint {
   font-size: 0.9rem;
@@ -266,16 +268,134 @@ h1 { margin-bottom: 8px; }
   font-style: italic;
 }
 
-/* ── New game dialog ── */
-.dialog {
-  background: #e8e0d0;
-  border-radius: 10px;
-  padding: 24px;
-  max-width: 320px;
+/* ── Header buttons ── */
+.header-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #3a7abf;
+  color: white;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  text-decoration: none;
 }
-.dialog-title {
-  margin: 0 0 16px 0;
+.header-btn:hover { background: #2e6299; }
+.header-btn.secondary {
+  background: #7b6f5e;
 }
+.header-btn.secondary:hover { background: #5e5347; }
+
+/* ── Replay controls ── */
+.replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.replay-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #3a7abf;
+  color: white;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+.replay-btn:hover   { background: #2e6299; }
+.replay-btn:disabled { background: #a0b8d0; cursor: default; }
+.turn-counter {
+  font-size: 0.9rem;
+  color: #555;
+  white-space: nowrap;
+}
+
+/* ── Move banner (replay) ── */
+.move-banner {
+  background: #e0d8c8;
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  font-size: 0.95rem;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.move-tile-chip {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.move-text { color: #2c2c2c; }
+
+/* ── Menu overlay ── */
+.menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.menu-overlay.hidden {
+  display: none;
+}
+.menu-card {
+  background: #f5f0e8;
+  border-radius: 14px;
+  padding: 28px 32px;
+  width: 360px;
+  max-width: 95vw;
+  position: relative;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+}
+.menu-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  color: #555;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.menu-close:hover:not(:disabled) { background: #e0d8c8; }
+.menu-close:disabled { color: #bbb; cursor: default; }
+.menu-heading {
+  font-size: 1rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 14px 0;
+  color: #555;
+}
+.menu-section {
+  margin-bottom: 4px;
+}
+.menu-divider {
+  height: 1px;
+  background: #d0c8b8;
+  margin: 20px 0;
+}
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  width: 100%;
+}
+
+/* ── Shared dialog pieces (reused inside menu) ── */
 .dialog-row {
   display: flex;
   align-items: center;
@@ -303,8 +423,7 @@ h1 { margin-bottom: 8px; }
   color: white;
   cursor: pointer;
   font-size: 1rem;
-  margin-top: 8px;
+  margin-top: 4px;
 }
-.start-btn:hover {
-  background: #2e6299;
-}
+.start-btn:hover   { background: #2e6299; }
+.start-btn:disabled { background: #a0b8d0; cursor: default; }

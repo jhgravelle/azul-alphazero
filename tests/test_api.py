@@ -20,6 +20,9 @@ def client():
     main._player_types = ["human", "human"]
     main._agents = [None, None]
     main._history.clear()
+    main._hyp_marker = None
+    main._hyp_player_types = None
+    main._hyp_agents = None
     return TestClient(app)
 
 
@@ -364,4 +367,206 @@ def test_new_game_clears_undo_history(client):
     client.post("/new-game", json={})
 
     # Undo should now fail — history was cleared by /new-game.
+    assert client.post("/undo").status_code == 400
+
+
+# ── POST /hypothetical/enter ───────────────────────────────────────────────
+
+
+def test_enter_hypothetical_returns_200(client):
+    response = client.post("/hypothetical/enter")
+    assert response.status_code == 200
+
+
+def test_enter_hypothetical_sets_in_hypothetical_flag(client):
+    response = client.post("/hypothetical/enter")
+    assert response.json()["in_hypothetical"] is True
+
+
+def test_enter_hypothetical_overrides_player_types_to_human(client):
+    """Even in an agent game, entering hypothetical mode makes both players human."""
+    from api import main
+
+    main._player_types = ["human", "greedy"]
+    main._agents = [None, main._make_agent("greedy")]
+
+    client.post("/hypothetical/enter")
+    assert client.get("/state").json()["player_types"] == ["human", "human"]
+
+
+def test_enter_hypothetical_cannot_be_entered_twice(client):
+    """Calling enter while already in hypothetical mode should return 400."""
+    client.post("/hypothetical/enter")
+    response = client.post("/hypothetical/enter")
+    assert response.status_code == 400
+
+
+# ── POST /hypothetical/discard ─────────────────────────────────────────────
+
+
+def test_discard_hypothetical_returns_200(client):
+    client.post("/hypothetical/enter")
+    response = client.post("/hypothetical/discard")
+    assert response.status_code == 200
+
+
+def test_discard_hypothetical_clears_in_hypothetical_flag(client):
+    client.post("/hypothetical/enter")
+    response = client.post("/hypothetical/discard")
+    assert response.json()["in_hypothetical"] is False
+
+
+def test_discard_hypothetical_restores_state_before_enter(client):
+    """Discard should return the game to the state it was in when enter was called."""
+    before = client.get("/state").json()
+    client.post("/hypothetical/enter")
+
+    # Play a move in hypothetical mode.
+    from api import main
+
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+
+    client.post("/hypothetical/discard")
+    assert client.get("/state").json() == before
+
+
+def test_discard_hypothetical_restores_original_player_types(client):
+    """Discard should restore the player types that were active before entering."""
+    from api import main
+
+    main._player_types = ["human", "greedy"]
+    main._agents = [None, main._make_agent("greedy")]
+
+    client.post("/hypothetical/enter")
+    client.post("/hypothetical/discard")
+
+    assert client.get("/state").json()["player_types"] == ["human", "greedy"]
+
+
+def test_discard_hypothetical_without_entering_returns_400(client):
+    response = client.post("/hypothetical/discard")
+    assert response.status_code == 400
+
+
+# ── POST /hypothetical/commit ──────────────────────────────────────────────
+
+
+def test_commit_hypothetical_returns_200(client):
+    client.post("/hypothetical/enter")
+    response = client.post("/hypothetical/commit")
+    assert response.status_code == 200
+
+
+def test_commit_hypothetical_clears_in_hypothetical_flag(client):
+    client.post("/hypothetical/enter")
+    response = client.post("/hypothetical/commit")
+    assert response.json()["in_hypothetical"] is False
+
+
+def test_commit_hypothetical_keeps_moves_made_during_hypothetical(client):
+    """After commit, the game state should reflect moves made in hypothetical mode."""
+    from api import main
+
+    before = client.get("/state").json()
+    client.post("/hypothetical/enter")
+
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+
+    after_move = client.get("/state").json()
+    client.post("/hypothetical/commit")
+
+    # State after commit should match the state after the move, not before enter.
+    assert client.get("/state").json() != before
+    assert client.get("/state").json()["current_player"] == after_move["current_player"]
+
+
+def test_commit_hypothetical_restores_original_player_types(client):
+    """Commit should restore the original player configuration."""
+    from api import main
+
+    main._player_types = ["human", "greedy"]
+    main._agents = [None, main._make_agent("greedy")]
+
+    client.post("/hypothetical/enter")
+    client.post("/hypothetical/commit")
+
+    assert client.get("/state").json()["player_types"] == ["human", "greedy"]
+
+
+def test_commit_hypothetical_without_entering_returns_400(client):
+    response = client.post("/hypothetical/commit")
+    assert response.status_code == 400
+
+
+# ── Undo interacts correctly with hypothetical mode ────────────────────────
+
+
+def test_undo_works_inside_hypothetical_mode(client):
+    """Undo should still work while in hypothetical mode."""
+    from api import main
+
+    client.post("/hypothetical/enter")
+    state_at_enter = client.get("/state").json()
+
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+
+    client.post("/undo")
+    assert client.get("/state").json() == state_at_enter
+
+
+def test_undo_cannot_go_before_hypothetical_marker(client):
+    """Undo should not pop past the snapshot taken when hypothetical mode was
+    entered."""
+    from api import main
+
+    # Make a real move before entering hypothetical mode.
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+
+    client.post("/hypothetical/enter")
+
+    # Make one hypothetical move, then undo it.
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+    client.post("/undo")
+
+    # A second undo should fail — we're back at the marker boundary.
     assert client.post("/undo").status_code == 400

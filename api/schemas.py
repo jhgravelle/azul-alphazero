@@ -1,9 +1,7 @@
 # api/schemas.py
-
 """Pydantic schemas for the Azul API request and response bodies."""
 
 from typing import Literal
-
 from pydantic import BaseModel, field_validator
 
 PlayerType = Literal["human", "random", "cautious", "efficient", "greedy", "mcts"]
@@ -71,6 +69,7 @@ class GameStateResponse(BaseModel):
     round: int
     bag_counts: dict[str, int]
     discard_counts: dict[str, int]
+    in_hypothetical: bool = False
 
 
 # ── Recording schemas ──────────────────────────────────────────────────────

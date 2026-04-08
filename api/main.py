@@ -29,7 +29,7 @@ from api.schemas import (
 from engine.board import Board
 from engine.constants import Tile
 from engine.game import Game, Move
-from engine.game_recorder import GameRecorder  # GameRecord,
+from engine.game_recorder import GameRecorder
 from engine.game_state import GameState
 from engine.scoring import (
     pending_bonus_details,
@@ -57,6 +57,13 @@ _player_types: list[PlayerType] = ["human", "human"]
 _agents: list[Agent | None] = [None, None]
 _recorder: GameRecorder | None = None
 _history: list[GameState] = []
+
+# Hypothetical mode state.
+# _hyp_marker: index into _history where hypothetical mode began.
+# _hyp_player_types / _hyp_agents: the real config to restore on commit or discard.
+_hyp_marker: int | None = None
+_hyp_player_types: list[PlayerType] | None = None
+_hyp_agents: list[Agent | None] | None = None
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -165,6 +172,7 @@ def _build_response(game: Game) -> GameStateResponse:
         round=game.state.round,
         bag_counts=_counts(game.state.bag),
         discard_counts=_counts(game.state.discard),
+        in_hypothetical=_hyp_marker is not None,
     )
 
 
@@ -178,6 +186,43 @@ def _save_recording(recorder: GameRecorder, game: Game) -> None:
         logger.info("saved recording %s", recorder.record.game_id)
     except Exception:
         logger.exception("failed to save recording")
+
+
+def _exit_hypothetical(*, keep_state: bool) -> None:
+    """Shared teardown for commit and discard.
+
+    keep_state=True  -> commit: history above marker is dropped, state stays.
+    keep_state=False -> discard: history is truncated to marker, state restored.
+    """
+    global _hyp_marker, _hyp_player_types, _hyp_agents, _player_types, _agents
+
+    marker = _hyp_marker
+    saved_types = _hyp_player_types
+    saved_agents = _hyp_agents
+
+    assert marker is not None
+
+    # Clear hypothetical state first.
+    _hyp_marker = None
+    _hyp_player_types = None
+    _hyp_agents = None
+
+    # These are always set together with _hyp_marker, so they cannot be None here.
+    assert saved_types is not None
+    assert saved_agents is not None
+
+    # Restore real player config.
+    _player_types = saved_types
+    _agents = saved_agents
+
+    if keep_state:
+        # Commit: drop history snapshots taken during hypothetical mode.
+        del _history[marker:]
+    else:
+        # Discard: restore game to the snapshot at the marker boundary.
+        if marker < len(_history):
+            _game.state = _history[marker]
+        del _history[marker:]
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -218,12 +263,17 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
 def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
     """Reset the game with the given player configuration."""
     global _game, _player_types, _agents, _recorder
+    global _hyp_marker, _hyp_player_types, _hyp_agents
+
     _player_types = request.player_types
     _agents = [_make_agent(t) for t in _player_types]
     _game = Game()
     _game.setup_round()
     _recorder = GameRecorder(player_names=list(_player_types))
     _history.clear()
+    _hyp_marker = None
+    _hyp_player_types = None
+    _hyp_agents = None
     return _build_response(_game)
 
 
@@ -261,9 +311,49 @@ def undo() -> GameStateResponse:
         raise HTTPException(
             status_code=400, detail="Undo is not available in bot-vs-bot games"
         )
-    if not _history:
+    # In hypothetical mode, undo cannot pop past the marker.
+    floor = _hyp_marker if _hyp_marker is not None else 0
+    if len(_history) <= floor:
         raise HTTPException(status_code=400, detail="Nothing to undo")
     _game.state = _history.pop()
+    return _build_response(_game)
+
+
+@app.post("/hypothetical/enter", response_model=GameStateResponse)
+def hypothetical_enter() -> GameStateResponse:
+    """Enter hypothetical mode -- both players become human, marker is set."""
+    global _hyp_marker, _hyp_player_types, _hyp_agents, _player_types, _agents
+
+    if _hyp_marker is not None:
+        raise HTTPException(status_code=400, detail="Already in hypothetical mode")
+
+    # Save real config and record where on the stack we are now.
+    _hyp_marker = len(_history)
+    _hyp_player_types = list(_player_types)
+    _hyp_agents = list(_agents)
+
+    # Override both players to human.
+    _player_types = ["human", "human"]
+    _agents = [None, None]
+
+    return _build_response(_game)
+
+
+@app.post("/hypothetical/commit", response_model=GameStateResponse)
+def hypothetical_commit() -> GameStateResponse:
+    """Commit hypothetical moves as the real game state and exit hypothetical mode."""
+    if _hyp_marker is None:
+        raise HTTPException(status_code=400, detail="Not in hypothetical mode")
+    _exit_hypothetical(keep_state=True)
+    return _build_response(_game)
+
+
+@app.post("/hypothetical/discard", response_model=GameStateResponse)
+def hypothetical_discard() -> GameStateResponse:
+    """Discard all hypothetical moves and restore the state from before entering."""
+    if _hyp_marker is None:
+        raise HTTPException(status_code=400, detail="Not in hypothetical mode")
+    _exit_hypothetical(keep_state=False)
     return _build_response(_game)
 
 

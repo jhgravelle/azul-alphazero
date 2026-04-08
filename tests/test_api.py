@@ -23,6 +23,9 @@ def client():
     main._hyp_marker = None
     main._hyp_player_types = None
     main._hyp_agents = None
+    main._in_factory_setup = False
+    main._factory_cursor = 0
+    main._manual_factories = False
     return TestClient(app)
 
 
@@ -570,3 +573,320 @@ def test_undo_cannot_go_before_hypothetical_marker(client):
 
     # A second undo should fail — we're back at the marker boundary.
     assert client.post("/undo").status_code == 400
+
+
+# ── Factory setup: entering setup mode ────────────────────────────────────
+
+
+def test_new_game_with_manual_factories_enters_setup_mode(client):
+    """Starting a game with manual_factories=True should immediately be in setup
+    mode."""
+    response = client.post("/new-game", json={"manual_factories": True})
+    assert response.json()["in_factory_setup"] is True
+
+
+def test_new_game_without_manual_factories_not_in_setup_mode(client):
+    response = client.post("/new-game", json={})
+    assert response.json()["in_factory_setup"] is False
+
+
+def test_setup_start_enters_factory_setup_mode(client):
+    response = client.post("/setup-factories/start")
+    assert response.status_code == 200
+    assert response.json()["in_factory_setup"] is True
+
+
+def test_setup_start_clears_all_factories(client):
+    """Entering setup mode should empty all factories regardless of their current
+    state."""
+    from api import main
+
+    # Put some tiles in a factory manually.
+    main._game.state.factories[0] = [main._game.state.bag.pop() for _ in range(4)]
+
+    client.post("/setup-factories/start")
+    state = client.get("/state").json()
+    for factory in state["factories"]:
+        assert factory == []
+
+
+def test_setup_start_cursor_at_zero(client):
+    response = client.post("/setup-factories/start")
+    assert response.json()["factory_cursor"] == 0
+
+
+def test_factory_cursor_is_none_when_not_in_setup_mode(client):
+    response = client.get("/state")
+    assert response.json()["factory_cursor"] is None
+
+
+# ── Factory setup: placing tiles ──────────────────────────────────────────
+
+
+def test_place_tile_adds_to_first_factory(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    # Find a color that's in the bag.
+    color = next(t for t in main._game.state.bag).name
+    client.post("/setup-factories/place", json={"color": color})
+    state = client.get("/state").json()
+    assert color in state["factories"][0]
+
+
+def test_place_tile_draws_from_bag(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    bag_before = len(main._game.state.bag)
+    color = next(t for t in main._game.state.bag).name
+    client.post("/setup-factories/place", json={"color": color})
+    assert len(main._game.state.bag) == bag_before - 1
+
+
+def test_place_tile_advances_cursor(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    color = next(t for t in main._game.state.bag).name
+    response = client.post("/setup-factories/place", json={"color": color})
+    assert response.json()["factory_cursor"] == 1
+
+
+def test_place_four_tiles_fills_first_factory_and_advances_to_second(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    for _ in range(4):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+    state = client.get("/state").json()
+    assert len(state["factories"][0]) == 4
+    assert state["factory_cursor"] == 4
+
+
+def test_place_tile_updates_bag_counts(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    color = next(t for t in main._game.state.bag).name
+    bag_before = client.get("/state").json()["bag_counts"][color]
+    client.post("/setup-factories/place", json={"color": color})
+    bag_after = client.get("/state").json()["bag_counts"][color]
+    assert bag_after == bag_before - 1
+
+
+def test_place_tile_refills_bag_from_discard_when_color_missing(client):
+    from api import main
+    from engine.constants import Tile
+
+    client.post("/setup-factories/start")
+    # Leave only YELLOW in the bag; put everything else (including BLUE) in discard.
+    main._game.state.bag = [Tile.YELLOW]
+    main._game.state.discard = [Tile.BLUE] * 10
+
+    # Requesting BLUE triggers a refill from discard before drawing.
+    response = client.post("/setup-factories/place", json={"color": "BLUE"})
+    assert response.status_code == 200
+    assert "BLUE" in response.json()["factories"][0]
+
+
+def test_place_tile_returns_400_for_unknown_color(client):
+    client.post("/setup-factories/start")
+    response = client.post("/setup-factories/place", json={"color": "PURPLE"})
+    assert response.status_code == 400
+
+
+def test_place_tile_returns_400_when_not_in_setup_mode(client):
+    from api import main
+
+    color = next(t for t in main._game.state.bag).name
+    response = client.post("/setup-factories/place", json={"color": color})
+    assert response.status_code == 400
+
+
+# ── Factory setup: removing tiles ─────────────────────────────────────────
+
+
+def test_remove_tile_returns_it_to_bag(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    color = next(t for t in main._game.state.bag).name
+    client.post("/setup-factories/place", json={"color": color})
+    bag_after_place = len(main._game.state.bag)
+
+    client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
+    assert len(main._game.state.bag) == bag_after_place + 1
+
+
+def test_remove_tile_empties_that_slot(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    color = next(t for t in main._game.state.bag).name
+    client.post("/setup-factories/place", json={"color": color})
+
+    client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
+    state = client.get("/state").json()
+    assert state["factories"][0] == []
+
+
+def test_remove_tile_sets_cursor_to_removed_slot(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    # Place two tiles so cursor is at 2.
+    for _ in range(2):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    # Remove the first tile — cursor should jump back to slot 0.
+    response = client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
+    assert response.json()["factory_cursor"] == 0
+
+
+def test_remove_tile_returns_400_for_empty_slot(client):
+    client.post("/setup-factories/start")
+    response = client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
+    assert response.status_code == 400
+
+
+def test_remove_tile_returns_400_when_not_in_setup_mode(client):
+    response = client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
+    assert response.status_code == 400
+
+
+# ── Factory setup: restart ────────────────────────────────────────────────
+
+
+def test_restart_returns_all_tiles_to_bag(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    bag_at_start = len(main._game.state.bag)
+
+    for _ in range(4):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    client.post("/setup-factories/restart")
+    assert len(main._game.state.bag) == bag_at_start
+
+
+def test_restart_clears_all_factories(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    for _ in range(4):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    client.post("/setup-factories/restart")
+    state = client.get("/state").json()
+    for factory in state["factories"]:
+        assert factory == []
+
+
+def test_restart_resets_cursor_to_zero(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    for _ in range(4):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    response = client.post("/setup-factories/restart")
+    assert response.json()["factory_cursor"] == 0
+
+
+def test_restart_returns_400_when_not_in_setup_mode(client):
+    response = client.post("/setup-factories/restart")
+    assert response.status_code == 400
+
+
+# ── Factory setup: random fill ────────────────────────────────────────────
+
+
+def test_random_fills_all_remaining_placeholders(client):
+    client.post("/setup-factories/start")
+    client.post("/setup-factories/random")
+    state = client.get("/state").json()
+    for factory in state["factories"]:
+        assert len(factory) == 4
+
+
+def test_random_exits_setup_mode(client):
+    client.post("/setup-factories/start")
+    response = client.post("/setup-factories/random")
+    assert response.json()["in_factory_setup"] is False
+
+
+def test_random_with_some_tiles_already_placed(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    # Place two tiles manually first.
+    for _ in range(2):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    client.post("/setup-factories/random")
+    state = client.get("/state").json()
+    for factory in state["factories"]:
+        assert len(factory) == 4
+
+
+def test_random_returns_400_when_not_in_setup_mode(client):
+    response = client.post("/setup-factories/random")
+    assert response.status_code == 400
+
+
+# ── Factory setup: commit ─────────────────────────────────────────────────
+
+
+def test_commit_exits_setup_mode(client):
+    from api import main
+
+    client.post("/setup-factories/start")
+    # Fill all factories.
+    num_factories = len(main._game.state.factories)
+    for _ in range(num_factories * 4):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    response = client.post("/setup-factories/commit")
+    assert response.status_code == 200
+    assert response.json()["in_factory_setup"] is False
+
+
+def test_commit_returns_400_when_factories_not_full(client):
+    client.post("/setup-factories/start")
+    # Place only 3 tiles — factories not full.
+    from api import main
+
+    for _ in range(3):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    response = client.post("/setup-factories/commit")
+    assert response.status_code == 400
+
+
+def test_commit_returns_400_when_not_in_setup_mode(client):
+    response = client.post("/setup-factories/commit")
+    assert response.status_code == 400
+
+
+# ── Factory setup: new-game integration ───────────────────────────────────
+
+
+def test_manual_factories_setting_persists_on_state(client):
+    """The manual_factories flag should be visible in GameStateResponse."""
+    client.post("/new-game", json={"manual_factories": True})
+    assert client.get("/state").json()["manual_factories"] is True
+
+
+def test_manual_factories_false_by_default(client):
+    client.post("/new-game", json={})
+    assert client.get("/state").json()["manual_factories"] is False

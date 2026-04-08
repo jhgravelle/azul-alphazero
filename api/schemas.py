@@ -19,6 +19,7 @@ class NewGameRequest(BaseModel):
     """Configuration for starting a new game."""
 
     player_types: list[PlayerType] = ["human", "greedy"]
+    manual_factories: bool = False
 
     @field_validator("player_types")
     @classmethod
@@ -26,6 +27,19 @@ class NewGameRequest(BaseModel):
         if len(v) != 2:
             raise ValueError("player_types must have exactly 2 entries")
         return v
+
+
+class PlaceTileRequest(BaseModel):
+    """Request to place one tile into the next factory slot during setup."""
+
+    color: str
+
+
+class RemoveTileRequest(BaseModel):
+    """Request to remove a tile from a factory slot during setup."""
+
+    factory: int
+    slot: int
 
 
 class PendingPlacement(BaseModel):
@@ -70,6 +84,9 @@ class GameStateResponse(BaseModel):
     bag_counts: dict[str, int]
     discard_counts: dict[str, int]
     in_hypothetical: bool = False
+    in_factory_setup: bool = False
+    factory_cursor: int | None = None
+    manual_factories: bool = False
 
 
 # ── Recording schemas ──────────────────────────────────────────────────────

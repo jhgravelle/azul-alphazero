@@ -1,5 +1,5 @@
 // frontend/render.js
-// Shared rendering functions used by both game.js and replay.js.
+// Shared rendering functions used by both live game and replay.
 // No API calls, no game state, no side effects — pure DOM construction.
 
 const TILE_COLORS = {
@@ -38,8 +38,8 @@ const PLAYER_OPTIONS = [
   { value: "mcts",      label: "MCTS Bot" },
 ];
 
-// Sort order for center tiles: FIRST_PLAYER first, then row-0 color order.
 const CENTER_SORT_ORDER = ["FIRST_PLAYER", "BLUE", "YELLOW", "RED", "BLACK", "WHITE"];
+const CENTER_SLOTS = 8;
 
 // ── Low-level helpers ──────────────────────────────────────────────────────
 
@@ -50,15 +50,34 @@ function createElement(tag, className, text) {
   return el;
 }
 
+/**
+ * Make a tile div.
+ * @param {string|null} color  - Tile color name, or null for placeholder.
+ * @param {boolean}     faint  - If true, render as a faint wall hint.
+ */
 function makeTile(color, faint = false) {
   const tile = createElement("div", "tile");
-  if (color) {
+  if (color && !faint) {
+    tile.classList.add("tile-placed");
     tile.style.background = TILE_COLORS[color];
     if (color === "WHITE") tile.style.border = "1px solid #ccc";
-  } else {
-    tile.style.background = "#d0c8b8";
+  } else if (color && faint) {
+    tile.style.background = TILE_COLORS[color];
+    tile.classList.add("tile-faint");
   }
-  if (faint) tile.style.opacity = "0.25";
+  // else: plain placeholder, default grey from CSS
+  return tile;
+}
+
+/**
+ * Make a faint info tile for the bag/box panel.
+ * Uses a CSS class for opacity so the badge count stays fully opaque.
+ */
+function makeInfoTile(color, count) {
+  const tile = createElement("div", "tile tile-info");
+  tile.style.background = TILE_COLORS[color];
+  if (color === "WHITE") tile.style.border = "1px solid #ccc";
+  tile.appendChild(createElement("div", "stack-badge", `${count}`));
   return tile;
 }
 
@@ -69,18 +88,10 @@ function floorPenalty(floorLine) {
 
 // ── Factories and center ───────────────────────────────────────────────────
 
-/**
- * Render the factory displays and center pool.
- *
- * @param {object} sources        - { factories, center, bagCounts?, discardCounts? }
- * @param {object} [opts]
- * @param {boolean} [opts.interactive=false]
- * @param {object}  [opts.selection=null]
- * @param {function} [opts.onTileClick]
- */
 function renderSources(sources, { interactive = false, selection = null, onTileClick = null } = {}) {
   const section = createElement("section", "sources");
 
+  // ── Factories ──
   sources.factories.forEach((factory, index) => {
     const display = createElement("div", "factory");
     const grid = createElement("div", "factory-grid");
@@ -100,88 +111,89 @@ function renderSources(sources, { interactive = false, selection = null, onTileC
     section.appendChild(display);
   });
 
-  const centerPool = createElement("div", "center-pool");
-  centerPool.appendChild(createElement("div", "pool-label", "Center"));
+  // ── Center panel ──
+  const centerPanel = createElement("div", "source-panel");
+  centerPanel.appendChild(createElement("div", "panel-label", "Center"));
+
   const centerTiles = createElement("div", "center-tiles");
 
-  const sortedCenter = [...sources.center].sort(
-    (a, b) => CENTER_SORT_ORDER.indexOf(a) - CENTER_SORT_ORDER.indexOf(b)
-  );
-  if (sortedCenter.length === 0) {
-    centerTiles.appendChild(createElement("span", "empty-label", "empty"));
+  if (sources.center.length === 0) {
+    for (let i = 0; i < CENTER_SLOTS; i++) {
+      centerTiles.appendChild(makeTile(null));
+    }
+  } else if (sources.center.length <= CENTER_SLOTS) {
+    sources.center.forEach(color => {
+      const tile = makeTile(color);
+      if (interactive && color !== "FIRST_PLAYER") {
+        tile.classList.add("clickable");
+        if (selection?.source === -1 && selection?.color === color) {
+          tile.classList.add("selected");
+        }
+        tile.addEventListener("click", () => onTileClick(-1, color));
+      }
+      centerTiles.appendChild(tile);
+    });
+    const remaining = CENTER_SLOTS - sources.center.length;
+    for (let i = 0; i < remaining; i++) {
+      centerTiles.appendChild(makeTile(null));
+    }
   } else {
-    // Group into runs of the same color.
+    // Overflow — sort and stack.
+    const sorted = [...sources.center].sort(
+      (a, b) => CENTER_SORT_ORDER.indexOf(a) - CENTER_SORT_ORDER.indexOf(b)
+    );
     const groups = [];
-    for (const color of sortedCenter) {
+    for (const color of sorted) {
       if (groups.length && groups[groups.length - 1].color === color) {
         groups[groups.length - 1].count++;
       } else {
         groups.push({ color, count: 1 });
       }
     }
-
-    const STACK_OFFSET = 5;   // px per tile behind the front
-    const TILE_SIZE   = 36;   // must match .tile in CSS
-
     groups.forEach(({ color, count }) => {
-      const stackHeight = TILE_SIZE + STACK_OFFSET * (count - 1);
-      const wrapper = createElement("div", "center-stack");
-      wrapper.style.position = "relative";
-      wrapper.style.width    = `${TILE_SIZE}px`;
-      wrapper.style.height   = `${stackHeight}px`;
-      wrapper.style.flexShrink = "0";
-
-      // Render back-to-front so front tile is on top.
-      for (let i = count - 1; i >= 0; i--) {
-        const tile = makeTile(color);
-        tile.style.position = "absolute";
-        tile.style.top      = `${i * STACK_OFFSET}px`;
-        tile.style.left     = "0";
-
-        if (i === 0) {
-          // Front tile: count badge + interaction.
-          if (count > 1) {
-            const badge = createElement("div", "stack-badge", `${count}`);
-            tile.appendChild(badge);
-          }
-          if (interactive && color !== "FIRST_PLAYER") {
-            tile.classList.add("clickable");
-            if (selection?.source === -1 && selection?.color === color) {
-              tile.classList.add("selected");
-            }
-            tile.addEventListener("click", () => onTileClick(-1, color));
-          }
-        }
-        wrapper.appendChild(tile);
+      const tile = makeTile(color);
+      if (count > 1) {
+        tile.appendChild(createElement("div", "stack-badge", `${count}`));
       }
-      centerTiles.appendChild(wrapper);
+      if (interactive && color !== "FIRST_PLAYER") {
+        tile.classList.add("clickable");
+        if (selection?.source === -1 && selection?.color === color) {
+          tile.classList.add("selected");
+        }
+        tile.addEventListener("click", () => onTileClick(-1, color));
+      }
+      centerTiles.appendChild(tile);
     });
   }
 
-  centerPool.appendChild(centerTiles);
-  section.appendChild(centerPool);
+  centerPanel.appendChild(centerTiles);
+  section.appendChild(centerPanel);
 
-  // Bag and discard counts — shown below center if provided.
+  // ── Bag / Box panel ──
   if (sources.bagCounts || sources.discardCounts) {
     const COLOR_ORDER = ["BLUE", "YELLOW", "RED", "BLACK", "WHITE"];
-    const renderPile = (label, counts) => {
-      const pile = createElement("div", "pile-counts");
-      pile.appendChild(createElement("div", "pool-label", label));
-      const row = createElement("div", "pile-row");
+
+    const renderTileRow = (counts) => {
+      const row = createElement("div", "pile-tile-row");
       COLOR_ORDER.forEach(color => {
-        const cell = createElement("div", "pile-cell");
-        const chip = createElement("div", "pile-chip");
-        chip.style.background = TILE_COLORS[color];
-        if (color === "WHITE") chip.style.border = "1px solid #ccc";
-        cell.appendChild(chip);
-        cell.appendChild(createElement("span", "pile-count", `${counts?.[color] ?? 0}`));
-        row.appendChild(cell);
+        row.appendChild(makeInfoTile(color, counts?.[color] ?? 0));
       });
-      pile.appendChild(row);
-      return pile;
+      return row;
     };
-    section.appendChild(renderPile("Bag", sources.bagCounts));
-    section.appendChild(renderPile("Discard", sources.discardCounts));
+
+    const bagDiscardPanel = createElement("div", "bag-discard-panel");
+
+    const bagRow = createElement("div", "pile-labeled-row");
+    bagRow.appendChild(createElement("div", "panel-label", "Bag"));
+    bagRow.appendChild(renderTileRow(sources.bagCounts));
+    bagDiscardPanel.appendChild(bagRow);
+
+    const discardRow = createElement("div", "pile-labeled-row");
+    discardRow.appendChild(createElement("div", "panel-label", "Box"));
+    discardRow.appendChild(renderTileRow(sources.discardCounts));
+    bagDiscardPanel.appendChild(discardRow);
+
+    section.appendChild(bagDiscardPanel);
   }
 
   return section;
@@ -189,21 +201,15 @@ function renderSources(sources, { interactive = false, selection = null, onTileC
 
 // ── Pattern lines ──────────────────────────────────────────────────────────
 
-/**
- * @param {string[][]} patternLines
- * @param {object} [opts]
- * @param {boolean}  [opts.interactive=false]
- * @param {function} [opts.canPlace]         - (row) => bool
- * @param {function} [opts.onRowClick]       - (row) => void
- */
 function renderPatternLines(patternLines, { interactive = false, canPlace = null, onRowClick = null } = {}) {
   const wrapper = createElement("div", "pattern-lines");
 
   patternLines.forEach((line, row) => {
     const rowEl = createElement("div", "pattern-row");
+    const placeable = interactive && canPlace?.(row);
 
-    if (interactive && canPlace?.(row)) {
-      rowEl.classList.add("clickable-row");
+    if (placeable) {
+      rowEl.classList.add("droppable-row");
       rowEl.addEventListener("click", () => onRowClick(row));
     }
 
@@ -219,27 +225,19 @@ function renderPatternLines(patternLines, { interactive = false, canPlace = null
 
 // ── Floor line ─────────────────────────────────────────────────────────────
 
-/**
- * @param {string[]} floorLine
- * @param {object} [opts]
- * @param {boolean}  [opts.interactive=false]
- * @param {boolean}  [opts.canPlace=false]
- * @param {function} [opts.onFloorClick]
- */
 function renderFloorLine(floorLine, { interactive = false, canPlace = false, onFloorClick = null } = {}) {
   const wrapper = createElement("div", "floor-line");
-  wrapper.appendChild(createElement("div", "pool-label", "Floor"));
+  wrapper.appendChild(createElement("div", "floor-label", "Floor"));
 
   const tilesRow = createElement("div", "floor-tiles");
   if (interactive && canPlace) {
-    tilesRow.classList.add("clickable-row");
+    tilesRow.classList.add("droppable-row");
     tilesRow.addEventListener("click", onFloorClick);
   }
 
   FLOOR_PENALTIES.forEach((penalty, i) => {
-    const slot = createElement("div", "floor-slot");
+    const slot = makeTile(floorLine[i] ?? null);
     slot.appendChild(createElement("div", "penalty-label", penalty));
-    slot.appendChild(floorLine[i] ? makeTile(floorLine[i]) : makeTile(null));
     tilesRow.appendChild(slot);
   });
 
@@ -249,11 +247,6 @@ function renderFloorLine(floorLine, { interactive = false, canPlace = false, onF
 
 // ── Wall ───────────────────────────────────────────────────────────────────
 
-/**
- * @param {(string|null)[][]} wall
- * @param {object[]} [pendingPlacements=[]]
- * @param {object[]} [pendingBonuses=[]]
- */
 function renderWall(wall, pendingPlacements = [], pendingBonuses = []) {
   const pendingMap = {};
   pendingPlacements.forEach(p => { pendingMap[`${p.row},${p.column}`] = p.placement_points; });
@@ -347,9 +340,6 @@ function renderWall(wall, pendingPlacements = [], pendingBonuses = []) {
 
 // ── Score bar ──────────────────────────────────────────────────────────────
 
-/**
- * @param {object} board  - Has score, floor_line, pending_placements, pending_bonuses.
- */
 function renderScoreDisplay(board) {
   const penalty = floorPenalty(board.floor_line);
   const placementPoints = (board.pending_placements ?? []).reduce(
@@ -365,7 +355,7 @@ function renderScoreDisplay(board) {
 
   add(`${board.score}`, "score-carried");
   add(` + ${placementPoints}`, "score-pending");
-  add(penalty < 0 ? ` − ${Math.abs(penalty)}` : ` + 0`, "score-floor");
+  add(penalty < 0 ? ` \u2212 ${Math.abs(penalty)}` : ` + 0`, "score-floor");
   add(` + ${bonusPoints}`, "score-bonus");
   add(` = ${grandTotal}`, "score-total");
 
@@ -374,18 +364,6 @@ function renderScoreDisplay(board) {
 
 // ── Player board ───────────────────────────────────────────────────────────
 
-/**
- * @param {object} board       - Board state (from API or recording).
- * @param {number} index       - Player index (0 or 1).
- * @param {string} label       - Display name for the player.
- * @param {boolean} isActive   - Whether this is the current player.
- * @param {object} [opts]      - Interactive options forwarded to sub-renderers.
- * @param {boolean} [opts.interactive=false]
- * @param {function} [opts.canPlace]
- * @param {function} [opts.onRowClick]
- * @param {boolean}  [opts.canPlaceFloor=false]
- * @param {function} [opts.onFloorClick]
- */
 function renderBoard(board, index, label, isActive, opts = {}) {
   const wrapper = createElement("div",
     `player-board${isActive ? " active-player" : ""}`);

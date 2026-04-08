@@ -465,3 +465,70 @@ def test_round_trip_preserves_analysis(tmp_path):
     loaded = GameRecord.load(path)
 
     assert loaded.turns[0].analysis == {"value_estimate": 0.42}
+
+
+# Add these tests to the "record_turn" section of test_game_recorder.py
+
+
+def test_record_turn_captures_bag_counts():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    assert "bag_counts" in recorder.record.turns[0].source_state
+
+
+def test_record_turn_captures_discard_counts():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    assert "discard_counts" in recorder.record.turns[0].source_state
+
+
+def test_record_turn_bag_counts_use_color_names():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    bag_counts = recorder.record.turns[0].source_state["bag_counts"]
+    for key in bag_counts:
+        assert key in ("BLUE", "YELLOW", "RED", "BLACK", "WHITE")
+
+
+def test_record_turn_bag_counts_sum_matches_bag_size():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    bag_counts = recorder.record.turns[0].source_state["bag_counts"]
+    assert sum(bag_counts.values()) == len(game.state.bag)
+
+
+def test_record_turn_discard_counts_empty_at_start():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    discard_counts = recorder.record.turns[0].source_state["discard_counts"]
+    assert sum(discard_counts.values()) == 0
+
+
+def test_round_trip_preserves_bag_counts(tmp_path):
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    move = _first_legal_move(game)
+    recorder.record_turn(game, move)
+    expected = recorder.record.turns[0].source_state["bag_counts"]
+
+    path = tmp_path / "game.json"
+    recorder.save(path)
+    loaded = GameRecord.load(path)
+
+    assert loaded.turns[0].source_state["bag_counts"] == expected

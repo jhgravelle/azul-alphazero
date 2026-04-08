@@ -11,7 +11,8 @@ from typing import Any
 
 from engine.board import Board
 from engine.game import Game, Move
-from engine.constants import PLAYERS
+from engine.constants import PLAYERS, Tile
+
 
 # ── Board state capture ────────────────────────────────────────────────────
 
@@ -35,11 +36,18 @@ def _capture_board(board: Board) -> dict[str, Any]:
 
 def _capture_source_state(game: Game) -> dict[str, Any]:
     """Return a snapshot of the shared tile sources before a move is applied."""
+    colors = [t for t in Tile if t != Tile.FIRST_PLAYER]
+
+    def _counts(tile_list: list[Tile]) -> dict[str, int]:
+        return {t.name: tile_list.count(t) for t in colors}
+
     return {
         "factories": [
             [tile.name for tile in factory] for factory in game.state.factories
         ],
         "center": [tile.name for tile in game.state.center],
+        "bag_counts": _counts(game.state.bag),
+        "discard_counts": _counts(game.state.discard),
     }
 
 
@@ -115,7 +123,15 @@ class GameRecord:
             TurnRecord(
                 player_index=turn["player_index"],
                 board_states=turn["board_states"],
-                source_state=turn.get("source_state", {"factories": [], "center": []}),
+                source_state=turn.get(
+                    "source_state",
+                    {
+                        "factories": [],
+                        "center": [],
+                        "bag_counts": {},
+                        "discard_counts": {},
+                    },
+                ),
                 move_source=turn["move_source"],
                 move_tile=turn["move_tile"],
                 move_destination=turn["move_destination"],

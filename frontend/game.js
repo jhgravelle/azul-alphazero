@@ -220,43 +220,31 @@ function renderLive() {
   header.appendChild(menuBtn);
   app.appendChild(header);
 
-  // Three-column layout: board 0, sources, board 1.
+  // Sources above boards.
   const humanTurn = !currentPlayerIsBot() && !state.is_game_over;
-  const layout = createElement("div", "game-layout");
-
-  layout.appendChild(renderBoard(
-    state.boards[0], 0,
-    PLAYER_OPTIONS.find(o => o.value === state.player_types[0])?.label ?? state.player_types[0],
-    state.current_player === 0,
-    {
-      interactive: state.current_player === 0 && humanTurn && selection !== null,
-      canPlace: row => isLegalDestination(row),
-      onRowClick: row => submitMove(selection.source, selection.color, row),
-      canPlaceFloor: isLegalDestination(-2),
-      onFloorClick: () => submitMove(selection.source, selection.color, -2),
-    }
-  ));
-
-  layout.appendChild(renderSources(
+  app.appendChild(renderSources(
     { factories: state.factories, center: state.center,
       bagCounts: state.bag_counts, discardCounts: state.discard_counts },
     { interactive: humanTurn, selection, onTileClick: handleSourceClick }
   ));
 
-  layout.appendChild(renderBoard(
-    state.boards[1], 1,
-    PLAYER_OPTIONS.find(o => o.value === state.player_types[1])?.label ?? state.player_types[1],
-    state.current_player === 1,
-    {
-      interactive: state.current_player === 1 && humanTurn && selection !== null,
-      canPlace: row => isLegalDestination(row),
-      onRowClick: row => submitMove(selection.source, selection.color, row),
-      canPlaceFloor: isLegalDestination(-2),
-      onFloorClick: () => submitMove(selection.source, selection.color, -2),
-    }
-  ));
-
-  app.appendChild(layout);
+  const boards = createElement("div", "boards");
+  state.boards.forEach((board, index) => {
+    const isActive = index === state.current_player;
+    const canInteract = isActive && humanTurn && selection !== null;
+    boards.appendChild(renderBoard(board, index,
+      PLAYER_OPTIONS.find(o => o.value === state.player_types[index])?.label ?? state.player_types[index],
+      isActive,
+      {
+        interactive: canInteract,
+        canPlace: row => isLegalDestination(row),
+        onRowClick: row => submitMove(selection.source, selection.color, row),
+        canPlaceFloor: isLegalDestination(-2),
+        onFloorClick: () => submitMove(selection.source, selection.color, -2),
+      }
+    ));
+  });
+  app.appendChild(boards);
 }
 
 // ── Replay render ──────────────────────────────────────────────────────────
@@ -329,19 +317,26 @@ function renderReplay() {
       : `${record.player_names[currentTurn.player_index]}\u2019s move`
   ));
 
-  // Three-column layout matching live game.
-  const layout = createElement("div", "game-layout");
+  // Sources above boards — same structure as live game.
+  app.appendChild(renderSources(
+    {
+      factories: sourceState.factories,
+      center: sourceState.center,
+      bagCounts: sourceState.bag_counts,
+      discardCounts: sourceState.discard_counts,
+    },
+    { interactive: false }
+  ));
 
-  const makeReplayBoard = (i) => {
-    const board = { ...boardStates[i], pending_placements: [], pending_bonuses: [] };
+  const boards = createElement("div", "boards");
+  boardStates.forEach((bs, i) => {
+    const board = { ...bs, pending_placements: [], pending_bonuses: [] };
     const isActive = !isAfterLastMove && currentTurn.player_index === i;
-    return renderBoard(board, i, record.player_names[i], isActive, { interactive: false });
-  };
-
-  layout.appendChild(makeReplayBoard(0));
-  layout.appendChild(renderSources(sourceState, { interactive: false }));
-  layout.appendChild(makeReplayBoard(1));
-  app.appendChild(layout);
+    boards.appendChild(
+      renderBoard(board, i, record.player_names[i], isActive, { interactive: false })
+    );
+  });
+  app.appendChild(boards);
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ def client():
     main._game.setup_round()
     main._player_types = ["human", "human"]
     main._agents = [None, None]
+    main._history.clear()
     return TestClient(app)
 
 
@@ -271,3 +272,96 @@ def test_saved_recording_is_valid_json(client_with_recordings):
     data = json.loads(saved_files[0].read_text())
     assert "game_id" in data
     assert "turns" in data
+
+
+# ── POST /undo ─────────────────────────────────────────────────────────────
+
+
+def test_undo_after_one_move_restores_previous_state(client):
+    """After one move, POST /undo should restore the state to before that move."""
+    from api import main
+
+    # Capture the full state response before any move.
+    before = client.get("/state").json()
+
+    # Make exactly one legal move.
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+
+    # Confirm the state changed.
+    assert client.get("/state").json() != before
+
+    # Undo — state should be identical to what it was before the move.
+    response = client.post("/undo")
+    assert response.status_code == 200
+    assert client.get("/state").json() == before
+
+
+def test_undo_decrements_history_each_time(client):
+    """Each undo pops exactly one entry; a third undo on two moves returns 400."""
+    from api import main
+
+    for _ in range(2):
+        move = main._game.legal_moves()[0]
+        client.post(
+            "/move",
+            json={
+                "source": move.source,
+                "tile": move.tile.name,
+                "destination": move.destination,
+            },
+        )
+
+    assert client.post("/undo").status_code == 200
+    assert client.post("/undo").status_code == 200
+    # History is now empty — third undo must fail.
+    assert client.post("/undo").status_code == 400
+
+
+def test_undo_with_no_history_returns_400(client):
+    """POST /undo on a fresh game with no moves made should return 400."""
+    response = client.post("/undo")
+    assert response.status_code == 400
+
+
+def test_undo_unavailable_in_bot_vs_bot_game(client):
+    """Undo is disabled when both players are agents — no human to undo for."""
+    from api import main
+
+    # Switch both players to agents.
+    main._player_types = ["random", "random"]
+
+    # Make an agent move so history would exist if undo were permitted.
+    client.post("/agent-move")
+
+    response = client.post("/undo")
+    assert response.status_code == 400
+
+
+def test_new_game_clears_undo_history(client):
+    """Starting a new game must clear any existing undo history."""
+    from api import main
+
+    # Make one move to populate history.
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+
+    # Start a fresh game.
+    client.post("/new-game", json={})
+
+    # Undo should now fail — history was cleared by /new-game.
+    assert client.post("/undo").status_code == 400

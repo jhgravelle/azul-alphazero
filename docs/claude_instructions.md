@@ -20,20 +20,25 @@ I am building an Azul board game engine with an AlphaZero AI in Python. This is 
 - **Git commits:** Remind me when it's a good time to commit, and tell me what the commit message should be.
 - **Check CI:** Remind me to push and check that GitHub Actions goes green before moving to the next piece.
 - **Repeat on request:** If I ask for something you've already provided, just repeat it without comment.
+- **Complete files for CSS:** When making CSS changes, always provide the complete file rather than incremental updates — partial CSS updates have caused sync issues in the past.
+- **Sketch before coding:** For layout or visual changes, describe or sketch in text first to confirm we agree before writing any code.
 
 ---
 
 ## Current phase
 
-> **Phase 6b Step 2 — Expose scoring breakdown in the API**
+> **Phase 7a — Undo with snapshot stack**
 
 ### What we are building
 
-Add `carried_score`, `earned_score`, `bonus_score`, and `grand_total` per player to `BoardResponse` in `api/schemas.py`, and populate them in `api/main.py`.
+- `_history: list[GameState]` module-level variable in `api/main.py`
+- Deep copy of `GameState` pushed onto `_history` before every `make_move` call in `/move` and `/agent-move`
+- `POST /undo` endpoint — pops the last state from `_history` and restores it to `_game`
+- Undo only available when at least one player is human (not bot-vs-bot)
+- Undo button in the live game header — disabled when no history or bot-vs-bot
+- `_history` clears on `POST /new-game`
 
-`bonus_score` is `score_wall_bonus(board.wall)` — the wall bonus component of `earned_score` broken out separately so the UI can display it distinctly.
-
-After the API step: UI changes (wall tile preview annotations, bonus indicators, four-part score display), then model integration.
+After undo: hypothetical mode (7b), then manual factory setup (7c).
 
 ---
 
@@ -47,7 +52,7 @@ After the API step: UI changes (wall tile preview annotations, bonus indicators,
 - `BOARD_SIZE`, `PLAYERS`, `TILES_PER_COLOR`, `NUMBER_OF_FACTORIES`, `TILES_PER_FACTORY`
 - `FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3]`
 - `WALL_PATTERN` — 5x5 grid, derived from `COLOR_TILES` and `BOARD_SIZE`
-- `CUMULATIVE_FLOOR_PENALTIES` — indexed 0..NUMBER_OF_FACTORIES*TILES_PER_FACTORY, no capping needed at call site
+- `CUMULATIVE_FLOOR_PENALTIES` — indexed 0..NUMBER_OF_FACTORIES*TILES_PER_FACTORY
 - `COLUMN_FOR_COLOR_IN_ROW[tile][row]` — precomputed wall column lookup
 
 **`engine/tile.py`** — re-exports `Tile` and `COLOR_TILES` from `constants.py` for backwards compatibility only. All new code imports from `engine.constants` directly.
@@ -64,95 +69,102 @@ After the API step: UI changes (wall tile preview annotations, bonus indicators,
 - `score_game` calls `score_wall_bonus` from `scoring.py`
 
 **`engine/scoring.py`** — pure scoring functions (no state mutation):
-- `score_placement(wall, row, column)` — pointer-walk, precondition: tile already placed
-- `score_floor_penalty(floor_line)` — single lookup into `CUMULATIVE_FLOOR_PENALTIES`
-- `score_wall_bonus(wall)` — +2/+7/+10 bonuses for completed rows/columns/colors
-- `carried_score(board)` — returns `board.score`
-- `earned_score(board)` — simulates pending placements sequentially on temp wall copy, includes floor penalty and wall bonus on post-placement wall
-- `grand_total(board)` — `carried_score + earned_score`, not clamped
+- `score_placement(wall, row, column)`
+- `score_floor_penalty(floor_line)`
+- `score_wall_bonus(wall)`
+- `carried_score(board)`
+- `earned_score(board)`
+- `grand_total(board)`
+- `pending_placement_details(board)` — returns list of detail objects + temp wall
+- `pending_bonus_details(wall)` — returns list of bonus detail objects
 
-**`cli/cli.py`** — full terminal UI, human vs human, colored tiles, dim wall hints.
+**`engine/game_recorder.py`** — `GameRecorder`, `GameRecord`, `TurnRecord`:
+- `record_turn(game, move, analysis=None)` — called BEFORE `make_move`
+- `TurnRecord.source_state` captures: factories, center, bag_counts, discard_counts
+- `TurnRecord.board_states` captures: wall, pattern_lines, floor_line, score per player
+- `finalize(game)` — records final scores and winner
+- `save(path)` / `GameRecord.load(path)` — JSON file I/O to `recordings/`
+
+**`cli/cli.py`** — full terminal UI, human vs human.
 
 **Known engine gotchas:**
-- `_is_valid_destination` checks `player.wall[row][wall_column_for(row, tile)] is not None` — not `tile in player.wall[row]`
+- `_is_valid_destination` checks `player.wall[row][wall_column_for(row, tile)] is not None`
 - `_score_floor` must filter out `Tile.FIRST_PLAYER` before adding to discard
-- Empty `legal_moves()` mid-round is always a bug, not an edge case
+- Empty `legal_moves()` mid-round is always a bug
 - `score_placement` precondition: tile must be placed in wall before calling
+- Always import `Tile` from `engine.constants`, never from `engine.tile`
+- `Move` uses `.tile`, not `.color`
 
 ---
 
 ### Phase 2 — Graphical Front End ✅
 
-- `api/schemas.py` — `MoveRequest`, `BoardResponse`, `GameStateResponse`, `NewGameRequest`, `PlayerType`
-- `api/main.py` — GET /state, POST /move, POST /new-game, POST /agent-move, `_make_agent()`
-- `frontend/` — full click-to-move UI, New Game dialog, bot turns via `maybeRunBot()`, 2s inter-round pause
+**`api/schemas.py`:**
+- `MoveRequest`, `NewGameRequest`, `PlayerType`
+- `PendingPlacement`, `PendingBonus`, `BoardResponse`
+- `GameStateResponse` — includes `bag_counts`, `discard_counts`, `round`
+- `RecordingSummary` — for `GET /recordings` list
+
+**`api/main.py`:**
+- `GET /state`, `POST /move`, `POST /new-game`, `POST /agent-move`
+- `GET /recordings`, `GET /recordings/{game_id}`
+- `_recorder: GameRecorder | None` — created on `/new-game`, saved on game over
+- `_RECORDINGS_DIR = Path("recordings")`
+- `_build_response(game)` — translates engine state to `GameStateResponse`
+- `_build_pending(board)` — computes pending placements and bonuses
+
+**`frontend/index.html`** — single page, loads `render.js` then `game.js`, contains menu overlay HTML.
+
+**`frontend/render.js`** — shared, no API calls:
+- `makeTile(color, faint)` — adds `tile-placed` class for real tiles
+- `makeInfoTile(color, count)` — for bag/box panel, uses `tile-info` class
+- `renderSources(sources, opts)` — factories + center panel + bag/box panel
+- `renderPatternLines(patternLines, opts)` — `droppable-row` class when interactive
+- `renderFloorLine(floorLine, opts)` — rotated "Floor" label, penalties inside tiles
+- `renderWall(wall, pendingPlacements, pendingBonuses)` — full wall with annotations
+- `renderScoreDisplay(board)` — carried + pending + floor + bonus = total
+- `renderBoard(board, index, label, isActive, opts)`
+- `CENTER_SLOTS = 8` — placeholders before stacking kicks in
+
+**`frontend/game.js`** — live game + replay mode + menu:
+- `renderLive()` — full live game render
+- `renderReplay()` — replay render using recorded snapshots
+- `openMenu()` / `closeMenu()` / `initMenu()` — overlay menu
+- `hasGameInProgress` — controls whether menu close button is enabled
+
+**`frontend/style.css`** — full stylesheet:
+- Tile states: `.tile` (placeholder), `.tile-placed` (shadow), `.tile-faint` (wall hint), `.tile-info` (bag/box)
+- Selection: `.tile.selected` — white outline, no scale
+- Droppable: `.droppable-row` — white outline on whole row
+- All text overlays: white + `text-shadow: 0 1px 3px rgba(0,0,0,0.9)`
+- Rotated labels: `.panel-label`, `.floor-label` — `writing-mode: vertical-rl; transform: rotate(180deg)`
+- Pending tiles: full opacity, score overlaid as white text
 
 ---
 
 ### Phase 3 — Random Bot + Agent Interface ✅
-
-- `agents/base.py` — abstract `Agent` with `choose_move(game) -> Move`
-- `agents/random.py`, `cautious.py`, `efficient.py`, `greedy.py`
-- `scripts/self_play.py` — `run_game`, `run_series`, `AGENT_REGISTRY`
-
----
-
 ### Phase 4 — Monte Carlo Tree Search ✅
-
-- `agents/mcts.py` — UCB1, `MCTSNode`, `_select/_expand/_simulate/_backpropagate`
-
----
-
 ### Phase 5 — Neural Network ✅
-
-- `neural/encoder.py` — `encode_state` (116 floats), `encode_move`, `decode_move`, `STATE_SIZE=116`, `MOVE_SPACE_SIZE=180`
-- `neural/model.py` — `AzulNet`: stem + 3×ResBlock(256) + policy + value heads
-- `neural/replay.py` — `ReplayBuffer`: circular buffer, push/sample
-- `neural/trainer.py` — `compute_loss`, `Trainer`, `collect_self_play`, `collect_heuristic_games`
-
----
-
-### Phase 6 — AlphaZero Self-Play Training 🔄 (paused for 6b)
-
-**`agents/alphazero.py`:**
-- `AZNode` dataclass, PUCT selection (C=1.5), expand/evaluate/backpropagate
-- `_evaluate` — value head only, no rollouts
-- `get_policy_targets` — visit-count distribution for training
-- temperature: 0.0 = greedy, 1.0 = proportional
-
-**`neural/trainer.py`:**
-- `collect_self_play(buf, net, num_games, simulations, temperature, opponent)`
-- `collect_heuristic_games(buf, num_games)`
-
-**`scripts/train.py`:**
-- `--pretrain-games`, `--greedy-warmup`, `--warmup-threshold`, `--warmup-window`
-- Per-game eval logging, `_MAX_MOVES=300`, reset-to-best on failed threshold
-
-**Known issues to fix before next training run:**
-- Rolling avg bug: records 0 for AZ-as-p1 games → warmup threshold never reached
-- 100 train steps too few — increase to 500
-- 20 eval games too noisy — increase to 40 or lower threshold to 0.48
-
----
-
-### Phase 6b Step 1 — Engine scoring functions ✅
-
-See `engine/scoring.py` and `engine/constants.py` above.
+### Phase 6 — AlphaZero Self-Play Training 🔄 (paused)
+### Phase 6b — Reward Shaping + UI Polish ✅
 
 ---
 
 ## Conventions
 
-- black formatting, isort, `extend-ignore = E203`
+- black formatting + pre-commit hook installed
+- isort, `extend-ignore = E203`
 - Type hints on all signatures, docstrings on all public classes/functions
 - American English: "tile", "center"
-- **Never abbreviate `column` as `col` or `c` in variable names** — column and color are both core game concepts and must be unambiguous
+- **Never abbreviate `column` as `col` or `c`** — column and color are both core concepts
 - **Prefer `tile` over `color` in variable names** where referring to a `Tile` enum value
+- **Always import `Tile` from `engine.constants`**, never from `engine.tile`
+- **`Move` uses `.tile`, not `.color`**
 - Slow tests: `@pytest.mark.slow`, excluded by default
-- `checkpoints/` is gitignored
+- `checkpoints/` and `recordings/` are gitignored
 - Never use `print()` in engine code — use `logging`
 - Never import `api/` or `frontend/` from `engine/`
-- Never skip writing tests
-- When writing a new test file, give the most basic implementation file to get past import errors
 - No Unicode characters in log strings — use plain ASCII only (Windows console encoding)
-- **Windows:** use `python -m module.path` to run scripts, set `$env:PYTHONPATH = "."` if needed. Do not suggest grep — use `findstr` or VS Code search instead
+- **Windows:** use `python -m module.path` to run scripts, set `$env:PYTHONPATH = "."` if needed. Use `findstr` not grep.
+- **CSS:** always provide complete files, not incremental updates
+- **Layout/visual changes:** sketch in text first before writing code

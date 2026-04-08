@@ -2,6 +2,7 @@
 
 """FastAPI application for the Azul game."""
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -29,6 +30,7 @@ from engine.board import Board
 from engine.constants import Tile
 from engine.game import Game, Move
 from engine.game_recorder import GameRecorder  # GameRecord,
+from engine.game_state import GameState
 from engine.scoring import (
     pending_bonus_details,
     pending_placement_details,
@@ -54,6 +56,7 @@ _game.setup_round()
 _player_types: list[PlayerType] = ["human", "human"]
 _agents: list[Agent | None] = [None, None]
 _recorder: GameRecorder | None = None
+_history: list[GameState] = []
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -82,6 +85,11 @@ def _str_to_tile(name: str) -> Tile:
         return Tile[name]
     except KeyError:
         raise HTTPException(status_code=422, detail=f"Unknown tile color: {name!r}")
+
+
+def _push_history() -> None:
+    """Push a deep copy of the current game state onto the undo stack."""
+    _history.append(copy.deepcopy(_game.state))
 
 
 def _build_pending(
@@ -196,6 +204,7 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
     if _recorder is not None:
         _recorder.record_turn(_game, move)
 
+    _push_history()
     _game.make_move(move)
 
     if _game.is_game_over() and _recorder is not None:
@@ -214,6 +223,7 @@ def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
     _game = Game()
     _game.setup_round()
     _recorder = GameRecorder(player_names=list(_player_types))
+    _history.clear()
     return _build_response(_game)
 
 
@@ -234,12 +244,26 @@ def agent_move() -> GameStateResponse:
     if _recorder is not None:
         _recorder.record_turn(_game, move)
 
+    _push_history()
     _game.make_move(move)
 
     if _game.is_game_over() and _recorder is not None:
         _save_recording(_recorder, _game)
         _recorder = None
 
+    return _build_response(_game)
+
+
+@app.post("/undo", response_model=GameStateResponse)
+def undo() -> GameStateResponse:
+    """Restore the game to the state before the last move."""
+    if all(t != "human" for t in _player_types):
+        raise HTTPException(
+            status_code=400, detail="Undo is not available in bot-vs-bot games"
+        )
+    if not _history:
+        raise HTTPException(status_code=400, detail="Nothing to undo")
+    _game.state = _history.pop()
     return _build_response(_game)
 
 

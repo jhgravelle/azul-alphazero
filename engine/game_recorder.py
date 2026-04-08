@@ -13,7 +13,6 @@ from engine.board import Board
 from engine.game import Game, Move
 from engine.constants import PLAYERS, Tile
 
-
 # ── Board state capture ────────────────────────────────────────────────────
 
 

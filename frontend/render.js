@@ -88,25 +88,64 @@ function floorPenalty(floorLine) {
 
 // ── Factories and center ───────────────────────────────────────────────────
 
-function renderSources(sources, { interactive = false, selection = null, onTileClick = null } = {}) {
+/**
+ * Render the sources row (factories, center, bag/box).
+ *
+ * Setup-mode options (all ignored when setupMode is false):
+ *   setupMode        {boolean}  - render factories and bag for setup interaction
+ *   factoryCursor    {number}   - flat index (0..N*4-1) of the next slot to fill
+ *   onBagTileClick   {fn}       - called with (color) when a bag tile is clicked
+ *   onFactoryRemove  {fn}       - called with (factoryIndex, slotIndex) when a placed tile is clicked
+ */
+function renderSources(sources, {
+  interactive = false,
+  selection = null,
+  onTileClick = null,
+  setupMode = false,
+  factoryCursor = null,
+  onBagTileClick = null,
+  onFactoryRemove = null,
+} = {}) {
   const section = createElement("section", "sources");
 
   // ── Factories ──
-  sources.factories.forEach((factory, index) => {
+  sources.factories.forEach((factory, factoryIndex) => {
     const display = createElement("div", "factory");
     const grid = createElement("div", "factory-grid");
-    for (let i = 0; i < 4; i++) {
-      const color = factory[i] ?? null;
-      const tile = makeTile(color);
-      if (interactive && color && color !== "FIRST_PLAYER") {
-        tile.classList.add("clickable");
-        if (selection?.source === index && selection?.color === color) {
-          tile.classList.add("selected");
+
+    for (let slotIndex = 0; slotIndex < 4; slotIndex++) {
+      const color = factory[slotIndex] ?? null;
+      const flatIndex = factoryIndex * 4 + slotIndex;
+
+      if (setupMode) {
+        if (color) {
+          // Placed tile — clickable for removal.
+          const tile = makeTile(color);
+          tile.classList.add("clickable");
+          tile.addEventListener("click", () => onFactoryRemove(factoryIndex, slotIndex));
+          grid.appendChild(tile);
+        } else {
+          // Empty placeholder — highlight if it's the cursor slot.
+          const tile = makeTile(null);
+          if (flatIndex === factoryCursor) {
+            tile.classList.add("cursor-slot");
+          }
+          grid.appendChild(tile);
         }
-        tile.addEventListener("click", () => onTileClick(index, color));
+      } else {
+        // Normal live-game interaction.
+        const tile = makeTile(color);
+        if (interactive && color && color !== "FIRST_PLAYER") {
+          tile.classList.add("clickable");
+          if (selection?.source === factoryIndex && selection?.color === color) {
+            tile.classList.add("selected");
+          }
+          tile.addEventListener("click", () => onTileClick(factoryIndex, color));
+        }
+        grid.appendChild(tile);
       }
-      grid.appendChild(tile);
     }
+
     display.appendChild(grid);
     section.appendChild(display);
   });
@@ -173,10 +212,24 @@ function renderSources(sources, { interactive = false, selection = null, onTileC
   if (sources.bagCounts || sources.discardCounts) {
     const COLOR_ORDER = ["BLUE", "YELLOW", "RED", "BLACK", "WHITE"];
 
-    const renderTileRow = (counts) => {
+    const renderTileRow = (counts, clickable) => {
       const row = createElement("div", "pile-tile-row");
       COLOR_ORDER.forEach(color => {
-        row.appendChild(makeInfoTile(color, counts?.[color] ?? 0));
+        const count = counts?.[color] ?? 0;
+        let tile;
+        if (clickable && count > 0) {
+          // Setup mode: full-opacity placed tile, clickable, count badge.
+          tile = createElement("div", "tile tile-placed tile-setup-bag");
+          tile.style.background = TILE_COLORS[color];
+          if (color === "WHITE") tile.style.border = "1px solid #ccc";
+          tile.appendChild(createElement("div", "stack-badge", `${count}`));
+          tile.classList.add("clickable");
+          tile.addEventListener("click", () => onBagTileClick(color));
+        } else {
+          // Normal mode: faint info tile.
+          tile = makeInfoTile(color, count);
+        }
+        row.appendChild(tile);
       });
       return row;
     };
@@ -185,12 +238,12 @@ function renderSources(sources, { interactive = false, selection = null, onTileC
 
     const bagRow = createElement("div", "pile-labeled-row");
     bagRow.appendChild(createElement("div", "panel-label", "Bag"));
-    bagRow.appendChild(renderTileRow(sources.bagCounts));
+    bagRow.appendChild(renderTileRow(sources.bagCounts, setupMode));
     bagDiscardPanel.appendChild(bagRow);
 
     const discardRow = createElement("div", "pile-labeled-row");
     discardRow.appendChild(createElement("div", "panel-label", "Box"));
-    discardRow.appendChild(renderTileRow(sources.discardCounts));
+    discardRow.appendChild(renderTileRow(sources.discardCounts, false));
     bagDiscardPanel.appendChild(discardRow);
 
     section.appendChild(bagDiscardPanel);
@@ -336,6 +389,84 @@ function renderWall(wall, pendingPlacements = [], pendingBonuses = []) {
   }
 
   return wrapper;
+}
+
+// ── Hypothetical tree panel ────────────────────────────────────────────────
+
+/**
+ * Render the full hypothetical exploration tree below the boards.
+ * @param {object} root         - Root HypNode
+ * @param {string[]} playerTypes - e.g. ["human", "greedy"]
+ */
+function renderHypTree(root, playerTypes) {
+  const panel = createElement("div", "hyp-tree-panel");
+  panel.appendChild(createElement("div", "hyp-tree-heading", "Exploration tree"));
+
+  const tree = createElement("div", "hyp-tree");
+  _renderHypNode(tree, root, playerTypes, 0);
+  panel.appendChild(tree);
+  return panel;
+}
+
+function _moveLabel(move) {
+  if (!move || move.source === null) return null;
+
+  const src = move.source === -1 ? "Ce" : `F${move.source + 1}`;
+  const dst = move.destination === -2 ? "Fl" : `R${move.destination + 1}`;
+
+  const chip = createElement("span", "hyp-tile-chip");
+  chip.style.background = TILE_COLORS[move.color] ?? "#888";
+  if (move.color === "WHITE") chip.style.border = "1px solid #555";
+  if (move.count > 1) {
+    chip.appendChild(createElement("span", "hyp-tile-count", `${move.count}`));
+  }
+
+  const label = document.createElement("span");
+  label.className = "hyp-move-label";
+  label.appendChild(createElement("span", "hyp-src", src));
+  label.appendChild(chip);
+  label.appendChild(createElement("span", "hyp-dst", `\u2192 ${dst}`));
+  return label;
+}
+
+function _renderHypNode(container, node, playerTypes, depth) {
+  const row = createElement("div", `hyp-node${node.isCurrent ? " hyp-node-current" : ""}`);
+  row.style.paddingLeft = `${depth * 20}px`;
+
+  if (node.move === null) {
+    // Root node — just scores.
+    row.appendChild(createElement("span", "hyp-scores hyp-scores-root",
+      node.scores.map((s, i) => `P${i + 1}: ${s}`).join("  \u2013  ")));
+  } else {
+    const emoji = node.move.isBot ? "🤖" : "👤";
+    row.appendChild(createElement("span", "hyp-emoji", emoji));
+
+    const label = _moveLabel(node.move);
+    if (label) row.appendChild(label);
+
+    row.appendChild(createElement("span", "hyp-scores",
+      node.scores.join(" \u2013 ")));
+
+    // Commit button — triggers execution of this line.
+    const commitBtn = createElement("button", "hyp-commit-btn", "Commit");
+    commitBtn.addEventListener("click", e => {
+      e.stopPropagation();
+      // Imported via closure from game.js.
+      _executeCommit(node);
+    });
+    row.appendChild(commitBtn);
+  }
+
+  // Clicking the row jumps to that position.
+  if (!node.isCurrent) {
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => jumpToNode(node));
+  }
+
+  container.appendChild(row);
+
+  // Recurse into children.
+  node.children.forEach(child => _renderHypNode(container, child, playerTypes, depth + 1));
 }
 
 // ── Score bar ──────────────────────────────────────────────────────────────

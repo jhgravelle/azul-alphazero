@@ -816,10 +816,14 @@ def test_random_fills_all_remaining_placeholders(client):
         assert len(factory) == 4
 
 
-def test_random_exits_setup_mode(client):
+def test_random_fills_but_stays_in_setup_mode(client):
+    """Random fills all slots and stays in setup mode — user must press Commit."""
     client.post("/setup-factories/start")
     response = client.post("/setup-factories/random")
-    assert response.json()["in_factory_setup"] is False
+    data = response.json()
+    assert data["in_factory_setup"] is True
+    for factory in data["factories"]:
+        assert len(factory) == 4
 
 
 def test_random_with_some_tiles_already_placed(client):
@@ -890,3 +894,290 @@ def test_manual_factories_setting_persists_on_state(client):
 def test_manual_factories_false_by_default(client):
     client.post("/new-game", json={})
     assert client.get("/state").json()["manual_factories"] is False
+
+
+# ── Factory setup: tile conservation ──────────────────────────────────────
+
+
+def test_total_tiles_conserved_after_place_and_remove(client):
+    """bag + discard + factories must always equal 100."""
+    from api import main
+
+    def total_tiles():
+        g = main._game.state
+        in_bag = len(g.bag)
+        in_discard = len(g.discard)
+        in_factories = sum(len(f) for f in g.factories)
+        return in_bag + in_discard + in_factories
+
+    client.post("/setup-factories/start")
+    before = total_tiles()
+
+    # Place 4 tiles.
+    for _ in range(4):
+        color = next(t for t in main._game.state.bag).name
+        client.post("/setup-factories/place", json={"color": color})
+
+    assert total_tiles() == before
+
+    # Remove one tile.
+    client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
+
+    assert total_tiles() == before
+
+
+def test_place_rejected_when_cursor_is_past_end(client):
+    """Placing a tile when cursor is past all slots should return 400."""
+    from api import main
+
+    client.post("/setup-factories/start")
+
+    # Advance cursor past all slots without filling factories
+    # (simulates state after random fill where cursor == total_slots).
+    main._factory_cursor = len(main._game.state.factories) * 4
+
+    # place should reject — cursor is past the end and factories are NOT full,
+    # so the restart-on-full branch does not trigger.
+    color = next(t for t in main._game.state.bag).name
+    response = client.post("/setup-factories/place", json={"color": color})
+    assert response.status_code == 400
+
+
+def test_total_tiles_conserved_after_restart(client):
+    """After restart, all tiles must be back in the bag."""
+    from api import main
+
+    def total_tiles():
+        g = main._game.state
+        in_bag = len(g.bag)
+        in_discard = len(g.discard)
+        in_factories = sum(len(f) for f in g.factories)
+        return in_bag + in_discard + in_factories
+
+    client.post("/setup-factories/start")
+    bag_at_start = len(main._game.state.bag)
+    before = total_tiles()
+
+    # Fill all factories via random.
+    client.post("/setup-factories/random")
+
+    assert total_tiles() == before
+
+    # Restart — everything should be back in the bag.
+    client.post("/setup-factories/restart")
+
+    assert total_tiles() == before
+    assert len(main._game.state.bag) == bag_at_start
+
+
+def test_total_tiles_conserved_after_clicking_placed_tile_when_full(client):
+    """Remove a tile from a full factory — tile count must stay constant."""
+    from api import main
+
+    def total_tiles():
+        g = main._game.state
+        return len(g.bag) + len(g.discard) + sum(len(f) for f in g.factories)
+
+    client.post("/setup-factories/start")
+    before = total_tiles()
+
+    # Fill all factories.
+    client.post("/setup-factories/random")
+    assert total_tiles() == before
+
+    # Remove one tile from a full factory.
+    client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
+    assert total_tiles() == before
+
+
+# ── Factory setup: random is truly random after restart ────────────────────
+
+
+def test_restart_shuffles_bag(client):
+    """After restart the bag should contain all tiles in a shuffled order."""
+    from api import main
+
+    client.post("/setup-factories/start")
+    client.post("/setup-factories/random")  # fill all factories
+
+    # Capture state before restart.
+    g = main._game.state
+    tiles_in_factories = [t for f in g.factories for t in f]
+    tiles_in_bag = list(g.bag)
+    all_tiles_sorted = sorted(t.name for t in tiles_in_factories + tiles_in_bag)
+    unshuffled_order = tiles_in_factories + tiles_in_bag
+
+    client.post("/setup-factories/restart")
+    bag_after = list(main._game.state.bag)
+
+    # All tiles returned to bag.
+    assert sorted(t.name for t in bag_after) == all_tiles_sorted
+    # Bag was shuffled — order differs from naive append order.
+    assert bag_after != unshuffled_order
+
+
+def test_random_after_restart_gives_different_factories(client):
+    """Restart then Random should produce a different fill (with high probability)."""
+
+    client.post("/setup-factories/start")
+    r1 = client.post("/setup-factories/random").json()
+    factories_first = [list(f) for f in r1["factories"]]
+
+    client.post("/setup-factories/restart")
+    r2 = client.post("/setup-factories/random").json()
+    factories_second = [list(f) for f in r2["factories"]]
+
+    # With 100 tiles and 5 factories this should virtually never match.
+    assert factories_first != factories_second
+
+
+def test_random_enabled_when_factories_already_full(client):
+    """Random should be available even when factories are full — acts as
+    reshuffle."""
+
+    client.post("/setup-factories/start")
+    client.post("/setup-factories/random")  # fill all
+
+    # A second random call should succeed and produce full factories.
+    response = client.post("/setup-factories/random")
+    assert response.status_code == 200
+    for factory in response.json()["factories"]:
+        assert len(factory) == 4
+
+
+def test_random_when_full_reshuffles_and_refills(client):
+    """Calling Random when factories are already full restarts and
+    refills."""
+
+    client.post("/setup-factories/start")
+    client.post("/setup-factories/random")  # fill all
+
+    response = client.post("/setup-factories/random")  # reshuffle + refill
+    assert response.status_code == 200
+    data = response.json()
+    assert data["in_factory_setup"] is True
+    for factory in data["factories"]:
+        assert len(factory) == 4
+
+
+# ── POST /hypothetical/from-snapshot ──────────────────────────────────────
+
+
+def test_from_snapshot_enters_hypothetical_mode(client):
+    """Posting a valid snapshot should enter hypothetical mode."""
+    from api import main
+
+    # Build a minimal valid snapshot from the current game state.
+    snapshot = _make_snapshot(main._game)
+    response = client.post("/hypothetical/from-snapshot", json=snapshot)
+    assert response.status_code == 200
+    assert response.json()["in_hypothetical"] is True
+
+
+def test_from_snapshot_loads_factories_and_center(client):
+    """The game state after from-snapshot should reflect the snapshot's sources."""
+    from api import main
+    from engine.constants import Tile
+
+    # Put a known tile in factory 0 of the current game.
+    main._game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    main._game.state.center = [Tile.FIRST_PLAYER]
+
+    snapshot = _make_snapshot(main._game)
+    response = client.post("/hypothetical/from-snapshot", json=snapshot)
+    data = response.json()
+
+    assert data["factories"][0] == ["BLUE", "BLUE", "RED", "YELLOW"]
+    assert "FIRST_PLAYER" in data["center"]
+
+
+def test_from_snapshot_loads_board_states(client):
+    """Player scores and walls should reflect the snapshot."""
+    from api import main
+
+    main._game.state.players[0].score = 7
+    main._game.state.players[1].score = 3
+
+    snapshot = _make_snapshot(main._game)
+    response = client.post("/hypothetical/from-snapshot", json=snapshot)
+    data = response.json()
+
+    assert data["boards"][0]["score"] == 7
+    assert data["boards"][1]["score"] == 3
+
+
+def test_from_snapshot_overrides_player_types_to_human(client):
+    """from-snapshot should make both players human regardless of game config."""
+    from api import main
+
+    main._player_types = ["human", "greedy"]
+    main._agents = [None, main._make_agent("greedy")]
+
+    snapshot = _make_snapshot(main._game)
+    response = client.post("/hypothetical/from-snapshot", json=snapshot)
+    assert response.json()["player_types"] == ["human", "human"]
+
+
+def test_from_snapshot_rejected_when_already_in_hypothetical(client):
+    """Cannot enter from-snapshot while already in hypothetical mode."""
+    from api import main
+
+    client.post("/hypothetical/enter")
+    snapshot = _make_snapshot(main._game)
+    response = client.post("/hypothetical/from-snapshot", json=snapshot)
+    assert response.status_code == 400
+
+
+def test_from_snapshot_legal_moves_are_valid(client):
+    """After from-snapshot, legal_moves should be non-empty (game is mid-round)."""
+    from api import main
+
+    snapshot = _make_snapshot(main._game)
+    response = client.post("/hypothetical/from-snapshot", json=snapshot)
+    assert len(response.json()["legal_moves"]) > 0
+
+
+def test_discard_after_from_snapshot_restores_original_game(client):
+    """Discarding after from-snapshot should restore the game state that existed
+    before the snapshot was loaded."""
+    from api import main
+    from engine.constants import Tile
+
+    # Record the state before loading a snapshot.
+    before = client.get("/state").json()
+
+    # Build a snapshot that differs from the current state.
+    import copy
+
+    modified = copy.deepcopy(main._game)
+    modified.state.factories[0] = [Tile.RED, Tile.RED, Tile.RED, Tile.RED]
+    snapshot = _make_snapshot(modified)
+
+    client.post("/hypothetical/from-snapshot", json=snapshot)
+
+    # Discard — should go back to `before`.
+    client.post("/hypothetical/discard")
+    assert client.get("/state").json() == before
+
+
+# ── Helper ─────────────────────────────────────────────────────────────────
+
+
+def _make_snapshot(game) -> dict:
+    """Build a minimal from-snapshot payload from a live Game object."""
+    return {
+        "factories": [[t.name for t in f] for f in game.state.factories],
+        "center": [t.name for t in game.state.center],
+        "boards": [
+            {
+                "score": p.score,
+                "wall": [
+                    [cell.name if cell is not None else None for cell in row]
+                    for row in p.wall
+                ],
+                "pattern_lines": [[t.name for t in line] for line in p.pattern_lines],
+                "floor_line": [t.name for t in p.floor_line],
+            }
+            for p in game.state.players
+        ],
+    }

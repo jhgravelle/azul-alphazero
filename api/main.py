@@ -20,6 +20,7 @@ from agents.random import RandomAgent
 from api.schemas import (
     BoardResponse,
     GameStateResponse,
+    HypotheticalSnapshotRequest,
     MoveRequest,
     NewGameRequest,
     PendingBonus,
@@ -428,6 +429,91 @@ def hypothetical_discard() -> GameStateResponse:
     return _build_response(_game)
 
 
+@app.post("/hypothetical/from-snapshot", response_model=GameStateResponse)
+def hypothetical_from_snapshot(
+    request: HypotheticalSnapshotRequest,
+) -> GameStateResponse:
+    """Load a replay snapshot into the game and enter hypothetical mode.
+
+    The existing game state is pushed onto the history stack so discard
+    restores it. Bag and discard are left untouched -- hypotheticals are
+    assumed to stay within the current round.
+    """
+    global _hyp_marker, _hyp_player_types, _hyp_agents, _player_types, _agents
+
+    if _hyp_marker is not None:
+        raise HTTPException(status_code=400, detail="Already in hypothetical mode")
+
+    # Push current state so discard can restore it, then set marker to point at it.
+    _push_history()
+    _hyp_marker = len(_history) - 1
+    _hyp_player_types = list(_player_types)
+    _hyp_agents = list(_agents)
+    _player_types = ["human", "human"]
+    _agents = [None, None]
+
+    # Load factories.
+    for factory, tile_names in zip(_game.state.factories, request.factories):
+        factory.clear()
+        for name in tile_names:
+            factory.append(_str_to_tile(name))
+
+    # Load center.
+    _game.state.center.clear()
+    for name in request.center:
+        _game.state.center.append(_str_to_tile(name))
+
+    # Load current player.
+    _game.state.current_player = request.current_player
+
+    # Load board states.
+    for player, board_req in zip(_game.state.players, request.boards):
+        player.score = board_req.score
+        player.pattern_lines = [
+            [_str_to_tile(name) for name in line] for line in board_req.pattern_lines
+        ]
+        player.wall = [
+            [_str_to_tile(name) if name is not None else None for name in row]
+            for row in board_req.wall
+        ]
+        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+
+    return _build_response(_game)
+
+
+@app.post("/hypothetical/replace-snapshot", response_model=GameStateResponse)
+def hypothetical_replace_snapshot(
+    request: HypotheticalSnapshotRequest,
+) -> GameStateResponse:
+    """Replace the current in-hypothetical game state with a new snapshot."""
+    if _hyp_marker is None:
+        raise HTTPException(status_code=400, detail="Not in hypothetical mode")
+
+    _game.state.current_player = request.current_player
+
+    for factory, tile_names in zip(_game.state.factories, request.factories):
+        factory.clear()
+        for name in tile_names:
+            factory.append(_str_to_tile(name))
+
+    _game.state.center.clear()
+    for name in request.center:
+        _game.state.center.append(_str_to_tile(name))
+
+    for player, board_req in zip(_game.state.players, request.boards):
+        player.score = board_req.score
+        player.pattern_lines = [
+            [_str_to_tile(name) for name in line] for line in board_req.pattern_lines
+        ]
+        player.wall = [
+            [_str_to_tile(name) if name is not None else None for name in row]
+            for row in board_req.wall
+        ]
+        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+
+    return _build_response(_game)
+
+
 @app.post("/setup-factories/start", response_model=GameStateResponse)
 def setup_factories_start() -> GameStateResponse:
     """Enter factory setup mode -- clear all factories, reset cursor to zero."""
@@ -443,10 +529,16 @@ def setup_factories_place(request: PlaceTileRequest) -> GameStateResponse:
     if not _in_factory_setup:
         raise HTTPException(status_code=400, detail="Not in factory setup mode")
 
+    if _factory_cursor >= _total_slots():
+        raise HTTPException(status_code=400, detail="All factory slots are full")
+
+    factory_index, _ = _flat_to_factory_slot(_factory_cursor)
+    if len(_game.state.factories[factory_index]) >= 4:
+        raise HTTPException(status_code=400, detail="Target factory is already full")
+
     tile = _str_to_setup_tile(request.color)
     _draw_one(tile)
 
-    factory_index, _ = _flat_to_factory_slot(_factory_cursor)
     _game.state.factories[factory_index].append(tile)
     _factory_cursor += 1
 
@@ -486,17 +578,26 @@ def setup_factories_restart() -> GameStateResponse:
         _game.state.bag.extend(factory)
         factory.clear()
 
+    random.shuffle(_game.state.bag)
     _factory_cursor = 0
     return _build_response(_game)
 
 
 @app.post("/setup-factories/random", response_model=GameStateResponse)
 def setup_factories_random() -> GameStateResponse:
-    """Fill all remaining empty factory slots randomly from the bag, then commit."""
-    global _in_factory_setup, _factory_cursor
+    """Fill all remaining empty factory slots randomly from the bag."""
+    global _factory_cursor
 
     if not _in_factory_setup:
         raise HTTPException(status_code=400, detail="Not in factory setup mode")
+
+    # If factories are already full, restart first to get a fresh shuffle.
+    if sum(len(f) for f in _game.state.factories) == _total_slots():
+        for factory in _game.state.factories:
+            _game.state.bag.extend(factory)
+            factory.clear()
+        random.shuffle(_game.state.bag)
+        _factory_cursor = 0
 
     for factory in _game.state.factories:
         while len(factory) < 4:
@@ -509,8 +610,8 @@ def setup_factories_random() -> GameStateResponse:
                 random.shuffle(_game.state.bag)
             factory.append(_game.state.bag.pop())
 
-    _in_factory_setup = False
-    _factory_cursor = 0
+    # Stay in setup mode so user can review before committing.
+    _factory_cursor = _total_slots()
     return _build_response(_game)
 
 

@@ -42,6 +42,24 @@ class RemoveTileRequest(BaseModel):
     slot: int
 
 
+class SnapshotBoardRequest(BaseModel):
+    """Board state within a hypothetical snapshot."""
+
+    score: int
+    wall: list[list[str | None]]
+    pattern_lines: list[list[str]]
+    floor_line: list[str]
+
+
+class HypotheticalSnapshotRequest(BaseModel):
+    """Snapshot of mid-round game state used to seed hypothetical mode from replay."""
+
+    factories: list[list[str]]
+    center: list[str]
+    boards: list[SnapshotBoardRequest]
+    current_player: int = 0
+
+
 class PendingPlacement(BaseModel):
     """Wall annotation for a single full pattern line awaiting end-of-round scoring."""
 

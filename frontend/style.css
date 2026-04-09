@@ -40,6 +40,23 @@ h1 { margin-bottom: 8px; }
   position: absolute;
 }
 
+/* Setup-mode bag tile — full opacity, count badge, hover highlight */
+.tile-setup-bag {
+  box-shadow: 0 2px 4px rgba(0,0,0,0.25);
+}
+.tile-setup-bag .stack-badge {
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  font-size: 0.75rem;
+  inset: 0;
+  position: absolute;
+}
+.tile-setup-bag.clickable:hover {
+  box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+  outline: 2px solid rgba(255,255,255,0.8);
+  outline-offset: 1px;
+}
+
 /* Pending tile — normal wall color, score overlaid */
 .pending-tile {
   /* no opacity reduction, no dashed outline */
@@ -329,6 +346,12 @@ h1 { margin-bottom: 8px; }
 .droppable-row:hover {
   outline-color: rgba(255,255,255,1);
 }
+/* Active factory setup slot — same highlight as a selected tile */
+.cursor-slot {
+  outline: 2px solid rgba(255,255,255,0.7);
+  outline-offset: 1px;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+}
 
 /* ── Header ── */
 .header {
@@ -363,9 +386,11 @@ h1 { margin-bottom: 8px; }
   white-space: nowrap;
   text-decoration: none;
 }
-.header-btn:hover { background: #2e6299; }
-.header-btn.secondary { background: #7b6f5e; }
-.header-btn.secondary:hover { background: #5e5347; }
+.header-btn:hover:not(:disabled) { background: #2e6299; }
+.header-btn:disabled              { background: #a0b8d0; cursor: default; }
+.header-btn.secondary             { background: #7b6f5e; }
+.header-btn.secondary:hover:not(:disabled) { background: #5e5347; }
+.header-btn.secondary:disabled    { background: #b0a898; cursor: default; }
 
 /* ── Replay controls ── */
 .replay-controls {
@@ -413,6 +438,104 @@ h1 { margin-bottom: 8px; }
   flex-shrink: 0;
 }
 .move-text { color: #2c2c2c; }
+
+/* ── Hypothetical tree panel ── */
+.hyp-tree-panel {
+  margin-top: 24px;
+  background: #e8e0d0;
+  border-radius: 10px;
+  padding: 16px;
+}
+.hyp-tree-heading {
+  font-size: 0.8rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #777;
+  margin-bottom: 10px;
+}
+.hyp-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hyp-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  transition: background 0.1s;
+}
+.hyp-node:hover:not(.hyp-node-current) {
+  background: rgba(0,0,0,0.06);
+}
+.hyp-node-current {
+  border-left-color: #3a7abf;
+  background: rgba(58,122,191,0.10);
+}
+.hyp-emoji {
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+.hyp-move-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+.hyp-src {
+  font-weight: bold;
+  color: #555;
+  font-size: 0.8rem;
+}
+.hyp-dst {
+  color: #555;
+  font-size: 0.8rem;
+}
+.hyp-tile-chip {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.hyp-tile-count {
+  font-size: 0.65rem;
+  font-weight: bold;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  line-height: 1;
+}
+.hyp-scores {
+  font-size: 0.85rem;
+  font-weight: bold;
+  color: #2c2c2c;
+  margin-left: 4px;
+}
+.hyp-scores-root {
+  color: #555;
+  font-weight: normal;
+  font-size: 0.8rem;
+}
+.hyp-commit-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 5px;
+  background: #3a7abf;
+  color: white;
+  cursor: pointer;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.hyp-commit-btn:hover { background: #2e6299; }
 
 /* ── Menu overlay ── */
 .menu-overlay {

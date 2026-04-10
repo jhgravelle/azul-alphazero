@@ -160,6 +160,7 @@ class AlphaZeroAgent(Agent):
                 prior = node._untried_priors.pop()  # type: ignore[union-attr]
                 child_game = node.game.clone()
                 child_game.make_move(move)
+                child_game.advance_round_if_needed()
                 child = AZNode(
                     game=child_game,
                     parent=node,

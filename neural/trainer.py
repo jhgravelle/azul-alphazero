@@ -127,9 +127,6 @@ def collect_self_play(
         history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
 
         while not game.is_game_over():
-            if not game.legal_moves():
-                break
-
             current_player = game.state.current_player
             is_az_turn = az_player is None or current_player == az_player
 
@@ -148,6 +145,7 @@ def collect_self_play(
             history.append((current_player, state_vec, policy_vec))
 
             game.make_move(move)
+            game.advance_round_if_needed()
 
         scores = [p.score for p in game.state.players]
 
@@ -223,9 +221,6 @@ def collect_heuristic_games(
         history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
 
         while not game.is_game_over():
-            if not game.legal_moves():
-                break
-
             current_player = game.state.current_player
             state_vec = encode_state(game)
             move = agents[current_player].choose_move(game)
@@ -235,6 +230,7 @@ def collect_heuristic_games(
 
             history.append((current_player, state_vec, policy_vec))
             game.make_move(move)
+            game.advance_round_if_needed()
 
         scores = [p.score for p in game.state.players]
         greedy_score = scores[0] if greedy_is_p0 else scores[1]

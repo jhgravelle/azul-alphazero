@@ -99,6 +99,22 @@ class Game:
                         return
                     factory.append(self.state.bag.pop())
 
+    def advance_round_if_needed(self) -> None:
+        """Call setup_round if the round just ended and the game is not over.
+
+        Simulation loops must call this after every make_move to keep the game
+        state valid. The API calls this too, but may substitute factory setup
+        mode instead.
+        """
+        if self.is_game_over():
+            return
+        sources_empty = (
+            all(len(f) == 0 for f in self.state.factories)
+            and len(self.state.center) == 0
+        )
+        if sources_empty:
+            self.setup_round()
+
     # ------------------------------------------------------------------
     # Move generation
     # ------------------------------------------------------------------

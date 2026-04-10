@@ -134,6 +134,7 @@ class MCTSAgent(Agent):
         move = node.untried_moves.pop()
         new_game = copy.deepcopy(node.game)
         new_game.make_move(move)
+        new_game.advance_round_if_needed()
         child = MCTSNode(game=new_game, move=move, parent=node)
         node.children.append(child)
         return child
@@ -149,11 +150,13 @@ class MCTSAgent(Agent):
         We work on a copy so the node's game state is never touched.
         """
         sim_game = copy.deepcopy(node.game)
+        sim_game.advance_round_if_needed()  # guard: node may be between rounds
         random_agent = _RandomRolloutAgent()
 
         while not sim_game.is_game_over():
             move = random_agent.choose_move(sim_game)
             sim_game.make_move(move)
+            sim_game.advance_round_if_needed()
 
         scores = [p.score for p in sim_game.state.players]
         best = max(scores)

@@ -3,6 +3,7 @@
 """FastAPI application for the Azul game."""
 
 import copy
+from datetime import datetime
 import json
 import logging
 import random
@@ -207,9 +208,17 @@ def _save_recording(recorder: GameRecorder, game: Game) -> None:
     try:
         recorder.finalize(game)
         _RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
-        path = _RECORDINGS_DIR / f"{recorder.record.game_id}.json"
+        timestamp = datetime.fromisoformat(recorder.record.timestamp)
+        date_str = timestamp.strftime("%Y%m%d %H%M%S")
+        scores = recorder.record.final_scores
+        names = recorder.record.player_names
+        players_str = " - ".join(
+            f"{name} {score}" for name, score in zip(names, scores)
+        )
+        filename = f"{date_str} {players_str}.json"
+        path = _RECORDINGS_DIR / filename
         recorder.save(path)
-        logger.info("saved recording %s", recorder.record.game_id)
+        logger.info("saved recording %s", filename)
     except Exception:
         logger.exception("failed to save recording")
 
@@ -354,7 +363,9 @@ def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
     _player_types = request.player_types
     _agents = [_make_agent(t) for t in _player_types]
     _game = Game()
-    _recorder = GameRecorder(player_names=list(_player_types))
+    _recorder = GameRecorder(
+        player_names=list(_player_types), player_types=list(_player_types)
+    )
     _history.clear()
     _hyp_marker = None
     _hyp_player_types = None
@@ -691,7 +702,13 @@ def list_recordings() -> list[RecordingSummary]:
 @app.get("/recordings/{game_id}")
 def get_recording(game_id: str) -> dict:
     """Return the full JSON record for one game."""
-    path = _RECORDINGS_DIR / f"{game_id}.json"
-    if not path.exists():
+    if not _RECORDINGS_DIR.exists():
         raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")
-    return json.loads(path.read_text(encoding="utf-8"))
+    for path in _RECORDINGS_DIR.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("game_id") == game_id:
+                return data
+        except Exception:
+            continue
+    raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")

@@ -12,6 +12,7 @@ from typing import Any
 from engine.board import Board
 from engine.game import Game, Move
 from engine.constants import PLAYERS, Tile
+from engine.scoring import earned_score
 
 # ── Board state capture ────────────────────────────────────────────────────
 
@@ -70,6 +71,8 @@ class TurnRecord:
     move_source: int
     move_tile: str
     move_destination: int
+    round: int = 0
+    grand_totals: list[int] = field(default_factory=list)
     analysis: dict[str, Any] | None = None
 
 
@@ -89,6 +92,7 @@ class GameRecord:
     game_id: str
     timestamp: str
     player_names: list[str]
+    player_types: list[str] = field(default_factory=list)
     turns: list[TurnRecord] = field(default_factory=list)
     final_scores: list[int] = field(default_factory=list)
     winner: int | None = None
@@ -99,6 +103,7 @@ class GameRecord:
             "game_id": self.game_id,
             "timestamp": self.timestamp,
             "player_names": self.player_names,
+            "player_types": self.player_types,
             "turns": [
                 {
                     "player_index": turn.player_index,
@@ -107,6 +112,8 @@ class GameRecord:
                     "move_source": turn.move_source,
                     "move_tile": turn.move_tile,
                     "move_destination": turn.move_destination,
+                    "round": turn.round,
+                    "grand_totals": turn.grand_totals,
                     "analysis": turn.analysis,
                 }
                 for turn in self.turns
@@ -134,6 +141,8 @@ class GameRecord:
                 move_source=turn["move_source"],
                 move_tile=turn["move_tile"],
                 move_destination=turn["move_destination"],
+                round=turn.get("round", 0),
+                grand_totals=turn.get("grand_totals", []),
                 analysis=turn.get("analysis"),
             )
             for turn in data.get("turns", [])
@@ -142,6 +151,7 @@ class GameRecord:
             game_id=data["game_id"],
             timestamp=data["timestamp"],
             player_names=data["player_names"],
+            player_types=data.get("player_types", []),
             turns=turns,
             final_scores=data.get("final_scores", []),
             winner=data.get("winner"),
@@ -176,14 +186,21 @@ class GameRecorder:
             ["Player 0", "Player 1"].
     """
 
-    def __init__(self, player_names: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        player_names: list[str] | None = None,
+        player_types: list[str] | None = None,
+    ) -> None:
         if player_names is None:
             player_names = [f"Player {i}" for i in range(PLAYERS)]
+        if player_types is None:
+            player_types = ["human"] * PLAYERS
         self.player_names = player_names
         self.record = GameRecord(
             game_id=str(uuid.uuid4()),
             timestamp=datetime.now(timezone.utc).isoformat(),
             player_names=player_names,
+            player_types=player_types,
         )
 
     def record_turn(
@@ -204,6 +221,7 @@ class GameRecorder:
         """
         board_states = [_capture_board(player) for player in game.state.players]
         source_state = _capture_source_state(game)
+        grand_totals = [earned_score(player) for player in game.state.players]
         turn = TurnRecord(
             player_index=game.state.current_player,
             board_states=board_states,
@@ -211,6 +229,8 @@ class GameRecorder:
             move_source=move.source,
             move_tile=move.tile.name,
             move_destination=move.destination,
+            round=game.state.round,
+            grand_totals=grand_totals,
             analysis=analysis,
         )
         self.record.turns.append(turn)

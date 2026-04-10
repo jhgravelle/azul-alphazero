@@ -641,6 +641,73 @@ function renderMoveBanner(turn) {
   return banner;
 }
 
+function renderReplayMoveList(record, currentIndex) {
+  const panel = createElement("div", "replay-move-list-panel");
+  panel.appendChild(createElement("div", "replay-move-list-heading", "Move list"));
+
+  const list = createElement("div", "replay-move-list");
+
+  // "Start of game" entry at index 0 (before any moves).
+  const startItem = createElement("div", "replay-move-item");
+  if (currentIndex === 0) startItem.classList.add("replay-move-item-current");
+  startItem.appendChild(createElement("span", "replay-move-item-emoji", "🎲"));
+  startItem.appendChild(createElement("span", "replay-move-item-text", "Start of game"));
+  startItem.appendChild(createElement("span", "replay-move-item-scores", "0 \u2013 0"));
+  startItem.addEventListener("click", () => { replayTurnIndex = 0; renderReplay(); });
+  list.appendChild(startItem);
+
+  let lastRoundSeen = null;
+
+  record.turns.forEach((turn, index) => {
+    const turnIndex = index + 1; // turnIndex 1 = after move 0
+
+    // Insert a round header when the round changes.
+    const round = turn.round ?? null;
+    if (round !== null && round !== lastRoundSeen) {
+      lastRoundSeen = round;
+      list.appendChild(createElement("div", "replay-round-header", `Round ${round}`));
+    }
+
+    const item = createElement("div", "replay-move-item");
+    if (currentIndex === turnIndex) item.classList.add("replay-move-item-current");
+
+    const playerName = record.player_names[turn.player_index];
+    const isBot = (record.player_types ?? [])[turn.player_index] !== "human";
+    item.appendChild(createElement("span", "replay-move-item-emoji", isBot ? "🤖" : "👤"));
+
+    const src = turn.move_source === -1
+      ? "Center"
+      : `F${turn.move_source + 1}`;
+    const dst = turn.move_destination === -2
+      ? "Floor"
+      : `R${turn.move_destination + 1}`;
+
+    const chip = document.createElement("span");
+    chip.className = "hyp-tile-chip";
+    chip.style.background = TILE_COLORS[turn.move_tile] ?? "#888";
+    if (turn.move_tile === "WHITE") chip.style.border = "1px solid #ccc";
+    item.appendChild(chip);
+
+    item.appendChild(createElement("span", "replay-move-item-text",
+      `${playerName} · ${src} \u2192 ${dst}`));
+
+    // Scores after this move — from board_states of the *next* turn,
+    // or from final_scores if this is the last move.
+    const nextTurn = record.turns[index + 1];
+    const scores = turn.grand_totals && turn.grand_totals.length
+      ? turn.grand_totals
+      : turn.board_states.map(b => b.score);  // fallback for old recordings
+    item.appendChild(createElement("span", "replay-move-item-scores",
+      scores.join(" \u2013 ")));
+
+    item.addEventListener("click", () => { replayTurnIndex = turnIndex; renderReplay(); });
+    list.appendChild(item);
+  });
+
+  panel.appendChild(list);
+  return panel;
+}
+
 function renderReplay() {
   const app = document.getElementById("app");
   app.innerHTML = "";
@@ -708,6 +775,13 @@ function renderReplay() {
     );
   });
   app.appendChild(boards);
+   app.appendChild(renderReplayMoveList(record, replayTurnIndex));
+
+  // Scroll the current move into view after the DOM updates.
+  setTimeout(() => {
+    const current = app.querySelector(".replay-move-item-current");
+    if (current) current.scrollIntoView({ block: "center", behavior: "instant" });
+  }, 0);
 }
 
 initMenu();

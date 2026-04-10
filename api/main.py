@@ -251,6 +251,22 @@ def _enter_factory_setup() -> None:
     _factory_cursor = 0
 
 
+def _handle_round_end() -> None:
+    """Called after every make_move. If the round just ended, either enter
+    factory setup mode or auto-setup the next round."""
+    if _game.is_game_over():
+        return
+    sources_empty = (
+        all(len(f) == 0 for f in _game.state.factories) and len(_game.state.center) == 0
+    )
+    if not sources_empty:
+        return
+    if _manual_factories:
+        _enter_factory_setup()
+    else:
+        _game.setup_round()
+
+
 def _total_slots() -> int:
     """Total number of factory slots in the current game."""
     return len(_game.state.factories) * 4
@@ -319,6 +335,7 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
 
     _push_history()
     _game.make_move(move)
+    _handle_round_end()
 
     if _game.is_game_over() and _recorder is not None:
         _save_recording(_recorder, _game)
@@ -373,6 +390,7 @@ def agent_move() -> GameStateResponse:
 
     _push_history()
     _game.make_move(move)
+    _handle_round_end()
 
     if _game.is_game_over() and _recorder is not None:
         _save_recording(_recorder, _game)

@@ -1224,3 +1224,72 @@ def _make_snapshot(game) -> dict:
             for p in game.state.players
         ],
     }
+
+
+def test_round_ends_and_api_starts_next_round_automatically(client):
+    """After a round ends in a normal game, the API should auto-setup the
+    next round without requiring any extra call."""
+    from api import main
+
+    round_before = main._game.state.round
+
+    # Play until the round turns over.
+    for _ in range(500):
+        moves = main._game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        client.post(
+            "/move",
+            json={
+                "source": move.source,
+                "tile": move.tile.name,
+                "destination": move.destination,
+            },
+        )
+        state = client.get("/state").json()
+        if state["round"] > round_before:
+            break
+
+    state = client.get("/state").json()
+    if not state["is_game_over"]:
+        assert state["round"] == round_before + 1
+        # Factories should be filled -- round was set up automatically.
+        total_tiles = sum(len(f) for f in state["factories"])
+        assert total_tiles > 0
+
+
+def test_manual_factories_persists_to_second_round(client):
+    """After round 1 ends in a manual-factory game, the game should enter
+    factory setup mode rather than auto-filling factories."""
+    from api import main
+
+    client.post("/new-game", json={"manual_factories": True})
+
+    # Fill all factories via random and commit to start round 1.
+    client.post("/setup-factories/random")
+    client.post("/setup-factories/commit")
+
+    # Play moves until the round ends.
+    for _ in range(500):
+        state = client.get("/state").json()
+        if state["in_factory_setup"] or state["is_game_over"]:
+            break
+        moves = main._game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        client.post(
+            "/move",
+            json={
+                "source": move.source,
+                "tile": move.tile.name,
+                "destination": move.destination,
+            },
+        )
+
+    state = client.get("/state").json()
+    if not state["is_game_over"]:
+        assert state["in_factory_setup"] is True
+        for factory in state["factories"]:
+            assert factory == []

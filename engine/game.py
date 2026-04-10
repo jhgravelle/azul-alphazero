@@ -74,20 +74,30 @@ class Game:
         random.shuffle(self.state.bag)
         logger.debug("refilled bag from discard and shuffled")
 
-    def setup_round(self) -> None:
-        """Set up the factories and center for a new round."""
+    def setup_round(self, factories: list[list[Tile]] | None = None) -> None:
+        """Set up the factories and center for a new round.
+
+        If factories is provided, those tile lists are loaded directly and the
+        bag is not touched. If None, factories are filled by drawing randomly
+        from the bag as normal.
+        """
         self.state.round += 1
         self.state.center.clear()
         self.state.center.append(Tile.FIRST_PLAYER)
-        for factory in self.state.factories:
-            factory.clear()
-            for _ in range(TILES_PER_FACTORY):
-                if not self.state.bag:
-                    self._refill_bag()
-                if not self.state.bag:
-                    logger.debug("no tiles remaining to fill factories")
-                    return
-                factory.append(self.state.bag.pop())
+        if factories is not None:
+            for factory, tiles in zip(self.state.factories, factories):
+                factory.clear()
+                factory.extend(tiles)
+        else:
+            for factory in self.state.factories:
+                factory.clear()
+                for _ in range(TILES_PER_FACTORY):
+                    if not self.state.bag:
+                        self._refill_bag()
+                    if not self.state.bag:
+                        logger.debug("no tiles remaining to fill factories")
+                        return
+                    factory.append(self.state.bag.pop())
 
     # ------------------------------------------------------------------
     # Move generation
@@ -166,7 +176,8 @@ class Game:
             player.floor_line.extend(chosen[space:])
 
     def _end_turn(self) -> None:
-        """Advance to the next player and trigger end-of-round if all sources empty."""
+        """Advance to the next player and trigger end-of-round scoring if all
+        sources are empty. Round setup is left to the caller."""
         self.state.current_player = (self.state.current_player + 1) % len(
             self.state.players
         )
@@ -175,9 +186,7 @@ class Game:
             and len(self.state.center) == 0
         ):
             self.score_round()
-            if not self.is_game_over():
-                self.setup_round()
-            else:
+            if self.is_game_over():
                 self.score_game()
 
     def make_move(self, move: Move) -> None:

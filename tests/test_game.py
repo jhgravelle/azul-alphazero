@@ -635,3 +635,67 @@ def test_clone_make_move_does_not_affect_original():
     # Original game state should be unchanged
     assert game.state.current_player == 0
     assert game.state.factories == game.clone().state.factories
+
+
+def test_end_of_round_does_not_auto_setup_next_round():
+    """After all sources are emptied, the engine must NOT auto-fill factories.
+    Round setup is the API's responsibility."""
+    game = Game()
+    game.setup_round()
+
+    # Play moves until round ends.
+    for _ in range(500):
+        moves = game.legal_moves()
+        if not moves:
+            break
+        game.make_move(moves[0])
+
+    # Factories and center must be empty -- no auto-setup.
+    for factory in game.state.factories:
+        assert factory == []
+    assert game.state.center == []
+
+
+def test_setup_round_with_explicit_factories():
+    """setup_round should load the provided tile lists instead of drawing
+    from the bag."""
+    from engine.constants import Tile
+
+    game = Game()
+    explicit = [
+        [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW],
+        [Tile.BLACK, Tile.BLACK, Tile.WHITE, Tile.WHITE],
+        [Tile.RED, Tile.RED, Tile.RED, Tile.RED],
+        [Tile.YELLOW, Tile.YELLOW, Tile.BLUE, Tile.BLACK],
+        [Tile.WHITE, Tile.RED, Tile.YELLOW, Tile.BLACK],
+    ]
+    bag_before = len(game.state.bag)
+    game.setup_round(factories=explicit)
+
+    assert game.state.factories == explicit
+    # Bag must be untouched -- no random draw occurred.
+    assert len(game.state.bag) == bag_before
+
+
+def test_setup_round_with_none_draws_randomly():
+    """setup_round() with no argument should draw from the bag as before."""
+    game = Game()
+    bag_before = len(game.state.bag)
+    game.setup_round()
+    total_drawn = sum(len(f) for f in game.state.factories)
+    assert len(game.state.bag) == bag_before - total_drawn
+
+
+def test_setup_round_increments_round_number():
+    game = Game()
+    assert game.state.round == 0
+    game.setup_round()
+    assert game.state.round == 1
+    game.setup_round()
+    assert game.state.round == 2
+
+
+def test_setup_round_places_first_player_marker_in_center():
+    game = Game()
+    game.setup_round()
+    assert Tile.FIRST_PLAYER in game.state.center

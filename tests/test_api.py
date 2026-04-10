@@ -373,6 +373,36 @@ def test_new_game_clears_undo_history(client):
     assert client.post("/undo").status_code == 400
 
 
+def test_undo_in_human_vs_bot_skips_back_to_human_turn(client):
+    """In a human-vs-bot game, undo should land back on the human's turn,
+    skipping over the bot's move automatically."""
+    from api import main
+
+    # Player 0 is human, player 1 is a bot.
+    main._player_types = ["human", "random"]
+    main._agents = [None, main._make_agent("random")]
+
+    # Human makes a move — bot auto-moves via /agent-move.
+    move = main._game.legal_moves()[0]
+    client.post(
+        "/move",
+        json={
+            "source": move.source,
+            "tile": move.tile.name,
+            "destination": move.destination,
+        },
+    )
+    client.post("/agent-move")
+
+    # It should now be the human's turn again (player 0).
+    assert main._game.state.current_player == 0
+
+    # One undo should jump back over the bot move to the human's turn.
+    response = client.post("/undo")
+    assert response.status_code == 200
+    assert response.json()["current_player"] == 0
+
+
 # ── POST /hypothetical/enter ───────────────────────────────────────────────
 
 
@@ -618,6 +648,19 @@ def test_setup_start_cursor_at_zero(client):
 def test_factory_cursor_is_none_when_not_in_setup_mode(client):
     response = client.get("/state")
     assert response.json()["factory_cursor"] is None
+
+
+def test_setup_start_places_first_player_marker_in_center(client):
+    """Entering setup mode must put the first-player marker in the center."""
+    client.post("/setup-factories/start")
+    state = client.get("/state").json()
+    assert "FIRST_PLAYER" in state["center"]
+
+
+def test_new_game_with_manual_factories_has_first_player_marker_in_center(client):
+    """Starting with manual_factories=True must also place the marker in center."""
+    response = client.post("/new-game", json={"manual_factories": True})
+    assert "FIRST_PLAYER" in response.json()["center"]
 
 
 # ── Factory setup: placing tiles ──────────────────────────────────────────

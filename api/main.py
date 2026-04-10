@@ -246,6 +246,7 @@ def _enter_factory_setup() -> None:
     global _in_factory_setup, _factory_cursor
     for factory in _game.state.factories:
         factory.clear()
+    _game.state.center = [Tile.FIRST_PLAYER]
     _in_factory_setup = True
     _factory_cursor = 0
 
@@ -382,7 +383,7 @@ def agent_move() -> GameStateResponse:
 
 @app.post("/undo", response_model=GameStateResponse)
 def undo() -> GameStateResponse:
-    """Restore the game to the state before the last move."""
+    """Restore the game to the state before the last move made by a human."""
     if all(t != "human" for t in _player_types):
         raise HTTPException(
             status_code=400, detail="Undo is not available in bot-vs-bot games"
@@ -390,7 +391,16 @@ def undo() -> GameStateResponse:
     floor = _hyp_marker if _hyp_marker is not None else 0
     if len(_history) <= floor:
         raise HTTPException(status_code=400, detail="Nothing to undo")
+
+    # Pop at least once, then keep popping while the restored state
+    # belongs to a bot turn — so the human always lands on their own turn.
     _game.state = _history.pop()
+    while len(_history) > floor:
+        current = _game.state.current_player
+        if _player_types[current] == "human":
+            break
+        _game.state = _history.pop()
+
     return _build_response(_game)
 
 

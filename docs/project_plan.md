@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-04-04
-> Status: Phase 6b Step 1 complete — engine scoring functions done. Step 2 (API) up next.
+> Last updated: 2026-04-13
+> Status: Phase 7 complete. Phase 8 (Evaluation and Iteration) up next.
 
 ---
 
@@ -21,7 +21,7 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 | Version control | Git + GitHub | Standard, CI/CD integration |
 | CI/CD | GitHub Actions | Free for public repos, integrates natively with GitHub |
 | ML framework | PyTorch | Best for custom AlphaZero-style training loops |
-| IDE | VS Code | Installed, good Python + git support |
+| IDE | VS Code + Claude Code | Installed, good Python + git support |
 
 ---
 
@@ -30,12 +30,12 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 ```
 azul-alphazero/
 ├── engine/
-│   ├── constants.py      # Tile enum, COLORS, WALL_PATTERN, precomputed lookups
-│   ├── board.py
-│   ├── game_state.py
-│   ├── game.py
-│   ├── scoring.py        # Pure scoring functions
-│   └── factory.py
+│   ├── constants.py       # Tile enum, WALL_PATTERN, FLOOR_PENALTIES, all constants
+│   ├── board.py           # Board dataclass
+│   ├── game_state.py      # GameState dataclass
+│   ├── game.py            # Game controller: make_move, legal_moves, score_round, etc.
+│   ├── scoring.py         # Pure scoring functions
+│   └── game_recorder.py   # GameRecorder, GameRecord, RoundRecord, MoveRecord
 ├── agents/
 │   ├── base.py
 │   ├── random.py
@@ -50,30 +50,34 @@ azul-alphazero/
 │   ├── trainer.py
 │   └── replay.py
 ├── api/
-│   ├── main.py
-│   └── schemas.py
+│   ├── main.py            # FastAPI app, endpoints, recorder integration
+│   └── schemas.py         # Pydantic request/response models
 ├── frontend/
-│   ├── index.html
-│   ├── game.js
+│   ├── index.html         # Single page — live game + replay
+│   ├── render.js          # Shared rendering functions (no API calls)
+│   ├── game.js            # Live game logic + replay mode + menu
 │   └── style.css
 ├── scripts/
 │   ├── self_play.py
-│   └── train.py
+│   ├── train.py
+│   └── migrate_recordings.py  # Migrates old recordings to current format
 ├── tests/
-│   ├── test_constants.py
-│   ├── test_game.py
+│   ├── test_tile.py
 │   ├── test_board.py
+│   ├── test_game.py
+│   ├── test_game_state.py
 │   ├── test_scoring.py
-│   ├── test_agents.py
+│   ├── test_game_recorder.py
 │   ├── test_api.py
-│   ├── test_self_play.py
+│   ├── test_agents.py
 │   ├── test_mcts.py
 │   ├── test_encoder.py
 │   ├── test_model.py
 │   ├── test_replay.py
 │   ├── test_trainer.py
 │   └── test_alphazero.py
-├── checkpoints/     # gitignored
+├── recordings/            # gitignored — one JSON per completed human game
+├── checkpoints/           # gitignored
 └── docs/
     └── PROJECT_PLAN.md
 ```
@@ -91,13 +95,13 @@ azul-alphazero/
 
 ---
 
-### Phase 6 — AlphaZero Self-Play Training 🔄 (paused for 6b)
+### Phase 6 — AlphaZero Self-Play Training 🔄 (paused)
 
 #### What's built
 - `AlphaZeroAgent` — PUCT tree search, value head evaluation, no rollouts
-- `collect_self_play` — opponent=None (AZ vs AZ) or opponent=Agent (warmup mode)
-- `collect_heuristic_games` — 50% Greedy, 25% Cautious, 25% Efficient, one-hot policy targets
-- `scripts/train.py` — full training loop with greedy warmup, auto-switch, per-game eval logging, `_MAX_MOVES=300`
+- `collect_self_play` — opponent=None (AZ vs AZ) or opponent=Agent (warmup mode); records both players
+- `collect_heuristic_games` — Greedy vs Random; skips Random-wins games
+- `scripts/train.py` — full training loop with greedy warmup, auto-switch, per-game eval logging
 
 #### Known issues to fix before next training run
 - Rolling avg bug: records 0 for AZ-as-p1 games → warmup threshold never reached
@@ -113,62 +117,69 @@ azul-alphazero/
 
 ---
 
-### Phase 6b — Reward Shaping 🔄 (in progress)
+### Phase 6b — Reward Shaping + UI Polish ✅
 
-**Motivation:** Azul's scoring is highly deferred. The value head has no signal until end of round or end of game. Moving the reward signal closer to the move that earned it should dramatically accelerate learning.
-
-#### Engine (scoring.py) ✅
-
-**`carried_score(board) -> int`** — `board.score`. Named accessor for the four-part model.
-
-**`score_floor_penalty(floor_line) -> int`** — penalty for current floor tiles. Uses `CUMULATIVE_FLOOR_PENALTIES` lookup.
-
-**`score_placement(wall, row, column) -> int`** — score a single tile placement. Precondition: tile already placed in wall before calling. Uses pointer-walk for performance.
-
-**`score_wall_bonus(wall) -> int`** — end-of-game bonuses (+2 row, +7 column, +10 color) for tiles already on the wall.
-
-**`earned_score(board) -> int`** — points earned this round not yet in `board.score`. Simulates pending pattern line placements sequentially (row 0 first) on a temporary wall copy, so adjacency between pending placements is captured correctly. Includes floor penalties and wall bonuses on the post-placement wall.
-
-**`grand_total(board) -> int`** — `carried_score + earned_score`. Not clamped — can be negative.
-
-#### Precomputed lookups in constants.py ✅
-- `WALL_PATTERN` — moved here from `game.py`
-- `CUMULATIVE_FLOOR_PENALTIES` — indexed 0..NUMBER_OF_FACTORIES*TILES_PER_FACTORY, no capping needed
-- `COLUMN_FOR_COLOR_IN_ROW[tile][row]` — replaces all `.index()` calls on the wall pattern
-
-#### API — expose scoring breakdown per player (up next)
-
-Add to `BoardResponse` (schemas.py):
-- `carried_score: int`
-- `earned_score: int`
-- `bonus_score: int`
-- `grand_total: int`
-
-`bonus_score` is the wall bonus component of `earned_score` broken out separately for the UI.
-
-#### UI (after API)
-- Wall tile preview: show `+N` on wall cell where a full pattern line will score
-- End-of-game bonus indicators: `+7` below completed columns, `+10` for completed colors, `+2` right of completed rows
-- Four-part score display: Carried | Earned | Bonus | Total
-
-#### Model integration (after UI)
-- Replace final-game-score value target in `collect_self_play` with `grand_total` delta per move
-- Model receives only `grand_total` — no breakdown
+- `earned_score(board)` — simulates pending placements, includes floor penalty and wall bonus
+- `grand_total(board)` — carried_score + earned_score
+- `pending_placement_details(board)` — per-cell placement scores for UI annotations
+- `pending_bonus_details(wall)` — completed row/column/color bonuses for UI
+- Score bar: carried + pending placements + floor penalty + bonuses = grand total
+- Wall annotations: `+N` on pending placement cells, row/column/color bonus indicators
+- Sources row: factories + Center panel + Bag/Box panel
+- Game recorder, replay viewer, bag/box counts, full UI polish pass
 
 ---
 
-### Phase 7 — Evaluation and Iteration
+### Phase 7 — Undo + Hypothetical + Manual Factory Setup ✅
+
+#### 7a — Undo ✅
+- `_history: list[GameState]` in `api/main.py`
+- Deep copy pushed before every `make_move`
+- `POST /undo` — pops and restores; automatically skips through bot moves to land on human turn
+- Disabled in bot-vs-bot games
+
+#### 7b — Hypothetical mode ✅
+- "What if?" button overrides both players to human
+- Hypothetical tree panel — branching, node jumping, commit execution
+- From-replay hypothetical entry
+- Terminal states in hypothetical are leaf nodes — no round setup, no recording saved
+
+#### 7c — Manual factory setup ✅
+- Pre-game step: human clicks tiles into each factory
+- `POST /setup-factories/*` endpoints
+- Persists across all rounds of the game — `_handle_round_end` re-enters setup mode
+- First-player marker correctly placed in center on setup entry
+
+#### 7d — Replay Improvements ✅
+- **Compact recording format** — rounds/moves instead of full board snapshots per turn
+- **`GameRecord.reconstruct()`** — replays moves server-side, embeds `computed_turns` and `final_boards` in API response; `computed_turns[0]` is always the initial state
+- **Move list panel** — below boards; round headers (Round 1, 2…); turn numbers; player emoji (👤/🤖); tile chip; source→destination; grand totals; scroll-to-current; keyboard navigation (arrow keys)
+- **Grand totals in replay** — boards show earned scores immediately, not end-of-round scored values; pending placements and bonuses computed during reconstruction
+- **Auto-load replay** — game automatically transitions to replay mode 1500ms after game over using `last_game_id` in `GameStateResponse`
+- **P1/P2 labels** — player boards labeled `P1 Human`, `P2 Greedy Bot` etc. in live game; recordings store prefixed names
+- **Human-readable recording filenames** — `YYYYMMDD HHMMSS P1 name score - P2 name score.json`
+- **Migration script** — `scripts/migrate_recordings.py` converts old verbose format to compact format; detects round boundaries from factory state; adds P1/P2 prefixes; idempotent with .bak backups
+
+---
+
+### Phase 8 — Evaluation and Iteration 🔜 (up next)
+
 - [ ] Elo ladder across all agent versions
 - [ ] Hyperparameter search
 - [ ] Difficulty levels in UI
 
-### Phase 8 — Polish and Release
+### Phase 9 — Polish and Release
 - [ ] Animated tile placement
 - [ ] Sound effects
-- [ ] Game history / move replay
 - [ ] Cloud deployment
 - [ ] Capacitor iOS/Android packaging
 - [ ] README with screenshots
+
+### Future features discussed but not planned
+- AlphaZero as UI opponent — once a trained checkpoint exists, wire into `_make_agent()`
+- Policy head annotations on hypothetical tree — show each move's prior probability and value estimate
+- Multiple agent perspectives — annotate same position with evaluations from different checkpoints
+- Bot moves in hypothetical tree show no move label — fixable by diffing pre/post state or having API return last move made
 
 ---
 
@@ -201,5 +212,8 @@ Add to `BoardResponse` (schemas.py):
 | 2026-04-02 | Phase 5 complete |
 | 2026-04-02 | Phase 6 in progress |
 | 2026-04-03 | Phase 6 run 4 complete — failure analysis, reward shaping planned |
-| 2026-04-03 | Phase 6b defined |
-| 2026-04-04 | Phase 6b Step 1 complete — scoring.py, constants.py refactor, game.py cleanup |
+| 2026-04-03 | Phase 6b defined — carried_score, earned_score, grand_total, UI display |
+| 2026-04-07 | Phase 6b complete — recorder, replay viewer, bag/box counts, full UI polish pass |
+| 2026-04-07 | Phase 7 defined — undo, hypothetical mode, manual factory setup |
+| 2026-04-13 | Phase 7 complete — undo, hypothetical, manual factories, replay improvements |
+| 2026-04-13 | Phase 7d complete — compact recording format, move list panel, grand totals in replay, auto-load replay, P1/P2 labels, migration script |

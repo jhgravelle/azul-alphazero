@@ -1,6 +1,7 @@
 checkpoints/
 logs/
 recordings/
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

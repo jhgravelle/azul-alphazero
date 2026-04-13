@@ -346,9 +346,15 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
     _game.make_move(move)
     _handle_round_end()
 
-    if _game.is_game_over() and _recorder is not None:
-        _save_recording(_recorder, _game)
-        _recorder = None
+    if _hyp_marker is not None:
+        # In hypothetical mode — no round setup, no recording.
+        # Terminal states become leaf nodes; the user can discard or commit.
+        pass
+    else:
+        _handle_round_end()
+        if _game.is_game_over() and _recorder is not None:
+            _save_recording(_recorder, _game)
+            _recorder = None
 
     return _build_response(_game)
 

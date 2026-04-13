@@ -47,12 +47,24 @@ function _setCurrentNode(node) {
   node.isCurrent = true;
 }
 
+function _recordHypNode(move, newState) {
+  const node = _makeNode(_hypCurrent, move, newState);
+  _hypCurrent.children.push(node);
+  _setCurrentNode(node);
+}
+
 function _countInSource(state, source, color) {
   if (source === -1) return state.center.filter(t => t === color).length;
   return (state.factories[source] ?? []).filter(t => t === color).length;
 }
 
 // ── Menu ───────────────────────────────────────────────────────────────────
+
+function _makeMenuButton(cssClass = "header-btn secondary") {
+  const menuBtn = createElement("button", cssClass, "Menu");
+  menuBtn.addEventListener("click", openMenu);
+  return menuBtn;
+}
 
 function openMenu() {
   document.getElementById("menu-overlay").classList.remove("hidden");
@@ -140,11 +152,14 @@ async function loadState() {
   maybeRunBot();
 }
 
-async function loadReplay(gameId) {
-  replayRecord = await fetchRecord(gameId);
-  replayTurnIndex = 0;
-  hasGameInProgress = true;
-  renderReplay();
+function _applyNewState(newState) {
+  gameState = newState;
+  selection = null;
+  renderLive();
+  maybeRunBot();
+  if (gameState.is_game_over && gameState.last_game_id) {
+    setTimeout(() => loadReplay(gameState.last_game_id), 1500);
+  }
 }
 
 async function submitMove(source, color, destination) {
@@ -166,22 +181,11 @@ async function submitMove(source, color, destination) {
 
   if (gameState.in_hypothetical) {
     const playerIndex = gameState.current_player;
-    // Use original player types — in hyp mode all types are "human".
     const originalTypes = _hypOriginalPlayerTypes ?? gameState.player_types;
     const isBot = originalTypes[playerIndex] !== "human";
-    const move = { playerIndex, isBot, source, color, count, destination };
-    const node = _makeNode(_hypCurrent, move, newState);
-    _hypCurrent.children.push(node);
-    _setCurrentNode(node);
+    _recordHypNode({ playerIndex, isBot, source, color, count, destination }, newState);
   }
-
-  gameState = newState;
-  selection = null;
-  renderLive();
-  maybeRunBot();
-  if (gameState.is_game_over && gameState.last_game_id) {
-    setTimeout(() => loadReplay(gameState.last_game_id), 1500);
-  }
+  _applyNewState(newState);
 }
 
 async function requestAgentMove() {
@@ -195,19 +199,12 @@ async function requestAgentMove() {
 
   if (gameState && gameState.in_hypothetical) {
     const playerIndex = gameState.current_player;
-    const move = { playerIndex, isBot: true, source: null, color: null, count: null, destination: null };
-    const node = _makeNode(_hypCurrent, move, newState);
-    _hypCurrent.children.push(node);
-    _setCurrentNode(node);
+    _recordHypNode(
+      { playerIndex, isBot: true, source: null, color: null, count: null, destination: null },
+      newState
+    );
   }
-
-  gameState = newState;
-  selection = null;
-  renderLive();
-  maybeRunBot();
-  if (gameState.is_game_over && gameState.last_game_id) {
-    setTimeout(() => loadReplay(gameState.last_game_id), 1500);
-  }
+  _applyNewState(newState);
 }
 
 async function startNewGame(playerTypes, manualFactories = false) {
@@ -508,9 +505,7 @@ function renderFactorySetup(state, app) {
   restartBtn.addEventListener("click", setupRestart);
   header.appendChild(restartBtn);
 
-  const menuBtn = createElement("button", "header-btn secondary", "Menu");
-  menuBtn.addEventListener("click", openMenu);
-  header.appendChild(menuBtn);
+  header.appendChild(_makeMenuButton());
 
   app.appendChild(header);
   app.appendChild(createElement("p", "selection-hint",
@@ -594,9 +589,7 @@ function renderLive() {
     header.appendChild(whatIfBtn);
   }
 
-  const menuBtn = createElement("button", "header-btn secondary", "Menu");
-  menuBtn.addEventListener("click", openMenu);
-  header.appendChild(menuBtn);
+  header.appendChild(_makeMenuButton());
   app.appendChild(header);
 
   const humanTurn = !currentPlayerIsBot() && !state.is_game_over;
@@ -771,9 +764,7 @@ function renderReplay() {
   whatIfBtn.addEventListener("click", enterHypotheticalFromReplay);
   controls.appendChild(whatIfBtn);
 
-  const menuBtn = createElement("button", "replay-btn", "Menu");
-  menuBtn.addEventListener("click", openMenu);
-  controls.appendChild(menuBtn);
+  controls.appendChild(_makeMenuButton("replay-btn"));
 
   app.appendChild(controls);
 

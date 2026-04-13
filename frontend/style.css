@@ -702,3 +702,10 @@ h1 { margin-bottom: 8px; }
   color: #555;
   white-space: nowrap;
 }
+.replay-move-item-number {
+  font-size: 0.75rem;
+  color: #999;
+  min-width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}

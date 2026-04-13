@@ -10,19 +10,49 @@ from pathlib import Path
 from typing import Any
 
 from engine.board import Board
-from engine.game import Game, Move
 from engine.constants import PLAYERS, Tile
+from engine.game import Game, Move
 from engine.scoring import earned_score
 
-# ── Board state capture ────────────────────────────────────────────────────
+# ── Data classes ───────────────────────────────────────────────────────────
 
 
-def _capture_board(board: Board) -> dict[str, Any]:
-    """Return a human-readable snapshot of a player board.
+@dataclass
+class MoveRecord:
+    """A single move within a round.
 
-    Tile enum values are converted to their string names (e.g. 'BLUE').
-    Empty wall cells are stored as None.
+    Attributes:
+        player_index: Which player made this move.
+        source:       Factory index, CENTER (-1), or FLOOR (-2).
+        tile:         Tile color name (e.g. 'BLUE').
+        destination:  Pattern line index, or FLOOR (-2).
     """
+
+    player_index: int
+    source: int
+    tile: str
+    destination: int
+
+
+@dataclass
+class RoundRecord:
+    """The factory layout and moves for one round.
+
+    Attributes:
+        round:     Round number (1-indexed).
+        factories: Tile names in each factory at the start of the round.
+        center:    Tile names in the center at the start of the round.
+        moves:     Ordered list of moves made this round.
+    """
+
+    round: int
+    factories: list[list[str]]
+    center: list[str]
+    moves: list[MoveRecord] = field(default_factory=list)
+
+
+def _board_to_dict(board: Board) -> dict[str, Any]:
+    """Serialize a Board to a JSON-compatible dict."""
     return {
         "score": board.score,
         "pattern_lines": [[tile.name for tile in line] for line in board.pattern_lines],
@@ -34,46 +64,27 @@ def _capture_board(board: Board) -> dict[str, Any]:
     }
 
 
-def _capture_source_state(game: Game) -> dict[str, Any]:
-    """Return a snapshot of the shared tile sources before a move is applied."""
+def _board_to_dict_with_pending(board: Board) -> dict[str, Any]:
+    """Serialize a board including pending placement and bonus details."""
+    from engine.scoring import pending_placement_details, pending_bonus_details
+
+    placement_details, temp_wall = pending_placement_details(board)
+    bonus_details = pending_bonus_details(temp_wall)
+    base = _board_to_dict(board)
+    base["pending_placements"] = [
+        {"row": d.row, "column": d.column, "placement_points": d.placement_points}
+        for d in placement_details
+    ]
+    base["pending_bonuses"] = [
+        {"bonus_type": d.bonus_type, "index": d.index, "bonus_points": d.bonus_points}
+        for d in bonus_details
+    ]
+    return base
+
+
+def _counts(tile_list: list[Tile]) -> dict[str, int]:
     colors = [t for t in Tile if t != Tile.FIRST_PLAYER]
-
-    def _counts(tile_list: list[Tile]) -> dict[str, int]:
-        return {t.name: tile_list.count(t) for t in colors}
-
-    return {
-        "factories": [
-            [tile.name for tile in factory] for factory in game.state.factories
-        ],
-        "center": [tile.name for tile in game.state.center],
-        "bag_counts": _counts(game.state.bag),
-        "discard_counts": _counts(game.state.discard),
-    }
-
-
-@dataclass
-class TurnRecord:
-    """A snapshot of one turn: the board state before the move, and the move itself.
-
-    Attributes:
-        player_index: Which player took this turn.
-        board_states: One snapshot dict per player, captured before the move.
-        source_state: Shared game state before the move -- factories and center.
-        move_source: Factory index, or CENTER (-1), or FLOOR (-2).
-        move_tile: Tile color name (e.g. 'BLUE').
-        move_destination: Pattern line index, or FLOOR (-2).
-        analysis: Optional agent-specific data (MCTS visits, value estimates, etc.).
-    """
-
-    player_index: int
-    board_states: list[dict[str, Any]]
-    source_state: dict[str, Any]
-    move_source: int
-    move_tile: str
-    move_destination: int
-    round: int = 0
-    grand_totals: list[int] = field(default_factory=list)
-    analysis: dict[str, Any] | None = None
+    return {t.name: tile_list.count(t) for t in colors}
 
 
 @dataclass
@@ -81,42 +92,139 @@ class GameRecord:
     """The complete record of one Azul game.
 
     Attributes:
-        game_id: Unique identifier for this game.
-        timestamp: ISO 8601 UTC timestamp of when recording began.
+        game_id:      Unique identifier for this game.
+        timestamp:    ISO 8601 UTC timestamp of when recording began.
         player_names: Display name for each player.
-        turns: Ordered list of turn records.
+        player_types: Agent type string for each player.
+        rounds:       One RoundRecord per round played.
         final_scores: Score for each player after end-of-game bonuses.
-        winner: Index of the winning player, or None if not yet finalized.
+        winner:       Index of the winning player, or None for a draw.
     """
 
     game_id: str
     timestamp: str
     player_names: list[str]
     player_types: list[str] = field(default_factory=list)
-    turns: list[TurnRecord] = field(default_factory=list)
+    rounds: list[RoundRecord] = field(default_factory=list)
     final_scores: list[int] = field(default_factory=list)
     winner: int | None = None
 
+    # ── Reconstruction ─────────────────────────────────────────────────
+
+    def reconstruct(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Replay all moves and return (computed_turns, final_boards).
+
+        computed_turns is a flat list — one entry per move across all rounds,
+        in order. Each entry reflects the state AFTER the move:
+
+            {
+                "round":        int,
+                "player_index": int,
+                "source":       int,
+                "tile":         str,
+                "destination":  int,
+                "boards":       [board_dict, ...],
+                "factories":    [[tile_name, ...], ...],
+                "center":       [tile_name, ...],
+                "bag_counts":   {color: count, ...},
+                "discard_counts": {color: count, ...},
+                "grand_totals": [int, ...],
+            }
+
+        final_boards is a list of board dicts after end-of-game scoring.
+        """
+        game = Game()
+        computed_turns: list[dict[str, Any]] = []
+
+        for round_record in self.rounds:
+            explicit_factories = [
+                [Tile[name] for name in factory] for factory in round_record.factories
+            ]
+            game.setup_round(factories=explicit_factories)
+
+            # Insert initial state before any moves in the first round.
+            if not computed_turns:
+                computed_turns.append(
+                    {
+                        "round": round_record.round,
+                        "player_index": 0,
+                        "source": None,
+                        "tile": None,
+                        "destination": None,
+                        "boards": [
+                            _board_to_dict_with_pending(p) for p in game.state.players
+                        ],
+                        "factories": [
+                            [t.name for t in f] for f in game.state.factories
+                        ],
+                        "center": [t.name for t in game.state.center],
+                        "bag_counts": _counts(game.state.bag),
+                        "discard_counts": _counts(game.state.discard),
+                        "grand_totals": [earned_score(p) for p in game.state.players],
+                        "is_initial": True,
+                    }
+                )
+
+            for move_record in round_record.moves:
+                move = Move(
+                    source=move_record.source,
+                    tile=Tile[move_record.tile],
+                    destination=move_record.destination,
+                )
+                game.make_move(move)
+
+                grand_totals = [earned_score(p) for p in game.state.players]
+                computed_turns.append(
+                    {
+                        "round": round_record.round,
+                        "player_index": move_record.player_index,
+                        "source": move_record.source,
+                        "tile": move_record.tile,
+                        "destination": move_record.destination,
+                        "boards": [
+                            _board_to_dict_with_pending(p) for p in game.state.players
+                        ],
+                        "factories": [
+                            [t.name for t in f] for f in game.state.factories
+                        ],
+                        "center": [t.name for t in game.state.center],
+                        "bag_counts": _counts(game.state.bag),
+                        "discard_counts": _counts(game.state.discard),
+                        "grand_totals": grand_totals,
+                    }
+                )
+
+        game.score_game()
+        final_boards = [_board_to_dict(p) for p in game.state.players]
+        return computed_turns, final_boards
+
+    # ── Serialization ──────────────────────────────────────────────────
+
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the record to a JSON-compatible dict."""
+        """Serialize to a JSON-compatible dict."""
         return {
             "game_id": self.game_id,
             "timestamp": self.timestamp,
             "player_names": self.player_names,
             "player_types": self.player_types,
-            "turns": [
+            "rounds": [
                 {
-                    "player_index": turn.player_index,
-                    "board_states": turn.board_states,
-                    "source_state": turn.source_state,
-                    "move_source": turn.move_source,
-                    "move_tile": turn.move_tile,
-                    "move_destination": turn.move_destination,
-                    "round": turn.round,
-                    "grand_totals": turn.grand_totals,
-                    "analysis": turn.analysis,
+                    "round": round_record.round,
+                    "factories": round_record.factories,
+                    "center": round_record.center,
+                    "moves": [
+                        {
+                            "player_index": move.player_index,
+                            "source": move.source,
+                            "tile": move.tile,
+                            "destination": move.destination,
+                        }
+                        for move in round_record.moves
+                    ],
                 }
-                for turn in self.turns
+                for round_record in self.rounds
             ],
             "final_scores": self.final_scores,
             "winner": self.winner,
@@ -124,35 +232,30 @@ class GameRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GameRecord":
-        """Deserialize a GameRecord from a dict (e.g. loaded from JSON)."""
-        turns = [
-            TurnRecord(
-                player_index=turn["player_index"],
-                board_states=turn["board_states"],
-                source_state=turn.get(
-                    "source_state",
-                    {
-                        "factories": [],
-                        "center": [],
-                        "bag_counts": {},
-                        "discard_counts": {},
-                    },
-                ),
-                move_source=turn["move_source"],
-                move_tile=turn["move_tile"],
-                move_destination=turn["move_destination"],
-                round=turn.get("round", 0),
-                grand_totals=turn.get("grand_totals", []),
-                analysis=turn.get("analysis"),
+        """Deserialize from a dict (e.g. loaded from JSON)."""
+        rounds = [
+            RoundRecord(
+                round=r["round"],
+                factories=r["factories"],
+                center=r.get("center", ["FIRST_PLAYER"]),
+                moves=[
+                    MoveRecord(
+                        player_index=m["player_index"],
+                        source=m["source"],
+                        tile=m["tile"],
+                        destination=m["destination"],
+                    )
+                    for m in r.get("moves", [])
+                ],
             )
-            for turn in data.get("turns", [])
+            for r in data.get("rounds", [])
         ]
         return cls(
             game_id=data["game_id"],
             timestamp=data["timestamp"],
             player_names=data["player_names"],
             player_types=data.get("player_types", []),
-            turns=turns,
+            rounds=rounds,
             final_scores=data.get("final_scores", []),
             winner=data.get("winner"),
         )
@@ -169,21 +272,16 @@ class GameRecord:
 
 
 class GameRecorder:
-    """Records an Azul game turn by turn for later replay and analysis.
+    """Records an Azul game round by round for later replay and analysis.
 
     Usage::
 
         recorder = GameRecorder(player_names=["Alice", "Bob"])
-        # Before each move:
-        recorder.record_turn(game, move, analysis={"value_estimate": 0.6})
-        game.make_move(move)
-        # After game ends:
+        recorder.start_round(game)          # call at start of each round
+        recorder.record_move(move, player_index=0)  # call before make_move
+        ...
         recorder.finalize(game)
-        recorder.save("recordings/game_001.json")
-
-    Args:
-        player_names: Display name for each player. Defaults to
-            ["Player 0", "Player 1"].
+        recorder.save("recordings/game.json")
     """
 
     def __init__(
@@ -202,62 +300,58 @@ class GameRecorder:
             player_names=player_names,
             player_types=player_types,
         )
+        self._current_round: RoundRecord | None = None
 
-    def record_turn(
-        self,
-        game: Game,
-        move: Move,
-        analysis: dict[str, Any] | None = None,
-    ) -> None:
-        """Capture the board state and the chosen move.
+    def start_round(self, game: Game) -> None:
+        """Capture the factory layout at the start of a round.
 
-        Must be called BEFORE game.make_move(move) so the snapshot reflects
-        the state the decision was made from.
-
-        Args:
-            game: The current game instance.
-            move: The move about to be played.
-            analysis: Optional agent-specific data to attach to this turn.
+        Must be called after setup_round() so the factories are filled.
         """
-        board_states = [_capture_board(player) for player in game.state.players]
-        source_state = _capture_source_state(game)
-        grand_totals = [earned_score(player) for player in game.state.players]
-        turn = TurnRecord(
-            player_index=game.state.current_player,
-            board_states=board_states,
-            source_state=source_state,
-            move_source=move.source,
-            move_tile=move.tile.name,
-            move_destination=move.destination,
+        round_record = RoundRecord(
             round=game.state.round,
-            grand_totals=grand_totals,
-            analysis=analysis,
+            factories=[
+                [tile.name for tile in factory] for factory in game.state.factories
+            ],
+            center=[tile.name for tile in game.state.center],
         )
-        self.record.turns.append(turn)
+        self.record.rounds.append(round_record)
+        self._current_round = round_record
+
+    def record_move(
+        self,
+        move: Move,
+        player_index: int = 0,
+    ) -> None:
+        """Record a move within the current round.
+
+        Must be called before game.make_move(move).
+
+        Raises RuntimeError if start_round has not been called yet.
+        """
+        if self._current_round is None:
+            raise RuntimeError("start_round must be called before record_move")
+        self._current_round.moves.append(
+            MoveRecord(
+                player_index=player_index,
+                source=move.source,
+                tile=move.tile.name,
+                destination=move.destination,
+            )
+        )
 
     def finalize(self, game: Game) -> None:
-        """Record final scores and determine the winner.
-
-        Call this after game.score_game() has been called.
-
-        Args:
-            game: The completed game instance.
-        """
+        """Record final scores and winner. Call after score_game()."""
         self.record.final_scores = [p.score for p in game.state.players]
-        self.record.winner = max(
-            range(len(self.record.final_scores)),
-            key=lambda i: self.record.final_scores[i],
-        )
+        scores = self.record.final_scores
+        best = max(scores)
+        winners = [i for i, s in enumerate(scores) if s == best]
+        self.record.winner = winners[0] if len(winners) == 1 else None
 
     def to_json(self) -> str:
         """Serialize the full game record to a JSON string."""
         return json.dumps(self.record.to_dict(), indent=2)
 
     def save(self, path: str | Path) -> None:
-        """Write the game record to a JSON file.
-
-        Args:
-            path: Destination file path. Parent directories must exist.
-        """
+        """Write the game record to a JSON file."""
         with open(path, "w", encoding="utf-8") as f:
             f.write(self.to_json())

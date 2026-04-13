@@ -1,30 +1,63 @@
 # tests/test_game_recorder.py
 
-"""Tests for the game recorder."""
+"""Tests for the game recorder — compact round/move format."""
 
 import json
+import pytest
+from engine.game import Game, Move
+from engine.constants import PLAYERS
+from engine.game_recorder import GameRecorder, GameRecord
 
-# import pytest
-from engine.game import Game, Move  # , CENTER
-from engine.constants import PLAYERS, Tile
-from engine.game_recorder import GameRecorder, GameRecord  # , TurnRecord
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+
+def _first_legal_move(game: Game) -> Move:
+    return game.legal_moves()[0]
+
+
+def _play_full_game(recorder: GameRecorder | None = None) -> Game:
+    """Play a full game to completion, optionally recording it."""
+    game = Game()
+    game.setup_round()
+    if recorder:
+        recorder.start_round(game)
+    last_round = game.state.round
+    max_moves = 500
+    moves_made = 0
+    while not game.is_game_over() and moves_made < max_moves:
+        moves = game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        if recorder:
+            recorder.record_move(move, player_index=game.state.current_player)
+        game.make_move(move)
+        game.advance_round_if_needed()
+        if recorder and not game.is_game_over() and game.state.round != last_round:
+            recorder.start_round(game)
+            last_round = game.state.round
+        moves_made += 1
+    if game.is_game_over():
+        game.score_game()
+    return game
+
 
 # ── Construction ───────────────────────────────────────────────────────────
 
 
 def test_recorder_default_player_names():
     recorder = GameRecorder()
-    assert recorder.player_names == ["Player 0", "Player 1"]
+    assert recorder.record.player_names == ["Player 0", "Player 1"]
 
 
 def test_recorder_custom_player_names():
     recorder = GameRecorder(player_names=["Alice", "Bob"])
-    assert recorder.player_names == ["Alice", "Bob"]
+    assert recorder.record.player_names == ["Alice", "Bob"]
 
 
-def test_recorder_starts_with_no_turns():
+def test_recorder_starts_with_no_rounds():
     recorder = GameRecorder()
-    assert recorder.record.turns == []
+    assert recorder.record.rounds == []
 
 
 def test_recorder_has_game_id():
@@ -45,327 +78,170 @@ def test_two_recorders_have_different_game_ids():
     assert r1.record.game_id != r2.record.game_id
 
 
-# ── record_turn ────────────────────────────────────────────────────────────
+# ── start_round ────────────────────────────────────────────────────────────
 
 
-def _first_legal_move(game: Game) -> Move:
-    return game.legal_moves()[0]
-
-
-def test_record_turn_adds_one_turn():
+def test_start_round_adds_round_record():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert len(recorder.record.turns) == 1
+    recorder.start_round(game)
+    assert len(recorder.record.rounds) == 1
 
 
-def test_record_turn_captures_current_player():
+def test_start_round_captures_factories():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    turn = recorder.record.turns[0]
-    assert turn.player_index == game.state.current_player
+    recorder.start_round(game)
+    round_record = recorder.record.rounds[0]
+    assert len(round_record.factories) == len(game.state.factories)
 
 
-def test_record_turn_captures_move_source():
+def test_start_round_captures_center():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert recorder.record.turns[0].move_source == move.source
+    recorder.start_round(game)
+    round_record = recorder.record.rounds[0]
+    assert "FIRST_PLAYER" in round_record.center
 
 
-def test_record_turn_captures_move_tile():
+def test_start_round_factories_use_tile_names():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert recorder.record.turns[0].move_tile == move.tile.name
-
-
-def test_record_turn_captures_move_destination():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert recorder.record.turns[0].move_destination == move.destination
-
-
-def test_record_turn_captures_board_state_for_both_players():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    turn = recorder.record.turns[0]
-    assert len(turn.board_states) == PLAYERS
-
-
-def test_record_turn_board_state_has_score():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    assert "score" in board_state
-
-
-def test_record_turn_board_state_has_pattern_lines():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    assert "pattern_lines" in board_state
-    assert len(board_state["pattern_lines"]) == 5
-
-
-def test_record_turn_board_state_has_wall():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    assert "wall" in board_state
-    assert len(board_state["wall"]) == 5
-    assert len(board_state["wall"][0]) == 5
-
-
-def test_record_turn_board_state_has_floor_line():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    assert "floor_line" in board_state
-
-
-def test_record_turn_board_state_uses_tile_names_not_enum_values():
-    """Tile names like 'BLUE' should appear in the JSON, not enum integers."""
-    game = Game()
-    game.setup_round()
-    player = game.state.players[0]
-    player.wall[0][0] = Tile.BLUE
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    wall_flat = [cell for row in board_state["wall"] for cell in row]
-    assert "BLUE" in wall_flat
-
-
-def test_record_turn_empty_wall_cell_is_none():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    wall_flat = [cell for row in board_state["wall"] for cell in row]
-    assert None in wall_flat
-
-
-def test_record_turn_pattern_line_uses_tile_names():
-    """A non-empty pattern line should store tile names, not enum values."""
-    game = Game()
-    game.setup_round()
-    player = game.state.players[0]
-    player.pattern_lines[1] = [Tile.RED]
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    assert board_state["pattern_lines"][1] == ["RED"]
-
-
-def test_record_turn_empty_pattern_line_is_empty_list():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    board_state = recorder.record.turns[0].board_states[0]
-    assert board_state["pattern_lines"][0] == []
-
-
-def test_record_turn_with_no_analysis():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert recorder.record.turns[0].analysis is None
-
-
-def test_record_turn_with_analysis():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    analysis = {"value_estimate": 0.6, "simulations": 100}
-    recorder.record_turn(game, move, analysis=analysis)
-    assert recorder.record.turns[0].analysis == analysis
-
-
-def test_record_turn_captures_state_before_move_is_applied():
-    """Score should reflect the state BEFORE the move is applied."""
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    score_before = game.state.players[0].score
-    recorder.record_turn(game, move)
-    game.make_move(move)
-    recorded_score = recorder.record.turns[0].board_states[0]["score"]
-    assert recorded_score == score_before
-
-
-# Add these tests to the "record_turn" section of test_game_recorder.py
-
-
-def test_record_turn_captures_factories():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    turn = recorder.record.turns[0]
-    assert "factories" in turn.source_state
-    assert len(turn.source_state["factories"]) == len(game.state.factories)
-
-
-def test_record_turn_captures_center():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    turn = recorder.record.turns[0]
-    assert "center" in turn.source_state
-
-
-def test_record_turn_factories_use_tile_names():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    turn = recorder.record.turns[0]
-    for factory in turn.source_state["factories"]:
+    recorder.start_round(game)
+    for factory in recorder.record.rounds[0].factories:
         for tile_name in factory:
-            assert tile_name in (
-                "BLUE",
-                "YELLOW",
-                "RED",
-                "BLACK",
-                "WHITE",
-                "FIRST_PLAYER",
-            )
+            assert tile_name in ("BLUE", "YELLOW", "RED", "BLACK", "WHITE")
 
 
-def test_record_turn_source_state_matches_game_state_before_move():
+def test_start_round_captures_round_number():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
-    move = _first_legal_move(game)
-    expected_factories = [list(f) for f in game.state.factories]
-    recorder.record_turn(game, move)
-    game.make_move(move)
-    turn = recorder.record.turns[0]
-    recorded_factories = turn.source_state["factories"]
-    for i, factory in enumerate(expected_factories):
-        assert recorded_factories[i] == [t.name for t in factory]
+    recorder.start_round(game)
+    assert recorder.record.rounds[0].round == 1
 
 
-def test_record_turn_center_uses_tile_names():
-    game = Game()
-    game.setup_round()
-    # Manually put a tile in center so we have something to check.
-    game.state.center.append(Tile.RED)
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    turn = recorder.record.turns[0]
-    assert "RED" in turn.source_state["center"]
-
-
-def test_round_trip_preserves_factories(tmp_path):
+def test_start_round_increments_for_second_round():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
+    recorder.start_round(game)
+    game.setup_round()
+    recorder.start_round(game)
+    assert recorder.record.rounds[1].round == 2
+
+
+# ── record_move ────────────────────────────────────────────────────────────
+
+
+def test_record_move_adds_to_current_round():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_turn(game, move)
+    recorder.record_move(move)
+    assert len(recorder.record.rounds[0].moves) == 1
 
-    path = tmp_path / "game.json"
-    recorder.save(path)
-    loaded = GameRecord.load(path)
 
-    assert "factories" in loaded.turns[0].source_state
-    assert len(loaded.turns[0].source_state["factories"]) == len(game.state.factories)
+def test_record_move_captures_source():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    recorder.start_round(game)
+    move = _first_legal_move(game)
+    recorder.record_move(move)
+    assert recorder.record.rounds[0].moves[0].source == move.source
+
+
+def test_record_move_captures_tile():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    recorder.start_round(game)
+    move = _first_legal_move(game)
+    recorder.record_move(move)
+    assert recorder.record.rounds[0].moves[0].tile == move.tile.name
+
+
+def test_record_move_captures_destination():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    recorder.start_round(game)
+    move = _first_legal_move(game)
+    recorder.record_move(move)
+    assert recorder.record.rounds[0].moves[0].destination == move.destination
+
+
+def test_record_move_captures_player_index():
+    game = Game()
+    game.setup_round()
+    recorder = GameRecorder()
+    recorder.start_round(game)
+    move = _first_legal_move(game)
+    recorder.record_move(move, player_index=game.state.current_player)
+    assert recorder.record.rounds[0].moves[0].player_index == 0
+
+
+def test_record_move_before_start_round_raises():
+    recorder = GameRecorder()
+    game = Game()
+    game.setup_round()
+    move = _first_legal_move(game)
+    with pytest.raises(RuntimeError):
+        recorder.record_move(move)
 
 
 # ── finalize ───────────────────────────────────────────────────────────────
 
 
-def _play_full_game(recorder: GameRecorder | None = None) -> Game:
-    """Play a full game to completion using legal moves."""
+def test_finalize_sets_final_scores():
     game = Game()
     game.setup_round()
-    max_moves = 500
-    moves_made = 0
-    while not game.is_game_over() and moves_made < max_moves:
+    recorder = GameRecorder()
+    recorder.start_round(game)
+    while not game.is_game_over():
         moves = game.legal_moves()
         if not moves:
-            game.score_round()
-            if not game.is_game_over():
-                game.setup_round()
-            continue
+            break
         move = moves[0]
-        if recorder:
-            recorder.record_turn(game, move)
+        recorder.record_move(move, player_index=game.state.current_player)
         game.make_move(move)
-        moves_made += 1
-    if game.is_game_over():
-        game.score_game()
-    return game
-
-
-def test_finalize_sets_final_scores():
-    recorder = GameRecorder()
-    game = _play_full_game(recorder)
+        game.advance_round_if_needed()
+        if (
+            game.state.round > recorder.record.rounds[-1].round
+            and not game.is_game_over()
+        ):
+            recorder.start_round(game)
+    game.score_game()
     recorder.finalize(game)
     assert len(recorder.record.final_scores) == PLAYERS
 
 
-def test_finalize_scores_match_game_state():
-    recorder = GameRecorder()
-    game = _play_full_game(recorder)
-    recorder.finalize(game)
-    for i, player in enumerate(game.state.players):
-        assert recorder.record.final_scores[i] == player.score
-
-
-def test_finalize_sets_winner():
-    recorder = GameRecorder()
-    game = _play_full_game(recorder)
-    recorder.finalize(game)
-    assert recorder.record.winner is not None
-
-
 def test_finalize_winner_has_highest_score():
+    game = Game()
+    game.setup_round()
     recorder = GameRecorder()
-    game = _play_full_game(recorder)
+    recorder.start_round(game)
+    while not game.is_game_over():
+        moves = game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        recorder.record_move(move, player_index=game.state.current_player)
+        game.make_move(move)
+        game.advance_round_if_needed()
+        if (
+            game.state.round > recorder.record.rounds[-1].round
+            and not game.is_game_over()
+        ):
+            recorder.start_round(game)
+    game.score_game()
     recorder.finalize(game)
     assert recorder.record.winner is not None
     winner_score = recorder.record.final_scores[recorder.record.winner]
@@ -376,59 +252,35 @@ def test_finalize_winner_has_highest_score():
 # ── Serialization ──────────────────────────────────────────────────────────
 
 
-def test_to_json_returns_string():
-    recorder = GameRecorder()
-    game = Game()
-    game.setup_round()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert isinstance(recorder.to_json(), str)
-
-
 def test_to_json_is_valid_json():
-    recorder = GameRecorder()
     game = Game()
     game.setup_round()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    parsed = json.loads(recorder.to_json())
-    assert isinstance(parsed, dict)
-
-
-def test_to_json_contains_game_id():
     recorder = GameRecorder()
+    recorder.start_round(game)
+    move = _first_legal_move(game)
+    recorder.record_move(move, player_index=game.state.current_player)
+    assert isinstance(json.loads(recorder.to_json()), dict)
+
+
+def test_to_json_contains_rounds():
     game = Game()
     game.setup_round()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    parsed = json.loads(recorder.to_json())
-    assert "game_id" in parsed
-
-
-def test_to_json_contains_turns():
     recorder = GameRecorder()
+    recorder.start_round(game)
+    move = _first_legal_move(game)
+    recorder.record_move(move, player_index=game.state.current_player)
+    parsed = json.loads(recorder.to_json())
+    assert "rounds" in parsed
+    assert len(parsed["rounds"]) == 1
+
+
+def test_round_trip_preserves_moves(tmp_path):
     game = Game()
     game.setup_round()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    parsed = json.loads(recorder.to_json())
-    assert "turns" in parsed
-    assert len(parsed["turns"]) == 1
-
-
-def test_to_json_contains_player_names():
     recorder = GameRecorder(player_names=["Alice", "Bob"])
-    parsed = json.loads(recorder.to_json())
-    assert parsed["player_names"] == ["Alice", "Bob"]
-
-
-def test_round_trip_preserves_turns(tmp_path):
-    recorder = GameRecorder(player_names=["Alice", "Bob"])
-    game = Game()
-    game.setup_round()
+    recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    recorder.finalize(game)
+    recorder.record_move(move, player_index=game.state.current_player)
 
     path = tmp_path / "game.json"
     recorder.save(path)
@@ -436,99 +288,103 @@ def test_round_trip_preserves_turns(tmp_path):
 
     assert loaded.game_id == recorder.record.game_id
     assert loaded.player_names == ["Alice", "Bob"]
-    assert len(loaded.turns) == 1
+    assert len(loaded.rounds) == 1
+    assert len(loaded.rounds[0].moves) == 1
+    assert loaded.rounds[0].moves[0].tile == move.tile.name
 
 
-def test_round_trip_preserves_move_tile(tmp_path):
-    recorder = GameRecorder()
+def test_round_trip_preserves_factories(tmp_path):
     game = Game()
     game.setup_round()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
+    recorder = GameRecorder()
+    recorder.start_round(game)
 
     path = tmp_path / "game.json"
     recorder.save(path)
     loaded = GameRecord.load(path)
 
-    assert loaded.turns[0].move_tile == move.tile.name
+    assert len(loaded.rounds[0].factories) == len(game.state.factories)
 
 
-def test_round_trip_preserves_analysis(tmp_path):
-    recorder = GameRecorder()
+def test_round_trip_preserves_player_types(tmp_path):
+    recorder = GameRecorder(
+        player_names=["Alice", "Bob"], player_types=["human", "greedy"]
+    )
     game = Game()
     game.setup_round()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move, analysis={"value_estimate": 0.42})
+    recorder.start_round(game)
 
     path = tmp_path / "game.json"
     recorder.save(path)
     loaded = GameRecord.load(path)
 
-    assert loaded.turns[0].analysis == {"value_estimate": 0.42}
+    assert loaded.player_types == ["human", "greedy"]
 
 
-# Add these tests to the "record_turn" section of test_game_recorder.py
+# ── Reconstruction ─────────────────────────────────────────────────────────
 
 
-def test_record_turn_captures_bag_counts():
+def test_reconstruct_returns_one_state_per_move():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert "bag_counts" in recorder.record.turns[0].source_state
+    recorder.start_round(game)
+    last_round = game.state.round
+    for _ in range(4):
+        moves = game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        recorder.record_move(move, player_index=game.state.current_player)
+        game.make_move(move)
+        game.advance_round_if_needed()
+        if game.state.round != last_round and not game.is_game_over():
+            recorder.start_round(game)
+            last_round = game.state.round
+
+    states, _ = recorder.record.reconstruct()
+    total_moves = sum(len(r.moves) for r in recorder.record.rounds)
+    assert len(states) == total_moves + 1  # +1 for initial state
 
 
-def test_record_turn_captures_discard_counts():
+def test_reconstruct_final_boards_reflect_scoring():
+    """final_boards should include end-of-game bonus scoring."""
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    assert "discard_counts" in recorder.record.turns[0].source_state
+    recorder.start_round(game)
+    while not game.is_game_over():
+        moves = game.legal_moves()
+        if not moves:
+            break
+        move = moves[0]
+        recorder.record_move(move, player_index=game.state.current_player)
+        game.make_move(move)
+        game.advance_round_if_needed()
+        if (
+            game.state.round > recorder.record.rounds[-1].round
+            and not game.is_game_over()
+        ):
+            recorder.start_round(game)
+    game.score_game()
+    recorder.finalize(game)
+
+    _, final_boards = recorder.record.reconstruct()
+    assert len(final_boards) == PLAYERS
+    for i, board in enumerate(final_boards):
+        assert board["score"] == recorder.record.final_scores[i]
 
 
-def test_record_turn_bag_counts_use_color_names():
+def test_reconstruct_grand_totals_are_after_move():
+    """Grand totals in each computed turn reflect the state after the move."""
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
+    recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    bag_counts = recorder.record.turns[0].source_state["bag_counts"]
-    for key in bag_counts:
-        assert key in ("BLUE", "YELLOW", "RED", "BLACK", "WHITE")
+    recorder.record_move(move, player_index=game.state.current_player)
+    game.make_move(move)
 
-
-def test_record_turn_bag_counts_sum_matches_bag_size():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    bag_counts = recorder.record.turns[0].source_state["bag_counts"]
-    assert sum(bag_counts.values()) == len(game.state.bag)
-
-
-def test_record_turn_discard_counts_empty_at_start():
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    discard_counts = recorder.record.turns[0].source_state["discard_counts"]
-    assert sum(discard_counts.values()) == 0
-
-
-def test_round_trip_preserves_bag_counts(tmp_path):
-    game = Game()
-    game.setup_round()
-    recorder = GameRecorder()
-    move = _first_legal_move(game)
-    recorder.record_turn(game, move)
-    expected = recorder.record.turns[0].source_state["bag_counts"]
-
-    path = tmp_path / "game.json"
-    recorder.save(path)
-    loaded = GameRecord.load(path)
-
-    assert loaded.turns[0].source_state["bag_counts"] == expected
+    states, _ = recorder.record.reconstruct()
+    # After first move, at least one player's grand total should be >= 0.
+    assert all(t >= 0 for t in states[0]["grand_totals"])

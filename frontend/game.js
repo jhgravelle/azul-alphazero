@@ -140,6 +140,13 @@ async function loadState() {
   maybeRunBot();
 }
 
+async function loadReplay(gameId) {
+  replayRecord = await fetchRecord(gameId);
+  replayTurnIndex = 0;
+  hasGameInProgress = true;
+  renderReplay();
+}
+
 async function submitMove(source, color, destination) {
   const count = _countInSource(gameState, source, color);
 
@@ -172,6 +179,9 @@ async function submitMove(source, color, destination) {
   selection = null;
   renderLive();
   maybeRunBot();
+  if (gameState.is_game_over && gameState.last_game_id) {
+    setTimeout(() => loadReplay(gameState.last_game_id), 1500);
+  }
 }
 
 async function requestAgentMove() {
@@ -195,6 +205,9 @@ async function requestAgentMove() {
   selection = null;
   renderLive();
   maybeRunBot();
+  if (gameState.is_game_over && gameState.last_game_id) {
+    setTimeout(() => loadReplay(gameState.last_game_id), 1500);
+  }
 }
 
 async function startNewGame(playerTypes, manualFactories = false) {
@@ -339,24 +352,28 @@ async function _executeCommit(targetNode) {
 
 async function enterHypotheticalFromReplay() {
   const record = replayRecord;
-  const isAfterLastMove = replayTurnIndex >= record.turns.length;
-  const currentTurn = isAfterLastMove ? null : record.turns[replayTurnIndex];
+  const turns = record.computed_turns ?? [];
+  const isAfterLastMove = replayTurnIndex >= turns.length;
 
-  let boardStates;
+  let boardStates, factories, center, currentPlayer;
+
   if (isAfterLastMove) {
-    const lastTurn = record.turns[record.turns.length - 1];
-    boardStates = lastTurn
-      ? lastTurn.board_states.map((bs, i) => ({ ...bs, score: record.final_scores[i] }))
-      : record.turns[0].board_states;
+    boardStates = record.final_boards ?? [];
+    factories = [];
+    center = [];
+    currentPlayer = 0;
   } else {
-    boardStates = currentTurn.board_states;
+    const turn = turns[replayTurnIndex];
+    boardStates = turn.boards;
+    factories = turn.factories;
+    center = turn.center;
+    currentPlayer = turn.player_index;
   }
 
-  const sourceState = currentTurn?.source_state ?? { factories: [], center: [] };
   const snapshot = {
-    current_player: currentTurn ? currentTurn.player_index : 0,
-    factories: sourceState.factories,
-    center: sourceState.center,
+    current_player: currentPlayer,
+    factories,
+    center,
     boards: boardStates.map(bs => ({
       score: bs.score,
       wall: bs.wall,
@@ -377,7 +394,7 @@ async function enterHypotheticalFromReplay() {
   gameState = await res.json();
   replayRecord = null;
   selection = null;
-  _hypOriginalPlayerTypes = ["human", "human"];  // replay has no real bot types
+  _hypOriginalPlayerTypes = ["human", "human"];
   _hypRoot = _makeNode(null, null, gameState);
   _hypCurrent = _hypRoot;
   renderLive();
@@ -508,10 +525,10 @@ function renderFactorySetup(state, app) {
 
   const boards = createElement("div", "boards");
   state.boards.forEach((board, index) => {
+    const agentLabel = PLAYER_OPTIONS.find(o => o.value === state.player_types[index])?.label ?? state.player_types[index];
+    const boardLabel = `P${index + 1} ${agentLabel}`;
     boards.appendChild(renderBoard(
-      board, index,
-      PLAYER_OPTIONS.find(o => o.value === state.player_types[index])?.label ?? state.player_types[index],
-      false, { interactive: false }
+      board, index, boardLabel, false, { interactive: false }
     ));
   });
   app.appendChild(boards);
@@ -584,11 +601,6 @@ function renderLive() {
 
   const humanTurn = !currentPlayerIsBot() && !state.is_game_over;
   const inHyp = state.in_hypothetical;
-  // In hypothetical mode, treat the current player as human regardless of
-  // original type — the user controls both sides during exploration.
-  const hypPlayerIsOriginallyBot = inHyp &&
-    _hypOriginalPlayerTypes &&
-    _hypOriginalPlayerTypes[state.current_player] !== "human";
 
   app.appendChild(renderSources(
     { factories: state.factories, center: state.center,
@@ -602,17 +614,15 @@ function renderLive() {
   state.boards.forEach((board, index) => {
     const isActive = index === state.current_player;
     const canInteract = isActive && (humanTurn || inHyp) && selection !== null;
-    boards.appendChild(renderBoard(board, index,
-      PLAYER_OPTIONS.find(o => o.value === state.player_types[index])?.label ?? state.player_types[index],
-      isActive,
-      {
-        interactive: canInteract,
-        canPlace: row => isLegalDestination(row),
-        onRowClick: row => submitMove(selection.source, selection.color, row),
-        canPlaceFloor: isLegalDestination(-2),
-        onFloorClick: () => submitMove(selection.source, selection.color, -2),
-      }
-    ));
+    const agentLabel = PLAYER_OPTIONS.find(o => o.value === state.player_types[index])?.label ?? state.player_types[index];
+    const boardLabel = `P${index + 1} ${agentLabel}`;
+    boards.appendChild(renderBoard(board, index, boardLabel, isActive, {
+      interactive: canInteract,
+      canPlace: row => isLegalDestination(row),
+      onRowClick: row => submitMove(selection.source, selection.color, row),
+      canPlaceFloor: isLegalDestination(-2),
+      onFloorClick: () => submitMove(selection.source, selection.color, -2),
+    }));
   });
   app.appendChild(boards);
 
@@ -623,21 +633,21 @@ function renderLive() {
 
 // ── Replay render ──────────────────────────────────────────────────────────
 
-function renderMoveBanner(turn) {
+function renderMoveBanner(turn, record) {
   const banner = createElement("div", "move-banner");
-  if (!turn) {
+  if (!turn || turn.is_initial || turn.tile === null) {
     banner.appendChild(createElement("span", "move-text", "Start of game \u2014 no move yet."));
     return banner;
   }
   const chip = createElement("span", "move-tile-chip");
-  chip.style.background = TILE_COLORS[turn.move_tile] ?? "#888";
-  if (turn.move_tile === "WHITE") chip.style.border = "1px solid #ccc";
+  chip.style.background = TILE_COLORS[turn.tile] ?? "#888";
+  if (turn.tile === "WHITE") chip.style.border = "1px solid #ccc";
   banner.appendChild(chip);
-  const playerName = replayRecord.player_names[turn.player_index];
-  const src = turn.move_source === -1 ? "center" : `factory ${turn.move_source + 1}`;
-  const dst = turn.move_destination === -2 ? "floor" : `row ${turn.move_destination + 1}`;
+  const playerName = record.player_names[turn.player_index];
+  const src = turn.source === -1 ? "center" : `factory ${turn.source + 1}`;
+  const dst = turn.destination === -2 ? "floor" : `row ${turn.destination + 1}`;
   banner.appendChild(createElement("span", "move-text",
-    `${playerName} took ${turn.move_tile} from ${src} \u2192 ${dst}`));
+    `${playerName} took ${turn.tile} from ${src} \u2192 ${dst}`));
   return banner;
 }
 
@@ -646,63 +656,79 @@ function renderReplayMoveList(record, currentIndex) {
   panel.appendChild(createElement("div", "replay-move-list-heading", "Move list"));
 
   const list = createElement("div", "replay-move-list");
-
-  // "Start of game" entry at index 0 (before any moves).
-  const startItem = createElement("div", "replay-move-item");
-  if (currentIndex === 0) startItem.classList.add("replay-move-item-current");
-  startItem.appendChild(createElement("span", "replay-move-item-emoji", "🎲"));
-  startItem.appendChild(createElement("span", "replay-move-item-text", "Start of game"));
-  startItem.appendChild(createElement("span", "replay-move-item-scores", "0 \u2013 0"));
-  startItem.addEventListener("click", () => { replayTurnIndex = 0; renderReplay(); });
-  list.appendChild(startItem);
+  const turns = record.computed_turns ?? [];
 
   let lastRoundSeen = null;
+  let moveNumber = 0;  // 0 = initial state, 1+ = moves
 
-  record.turns.forEach((turn, index) => {
-    const turnIndex = index + 1; // turnIndex 1 = after move 0
-
-    // Insert a round header when the round changes.
-    const round = turn.round ?? null;
-    if (round !== null && round !== lastRoundSeen) {
-      lastRoundSeen = round;
-      list.appendChild(createElement("div", "replay-round-header", `Round ${round}`));
+  turns.forEach((turn, index) => {
+    // Round header when round changes.
+    if (turn.round !== lastRoundSeen) {
+      lastRoundSeen = turn.round;
+      if (!turn.is_initial) {
+        list.appendChild(createElement("div", "replay-round-header",
+          `Round ${turn.round}`));
+      }
     }
 
     const item = createElement("div", "replay-move-item");
-    if (currentIndex === turnIndex) item.classList.add("replay-move-item-current");
+    if (currentIndex === index) item.classList.add("replay-move-item-current");
 
-    const playerName = record.player_names[turn.player_index];
-    const isBot = (record.player_types ?? [])[turn.player_index] !== "human";
-    item.appendChild(createElement("span", "replay-move-item-emoji", isBot ? "🤖" : "👤"));
+    if (turn.is_initial || turn.tile === null) {
+      // Start of game entry.
+      item.appendChild(createElement("span", "replay-move-item-number", "0)"));
+      item.appendChild(createElement("span", "replay-move-item-emoji", "🎲"));
+      item.appendChild(createElement("span", "replay-move-item-text", "Start of game"));
+      item.appendChild(createElement("span", "replay-move-item-scores",
+        turn.grand_totals ? turn.grand_totals.join(" \u2013 ") : "0 \u2013 0"));
+    } else {
+      moveNumber++;
+      const isBot = (record.player_types ?? [])[turn.player_index] !== "human";
+      const playerName = record.player_names[turn.player_index];
+      const src = turn.source === -1 ? "Ce" : `F${turn.source + 1}`;
+      const dst = turn.destination === -2 ? "Floor" : `R${turn.destination + 1}`;
 
-    const src = turn.move_source === -1
-      ? "Center"
-      : `F${turn.move_source + 1}`;
-    const dst = turn.move_destination === -2
-      ? "Floor"
-      : `R${turn.move_destination + 1}`;
+      const chip = document.createElement("span");
+      chip.className = "hyp-tile-chip";
+      chip.style.background = TILE_COLORS[turn.tile] ?? "#888";
+      if (turn.tile === "WHITE") chip.style.border = "1px solid #ccc";
 
-    const chip = document.createElement("span");
-    chip.className = "hyp-tile-chip";
-    chip.style.background = TILE_COLORS[turn.move_tile] ?? "#888";
-    if (turn.move_tile === "WHITE") chip.style.border = "1px solid #ccc";
-    item.appendChild(chip);
+      item.appendChild(createElement("span", "replay-move-item-number", `${moveNumber})`));
+      item.appendChild(createElement("span", "replay-move-item-emoji", isBot ? "🤖" : "👤"));
+      item.appendChild(createElement("span", "replay-move-item-text", `${playerName} \u00b7`));
+      item.appendChild(chip);
+      item.appendChild(createElement("span", "replay-move-item-text", `${src} \u2192 ${dst}`));
 
-    item.appendChild(createElement("span", "replay-move-item-text",
-      `${playerName} · ${src} \u2192 ${dst}`));
+      const scores = turn.grand_totals && turn.grand_totals.length
+        ? turn.grand_totals
+        : turn.boards.map(b => b.score);
+      item.appendChild(createElement("span", "replay-move-item-scores",
+        scores.join(" \u2013 ")));
+    }
 
-    // Scores after this move — from board_states of the *next* turn,
-    // or from final_scores if this is the last move.
-    const nextTurn = record.turns[index + 1];
-    const scores = turn.grand_totals && turn.grand_totals.length
-      ? turn.grand_totals
-      : turn.board_states.map(b => b.score);  // fallback for old recordings
-    item.appendChild(createElement("span", "replay-move-item-scores",
-      scores.join(" \u2013 ")));
-
-    item.addEventListener("click", () => { replayTurnIndex = turnIndex; renderReplay(); });
+    item.addEventListener("click", () => { replayTurnIndex = index; renderReplay(); });
     list.appendChild(item);
   });
+
+  // End of game entry.
+  if (record.final_scores && record.final_scores.length) {
+    list.appendChild(createElement("div", "replay-round-header", "Final"));
+    const endItem = createElement("div", "replay-move-item");
+    if (currentIndex >= turns.length) endItem.classList.add("replay-move-item-current");
+    endItem.appendChild(createElement("span", "replay-move-item-number", ""));
+    endItem.appendChild(createElement("span", "replay-move-item-emoji", "🏆"));
+    const winnerText = record.winner !== null
+      ? `${record.player_names[record.winner]} wins`
+      : "Tie";
+    endItem.appendChild(createElement("span", "replay-move-item-text",
+      `Game over \u2014 ${winnerText}`));
+    endItem.appendChild(createElement("span", "replay-move-item-scores",
+      record.final_scores.join(" \u2013 ")));
+    endItem.addEventListener("click", () => {
+      replayTurnIndex = turns.length; renderReplay();
+    });
+    list.appendChild(endItem);
+  }
 
   panel.appendChild(list);
   return panel;
@@ -713,21 +739,20 @@ function renderReplay() {
   app.innerHTML = "";
 
   const record = replayRecord;
-  const isAfterLastMove = replayTurnIndex >= record.turns.length;
-  const currentTurn = isAfterLastMove ? null : record.turns[replayTurnIndex];
+  const turns = record.computed_turns ?? [];
+  const isAfterLastMove = replayTurnIndex >= turns.length;
+  const currentTurn = isAfterLastMove ? null : turns[replayTurnIndex];
+  const boardStates = isAfterLastMove ? (record.final_boards ?? []) : currentTurn.boards;
+  const sourceState = isAfterLastMove
+    ? { factories: [], center: [], bag_counts: {}, discard_counts: {} }
+    : {
+        factories: currentTurn.factories,
+        center: currentTurn.center,
+        bag_counts: currentTurn.bag_counts,
+        discard_counts: currentTurn.discard_counts,
+      };
 
-  let boardStates;
-  if (isAfterLastMove) {
-    const lastTurn = record.turns[record.turns.length - 1];
-    boardStates = lastTurn
-      ? lastTurn.board_states.map((bs, i) => ({ ...bs, score: record.final_scores[i] }))
-      : [];
-  } else {
-    boardStates = currentTurn.board_states;
-  }
-
-  const sourceState = currentTurn?.source_state ?? { factories: [], center: [] };
-
+  // Controls.
   const controls = createElement("div", "replay-controls");
   const prevBtn = createElement("button", "replay-btn", "\u25c4 Prev");
   prevBtn.disabled = replayTurnIndex === 0;
@@ -735,12 +760,12 @@ function renderReplay() {
   controls.appendChild(prevBtn);
 
   const nextBtn = createElement("button", "replay-btn", "Next \u25ba");
-  nextBtn.disabled = replayTurnIndex >= record.turns.length;
+  nextBtn.disabled = isAfterLastMove;
   nextBtn.addEventListener("click", () => { replayTurnIndex++; renderReplay(); });
   controls.appendChild(nextBtn);
 
   controls.appendChild(createElement("span", "turn-counter",
-    `Move ${replayTurnIndex} / ${record.turns.length}`));
+    `Move ${replayTurnIndex} / ${turns.length}`));
 
   const whatIfBtn = createElement("button", "replay-btn", "What if?");
   whatIfBtn.addEventListener("click", enterHypotheticalFromReplay);
@@ -751,33 +776,42 @@ function renderReplay() {
   controls.appendChild(menuBtn);
 
   app.appendChild(controls);
-  app.appendChild(renderMoveBanner(currentTurn));
-  app.appendChild(createElement("p", "status-line",
-    isAfterLastMove
-      ? (record.winner !== null
-          ? `Game over \u2014 ${record.player_names[record.winner]} wins!`
-          : "Game over \u2014 it\u2019s a tie!")
-      : `${record.player_names[currentTurn.player_index]}\u2019s move`
-  ));
 
+  // Move banner.
+  app.appendChild(renderMoveBanner(currentTurn, record));
+
+  // Status line.
+  if (isAfterLastMove) {
+    const winnerText = record.winner !== null
+      ? `Game over \u2014 ${record.player_names[record.winner]} wins!`
+      : "Game over \u2014 it\u2019s a tie!";
+    app.appendChild(createElement("p", "status-line", winnerText));
+  } else {
+    app.appendChild(createElement("p", "status-line",
+      `${record.player_names[currentTurn.player_index]}\u2019s move`));
+  }
+
+  // Sources.
   app.appendChild(renderSources(
     { factories: sourceState.factories, center: sourceState.center,
       bagCounts: sourceState.bag_counts, discardCounts: sourceState.discard_counts },
     { interactive: false }
   ));
 
+  // Boards.
   const boards = createElement("div", "boards");
   boardStates.forEach((bs, i) => {
-    const board = { ...bs, pending_placements: [], pending_bonuses: [] };
-    const isActive = !isAfterLastMove && currentTurn.player_index === i;
+    const board = { ...bs };
+    const isActive = !isAfterLastMove && currentTurn && currentTurn.player_index === i;
     boards.appendChild(
       renderBoard(board, i, record.player_names[i], isActive, { interactive: false })
     );
   });
   app.appendChild(boards);
-   app.appendChild(renderReplayMoveList(record, replayTurnIndex));
 
-  // Scroll the current move into view after the DOM updates.
+  // Move list.
+  app.appendChild(renderReplayMoveList(record, replayTurnIndex));
+
   setTimeout(() => {
     const current = app.querySelector(".replay-move-item-current");
     if (current) current.scrollIntoView({ block: "center", behavior: "instant" });
@@ -786,3 +820,14 @@ function renderReplay() {
 
 initMenu();
 openMenu();
+document.addEventListener("keydown", (event) => {
+  if (!replayRecord) return;
+  const turns = replayRecord.computed_turns ?? [];
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (replayTurnIndex > 0) { replayTurnIndex--; renderReplay(); }
+  } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    event.preventDefault();
+    if (replayTurnIndex < turns.length) { replayTurnIndex++; renderReplay(); }
+  }
+});

@@ -105,6 +105,7 @@ class GameStateResponse(BaseModel):
     in_factory_setup: bool = False
     factory_cursor: int | None = None
     manual_factories: bool = False
+    last_game_id: str | None = None
 
 
 # ── Recording schemas ──────────────────────────────────────────────────────

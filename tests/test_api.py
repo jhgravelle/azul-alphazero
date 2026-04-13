@@ -201,7 +201,8 @@ def test_move_is_recorded(client_with_recordings):
         },
     )
     assert main._recorder is not None
-    assert len(main._recorder.record.turns) == 1
+    total_moves = sum(len(r.moves) for r in main._recorder.record.rounds)
+    assert total_moves == 1
 
 
 def test_multiple_moves_are_all_recorded(client_with_recordings):
@@ -221,7 +222,8 @@ def test_multiple_moves_are_all_recorded(client_with_recordings):
                 },
             )
     assert main._recorder is not None
-    assert len(main._recorder.record.turns) == 3
+    total_moves = sum(len(r.moves) for r in main._recorder.record.rounds)
+    assert total_moves == 3
 
 
 def test_completed_game_saves_recording_to_disk(client_with_recordings):
@@ -277,7 +279,7 @@ def test_saved_recording_is_valid_json(client_with_recordings):
     assert len(saved_files) == 1
     data = json.loads(saved_files[0].read_text())
     assert "game_id" in data
-    assert "turns" in data
+    assert "rounds" in data
 
 
 # ── POST /undo ─────────────────────────────────────────────────────────────

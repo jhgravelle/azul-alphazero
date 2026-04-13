@@ -34,7 +34,7 @@ from api.schemas import (
 from engine.board import Board
 from engine.constants import Tile
 from engine.game import Game, Move
-from engine.game_recorder import GameRecorder
+from engine.game_recorder import GameRecorder, GameRecord
 from engine.game_state import GameState
 from engine.scoring import (
     pending_bonus_details,
@@ -75,6 +75,7 @@ _hyp_agents: list[Agent | None] | None = None
 _manual_factories: bool = False
 _in_factory_setup: bool = False
 _factory_cursor: int = 0
+_last_game_id: str | None = None
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -200,11 +201,12 @@ def _build_response(game: Game) -> GameStateResponse:
         in_factory_setup=_in_factory_setup,
         factory_cursor=_factory_cursor if _in_factory_setup else None,
         manual_factories=_manual_factories,
+        last_game_id=_last_game_id,
     )
 
 
 def _save_recording(recorder: GameRecorder, game: Game) -> None:
-    """Finalize and save the recording to disk. Silently skips on error."""
+    global _last_game_id
     try:
         recorder.finalize(game)
         _RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -218,6 +220,7 @@ def _save_recording(recorder: GameRecorder, game: Game) -> None:
         filename = f"{date_str} {players_str}.json"
         path = _RECORDINGS_DIR / filename
         recorder.save(path)
+        _last_game_id = recorder.record.game_id
         logger.info("saved recording %s", filename)
     except Exception:
         logger.exception("failed to save recording")
@@ -274,6 +277,8 @@ def _handle_round_end() -> None:
         _enter_factory_setup()
     else:
         _game.setup_round()
+        if _recorder is not None:
+            _recorder.start_round(_game)
 
 
 def _total_slots() -> int:
@@ -340,15 +345,12 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
         raise HTTPException(status_code=422, detail="Illegal move")
 
     if _recorder is not None:
-        _recorder.record_turn(_game, move)
+        _recorder.record_move(move, player_index=_game.state.current_player)
 
     _push_history()
     _game.make_move(move)
-    _handle_round_end()
 
     if _hyp_marker is not None:
-        # In hypothetical mode — no round setup, no recording.
-        # Terminal states become leaf nodes; the user can discard or commit.
         pass
     else:
         _handle_round_end()
@@ -365,6 +367,7 @@ def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
     global _game, _player_types, _agents, _recorder
     global _hyp_marker, _hyp_player_types, _hyp_agents
     global _manual_factories, _in_factory_setup, _factory_cursor
+    global _last_game_id
 
     _player_types = request.player_types
     _agents = [_make_agent(t) for t in _player_types]
@@ -377,11 +380,14 @@ def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
     _hyp_player_types = None
     _hyp_agents = None
     _manual_factories = request.manual_factories
+    _last_game_id = None
 
     if _manual_factories:
         _enter_factory_setup()
     else:
         _game.setup_round()
+        if _recorder is not None:
+            _recorder.start_round(_game)
         _in_factory_setup = False
         _factory_cursor = 0
 
@@ -403,15 +409,19 @@ def agent_move() -> GameStateResponse:
     move = agent.choose_move(_game)
 
     if _recorder is not None:
-        _recorder.record_turn(_game, move)
+        _recorder.record_move(move, player_index=current)
 
     _push_history()
     _game.make_move(move)
     _handle_round_end()
 
-    if _game.is_game_over() and _recorder is not None:
-        _save_recording(_recorder, _game)
-        _recorder = None
+    if _hyp_marker is not None:
+        pass
+    else:
+        _handle_round_end()
+        if _game.is_game_over() and _recorder is not None:
+            _save_recording(_recorder, _game)
+            _recorder = None
 
     return _build_response(_game)
 
@@ -677,6 +687,8 @@ def setup_factories_commit() -> GameStateResponse:
 
     _in_factory_setup = False
     _factory_cursor = 0
+    if _recorder is not None:
+        _recorder.start_round(_game)
     return _build_response(_game)
 
 
@@ -707,14 +719,24 @@ def list_recordings() -> list[RecordingSummary]:
 
 @app.get("/recordings/{game_id}")
 def get_recording(game_id: str) -> dict:
-    """Return the full JSON record for one game."""
+    """Return the full record plus pre-computed turn states for one game."""
     if not _RECORDINGS_DIR.exists():
         raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")
     for path in _RECORDINGS_DIR.glob("*.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("game_id") == game_id:
-                return data
+                record = GameRecord.from_dict(data)
+                computed_turns, final_boards = record.reconstruct()
+                return {
+                    **data,
+                    "computed_turns": computed_turns,
+                    "final_boards": final_boards,
+                }
         except Exception:
-            continue
+            logger.exception("failed to load or reconstruct recording %s", game_id)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to reconstruct recording {game_id!r}",
+            )
     raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")

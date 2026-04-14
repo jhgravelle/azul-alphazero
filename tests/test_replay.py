@@ -1,26 +1,24 @@
 # tests/test_replay.py
-
 """Tests for the experience replay buffer."""
 
 import torch
 import pytest
 
-from neural.encoder import STATE_SIZE, MOVE_SPACE_SIZE
+from neural.encoder import SPATIAL_SHAPE, FLAT_SIZE, MOVE_SPACE_SIZE
 from neural.replay import ReplayBuffer
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
-def make_experience() -> tuple[torch.Tensor, torch.Tensor, float]:
-    """Return a random (state, policy, value) triple."""
-    state = torch.rand(STATE_SIZE)
+def make_experience() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+    spatial = torch.rand(*SPATIAL_SHAPE)
+    flat = torch.rand(FLAT_SIZE)
     policy = torch.rand(MOVE_SPACE_SIZE)
-    value = float(torch.rand(1).item() * 2 - 1)  # uniform in (-1, 1)
-    return state, policy, value
+    value = float(torch.rand(1).item() * 2 - 1)
+    return spatial, flat, policy, value
 
 
 def fill_buffer(buf: ReplayBuffer, n: int) -> None:
-    """Push n random experiences into buf."""
     for _ in range(n):
         buf.push(*make_experience())
 
@@ -29,13 +27,11 @@ def fill_buffer(buf: ReplayBuffer, n: int) -> None:
 
 
 def test_replay_buffer_starts_empty():
-    buf = ReplayBuffer(capacity=100)
-    assert len(buf) == 0
+    assert len(ReplayBuffer(capacity=100)) == 0
 
 
 def test_replay_buffer_capacity_stored():
-    buf = ReplayBuffer(capacity=100)
-    assert buf.capacity == 100
+    assert ReplayBuffer(capacity=100).capacity == 100
 
 
 # ── Push and length ────────────────────────────────────────────────────────
@@ -60,62 +56,65 @@ def test_length_capped_at_capacity():
 
 
 def test_push_overwrites_oldest_when_full():
-    """After overfilling, the oldest experience must be gone."""
     buf = ReplayBuffer(capacity=3)
-    # Push 3 experiences with known values
-    s0, p0 = torch.zeros(STATE_SIZE), torch.zeros(MOVE_SPACE_SIZE)
-    s1, p1 = torch.ones(STATE_SIZE), torch.ones(MOVE_SPACE_SIZE)
-    s2, p2 = torch.full((STATE_SIZE,), 2.0), torch.full((MOVE_SPACE_SIZE,), 2.0)
-    buf.push(s0, p0, -1.0)
-    buf.push(s1, p1, 0.0)
-    buf.push(s2, p2, 1.0)
-    # Push a 4th — should overwrite the first (value -1.0)
-    s3, p3 = torch.full((STATE_SIZE,), 3.0), torch.full((MOVE_SPACE_SIZE,), 3.0)
-    buf.push(s3, p3, 0.5)
+    s0 = torch.zeros(*SPATIAL_SHAPE)
+    s1 = torch.ones(*SPATIAL_SHAPE)
+    s2 = torch.full(SPATIAL_SHAPE, 2.0)
+    f = torch.zeros(FLAT_SIZE)
+    p = torch.zeros(MOVE_SPACE_SIZE)
+    buf.push(s0, f, p, -1.0)
+    buf.push(s1, f, p, 0.0)
+    buf.push(s2, f, p, 1.0)
+    # 4th push overwrites first (value -1.0)
+    buf.push(torch.full(SPATIAL_SHAPE, 3.0), f, p, 0.5)
     assert len(buf) == 3
-    # Sample all — value -1.0 must not appear
-    states, policies, values = buf.sample(3)
+    _, _, _, values = buf.sample(3)
     assert -1.0 not in values.tolist()
 
 
 # ── Sample ─────────────────────────────────────────────────────────────────
 
 
-def test_sample_returns_three_tensors():
+def test_sample_returns_four_tensors():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    result = buf.sample(8)
-    assert len(result) == 3
+    assert len(buf.sample(8)) == 4
 
 
-def test_sample_state_shape():
+def test_sample_spatial_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    states, _, _ = buf.sample(8)
-    assert states.shape == (8, STATE_SIZE)
+    spatials, _, _, _ = buf.sample(8)
+    assert spatials.shape == (8, *SPATIAL_SHAPE)
+
+
+def test_sample_flat_shape():
+    buf = ReplayBuffer(capacity=100)
+    fill_buffer(buf, 20)
+    _, flats, _, _ = buf.sample(8)
+    assert flats.shape == (8, FLAT_SIZE)
 
 
 def test_sample_policy_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    _, policies, _ = buf.sample(8)
+    _, _, policies, _ = buf.sample(8)
     assert policies.shape == (8, MOVE_SPACE_SIZE)
 
 
 def test_sample_value_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    _, _, values = buf.sample(8)
+    _, _, _, values = buf.sample(8)
     assert values.shape == (8, 1)
 
 
 def test_sample_dtypes_are_float32():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    states, policies, values = buf.sample(8)
-    assert states.dtype == torch.float32
-    assert policies.dtype == torch.float32
-    assert values.dtype == torch.float32
+    spatials, flats, policies, values = buf.sample(8)
+    for t in (spatials, flats, policies, values):
+        assert t.dtype == torch.float32
 
 
 def test_sample_raises_when_too_few_experiences():
@@ -126,9 +125,8 @@ def test_sample_raises_when_too_few_experiences():
 
 
 def test_sample_batch_is_random():
-    """Two samples from the same buffer should differ (in all likelihood)."""
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 50)
-    s1, _, _ = buf.sample(10)
-    s2, _, _ = buf.sample(10)
+    s1, _, _, _ = buf.sample(10)
+    s2, _, _, _ = buf.sample(10)
     assert not torch.equal(s1, s2)

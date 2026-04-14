@@ -1,5 +1,4 @@
 # neural/trainer.py
-
 """Training utilities for AzulNet."""
 
 from __future__ import annotations
@@ -19,13 +18,8 @@ _SCORE_DIFF_DIVISOR = 20.0
 
 
 def score_differential_value(scores: list[int], player_index: int) -> float:
-    """Compute a normalized score-differential value target for a player.
-
-    Returns (my_score - opponent_score) / 50, clamped to [-1, 1].
-    This gives the value head a continuous gradient instead of binary win/loss.
-    """
-    opponent_index = 1 - player_index
-    diff = (scores[player_index] - scores[opponent_index]) / _SCORE_DIFF_DIVISOR
+    """Normalized score-differential value target for a player."""
+    diff = (scores[player_index] - scores[1 - player_index]) / _SCORE_DIFF_DIVISOR
     return max(-1.0, min(1.0, diff))
 
 
@@ -34,12 +28,13 @@ def score_differential_value(scores: list[int], player_index: int) -> float:
 
 def compute_loss(
     net: AzulNet,
-    states: torch.Tensor,  # (B, STATE_SIZE)
-    policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE) — target distributions
-    values: torch.Tensor,  # (B, 1)               — target outcomes in (-1, 1)
+    spatials: torch.Tensor,  # (B, 12, 5, 6)
+    flats: torch.Tensor,  # (B, FLAT_SIZE)
+    policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE)
+    values: torch.Tensor,  # (B, 1)
 ) -> torch.Tensor:
     """Combined policy + value loss."""
-    logits, pred_values = net(states)
+    logits, pred_values = net(spatials, flats)
     log_probs = F.log_softmax(logits, dim=1)
     policy_loss = -(policies * log_probs).sum(dim=1).mean()
     value_loss = F.mse_loss(pred_values, values)
@@ -69,13 +64,14 @@ class Trainer:
         """Sample a batch, backpropagate, and return the scalar loss."""
         if len(buf) < self.batch_size:
             return 0.0
-        states, policies, values = buf.sample(self.batch_size)
-        states = states.to(self.device)
+        spatials, flats, policies, values = buf.sample(self.batch_size)
+        spatials = spatials.to(self.device)
+        flats = flats.to(self.device)
         policies = policies.to(self.device)
         values = values.to(self.device)
         self.net.train()
         self.optimizer.zero_grad()
-        loss = compute_loss(self.net, states, policies, values)
+        loss = compute_loss(self.net, spatials, flats, policies, values)
         loss.backward()
         self.optimizer.step()
         return loss.item()
@@ -93,16 +89,7 @@ def collect_self_play(
     opponent: Agent | None = None,
     device: torch.device = torch.device("cpu"),
 ) -> list[float]:
-    """Play num_games games and push training examples into buf.
-
-    If opponent is None, plays AlphaZero vs AlphaZero (pure self-play).
-    If opponent is provided (e.g. GreedyAgent), AlphaZero plays as player 0
-    in even games and player 1 in odd games, alternating sides.
-
-    Only AlphaZero's positions are recorded as training examples.
-
-    Returns a list of AlphaZero's scores from each game.
-    """
+    """Play num_games games and push training examples into buf."""
     from agents.alphazero import AlphaZeroAgent
     from engine.game import Game
 
@@ -124,13 +111,13 @@ def collect_self_play(
             az_player = None
             agents = [az_agent, az_agent]
 
-        history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+        history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
         while not game.is_game_over():
             current_player = game.state.current_player
             is_az_turn = az_player is None or current_player == az_player
 
-            state_vec = encode_state(game)
+            spatial, flat = encode_state(game)
 
             if is_az_turn:
                 move, policy_pairs = az_agent.get_policy_targets(game)
@@ -142,16 +129,16 @@ def collect_self_play(
                 policy_vec = torch.zeros(MOVE_SPACE_SIZE)
                 policy_vec[encode_move(move, game)] = 1.0
 
-            history.append((current_player, state_vec, policy_vec))
+            history.append((current_player, spatial, flat, policy_vec))
 
             game.make_move(move)
             game.advance_round_if_needed()
 
         scores = [p.score for p in game.state.players]
 
-        for player_idx, state_vec, policy_vec in history:
+        for player_idx, spatial, flat, policy_vec in history:
             value = score_differential_value(scores, player_idx)
-            buf.push(state_vec, policy_vec, value)
+            buf.push(spatial, flat, policy_vec, value)
 
         az_score = scores[az_player] if az_player is not None else max(scores)
         az_scores.append(az_score)
@@ -184,17 +171,7 @@ def collect_heuristic_games(
     buf: ReplayBuffer,
     num_games: int = 200,
 ) -> dict[str, int]:
-    """Pretrain the buffer with GreedyAgent vs RandomAgent games.
-
-    Every game pairs GreedyAgent against RandomAgent, alternating sides.
-    This gives the network a clear signal: floor-dumping (Random) loses,
-    floor-avoiding pattern-line completion (Greedy) wins.
-
-    Games where RandomAgent wins are **not** recorded. Those games teach
-    the wrong lesson: that floor-dumping positions are winning positions.
-
-    Returns a dict with keys: greedy_wins, random_wins, ties, games_recorded.
-    """
+    """Pretrain the buffer with GreedyAgent vs RandomAgent games."""
     from agents.greedy import GreedyAgent
     from agents.random import RandomAgent
     from engine.game import Game
@@ -218,17 +195,15 @@ def collect_heuristic_games(
             agents = [random_agent, greedy]
             greedy_is_p0 = False
 
-        history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+        history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
         while not game.is_game_over():
             current_player = game.state.current_player
-            state_vec = encode_state(game)
+            spatial, flat = encode_state(game)
             move = agents[current_player].choose_move(game)
-
             policy_vec = torch.zeros(MOVE_SPACE_SIZE)
             policy_vec[encode_move(move, game)] = 1.0
-
-            history.append((current_player, state_vec, policy_vec))
+            history.append((current_player, spatial, flat, policy_vec))
             game.make_move(move)
             game.advance_round_if_needed()
 
@@ -245,13 +220,11 @@ def collect_heuristic_games(
         else:
             ties += 1
 
-        # Only record games where Greedy won or tied.
-        # Random wins teach the network that floor-dumping is good.
         random_won = random_score > greedy_score
         if not random_won:
-            for player_idx, state_vec, policy_vec in history:
+            for player_idx, spatial, flat, policy_vec in history:
                 value = score_differential_value(scores, player_idx)
-                buf.push(state_vec, policy_vec, value)
+                buf.push(spatial, flat, policy_vec, value)
 
         greedy_label = "GreedyAgent" if greedy_is_p0 else "RandomAgent"
         random_label = "RandomAgent" if greedy_is_p0 else "GreedyAgent"

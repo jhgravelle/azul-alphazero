@@ -1,34 +1,56 @@
 # neural/model.py
-
 """AzulNet — policy + value network for the Azul AlphaZero agent.
 
 Architecture
 ------------
-Input: float32 vector of shape (batch, STATE_SIZE)
+Two input branches that merge before the policy and value heads.
 
-    Linear(STATE_SIZE → hidden_dim)
-    BatchNorm1d + ReLU
+Spatial branch — processes the (12, 5, 6) wall+pattern tensor:
+    Conv2d(12 → 64, kernel=3, padding=1) → LayerNorm → ReLU
+    Conv2d(64 → 128, kernel=3, padding=1) → LayerNorm → ReLU
+    Flatten → Linear(128*5*6 → hidden_dim) → LayerNorm → ReLU
+
+Flat branch — processes the (FLAT_SIZE,) feature vector:
+    Linear(FLAT_SIZE → hidden_dim // 2) → LayerNorm → ReLU
+
+Merged trunk:
+    Linear(hidden_dim + hidden_dim // 2 → hidden_dim) → LayerNorm → ReLU
     ResBlock × num_blocks
-        └─ each block: Linear → BN → ReLU → Linear → BN → skip add → ReLU
-    ┌── Policy head: Linear(hidden_dim → MOVE_SPACE_SIZE)   [raw logits]
-    └── Value head:  Linear(hidden_dim → 64) → ReLU
-                     Linear(64 → 1) → tanh                  [scalar in (-1,1)]
+
+Policy head:
+    Linear(hidden_dim → MOVE_SPACE_SIZE)   [raw logits]
+
+Value head:
+    Linear(hidden_dim → 64) → ReLU
+    Linear(64 → 1) → Tanh                  [scalar in (-1, 1)]
 
 Softmax is NOT applied inside the network. The caller applies it after
-masking illegal moves to -inf, so illegal moves get zero probability.
+masking illegal moves to -inf so illegal moves get zero probability.
 """
 
 import torch
 import torch.nn as nn
 
-from neural.encoder import STATE_SIZE, MOVE_SPACE_SIZE
+from neural.encoder import (
+    FLAT_SIZE,
+    MOVE_SPACE_SIZE,
+    NUM_CHANNELS,
+    BOARD_SIZE,
+    GRID_COLS,
+)
+
+# Re-export so callers that do `from neural.model import MOVE_SPACE_SIZE` still work.
+__all__ = ["ResBlock", "AzulNet", "MOVE_SPACE_SIZE"]
+
+_CONV_MID = 64
+_CONV_OUT = 128
 
 
 class ResBlock(nn.Module):
     """A single fully-connected residual block.
 
     Computes F(x) + x where F is:
-        Linear → BatchNorm1d → ReLU → Linear → BatchNorm1d
+        Linear → LayerNorm → ReLU → Linear → LayerNorm
 
     Args:
         dim: Width of the block (input and output size are identical).
@@ -46,7 +68,6 @@ class ResBlock(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply the residual block to x."""
         return self.relu(self.net(x) + x)
 
 
@@ -55,7 +76,7 @@ class AzulNet(nn.Module):
 
     Args:
         hidden_dim: Width of the trunk and residual blocks. Default 256.
-        num_blocks: Number of residual blocks in the trunk. Default 3.
+        num_blocks:  Number of residual blocks in the trunk. Default 3.
     """
 
     def __init__(self, hidden_dim: int = 256, num_blocks: int = 3) -> None:
@@ -63,18 +84,41 @@ class AzulNet(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
 
-        # Trunk — project input up to hidden_dim, then residual blocks
-        self.stem = nn.Sequential(
-            nn.Linear(STATE_SIZE, hidden_dim),
+        # ── Spatial branch ────────────────────────────────────────────────
+        # Input: (batch, 12, 5, 6)
+        # Two conv layers preserve spatial dimensions (padding=1, kernel=3).
+        # LayerNorm applied over the channel dimension after each conv.
+        self.conv1 = nn.Conv2d(NUM_CHANNELS, _CONV_MID, kernel_size=3, padding=1)
+        self.norm1 = nn.LayerNorm([_CONV_MID, BOARD_SIZE, GRID_COLS])
+        self.conv2 = nn.Conv2d(_CONV_MID, _CONV_OUT, kernel_size=3, padding=1)
+        self.norm2 = nn.LayerNorm([_CONV_OUT, BOARD_SIZE, GRID_COLS])
+        self.relu = nn.ReLU()
+
+        conv_flat_size = _CONV_OUT * BOARD_SIZE * GRID_COLS  # 128 * 5 * 6 = 3840
+        self.spatial_proj = nn.Sequential(
+            nn.Linear(conv_flat_size, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+        )
+
+        # ── Flat branch ───────────────────────────────────────────────────
+        flat_hidden = hidden_dim // 2
+        self.flat_proj = nn.Sequential(
+            nn.Linear(FLAT_SIZE, flat_hidden),
+            nn.LayerNorm(flat_hidden),
+            nn.ReLU(),
+        )
+
+        # ── Merged trunk ──────────────────────────────────────────────────
+        self.merge = nn.Sequential(
+            nn.Linear(hidden_dim + flat_hidden, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
         )
         self.blocks = nn.Sequential(*[ResBlock(hidden_dim) for _ in range(num_blocks)])
 
-        # Policy head — raw logits, softmax applied externally
+        # ── Heads ─────────────────────────────────────────────────────────
         self.policy_head = nn.Linear(hidden_dim, MOVE_SPACE_SIZE)
-
-        # Value head — extra hidden layer then tanh to squash to (-1, 1)
         self.value_head = nn.Sequential(
             nn.Linear(hidden_dim, 64),
             nn.ReLU(),
@@ -82,7 +126,25 @@ class AzulNet(nn.Module):
             nn.Tanh(),
         )
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run a forward pass."""
-        trunk = self.blocks(self.stem(x))
+    def forward(
+        self,
+        spatial: torch.Tensor,  # (batch, 12, 5, 6)
+        flat: torch.Tensor,  # (batch, FLAT_SIZE)
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run a forward pass.
+
+        Returns:
+            policy: (batch, MOVE_SPACE_SIZE) raw logits
+            value:  (batch, 1) scalar in (-1, 1)
+        """
+        # Spatial branch
+        s = self.relu(self.norm1(self.conv1(spatial)))
+        s = self.relu(self.norm2(self.conv2(s)))
+        s = self.spatial_proj(s.flatten(start_dim=1))
+
+        # Flat branch
+        f = self.flat_proj(flat)
+
+        # Merge and trunk
+        trunk = self.blocks(self.merge(torch.cat([s, f], dim=1)))
         return self.policy_head(trunk), self.value_head(trunk)

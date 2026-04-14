@@ -91,43 +91,6 @@ class AlphaZeroAgent(Agent):
 
         return self._pick_move(root)
 
-    # def choose_move(self, game: Game) -> Move:
-    #     import time
-
-    #     root = AZNode(game=game.clone())
-    #     self._expand(root)
-
-    #     t_select = 0.0
-    #     t_evaluate = 0.0
-    #     t_backprop = 0.0
-
-    #     for _ in range(self.simulations):
-    #         t0 = time.perf_counter()
-    #         node = self._select(root)
-    #         t1 = time.perf_counter()
-    #         value = self._evaluate(node)
-    #         t2 = time.perf_counter()
-    #         self._backpropagate(node, value)
-    #         t3 = time.perf_counter()
-
-    #         t_select += t1 - t0
-    #         t_evaluate += t2 - t1
-    #         t_backprop += t3 - t2
-
-    #     total = t_select + t_evaluate + t_backprop
-    #     import logging
-
-    #     logging.getLogger(__name__).debug(
-    #         "MCTS breakdown (%d sims) -- "
-    #         "select+expand: %.1f%% evaluate: %.1f%% backprop: %.1f%%",
-    #         self.simulations,
-    #         t_select / total * 100,
-    #         t_evaluate / total * 100,
-    #         t_backprop / total * 100,
-    #     )
-
-    #     return self._pick_move(root)
-
     def get_policy_targets(self, game: Game) -> tuple[Move, list[tuple[Move, float]]]:
         """Run simulations and return (chosen_move, [(move, visit_fraction), ...])."""
         root = AZNode(game=game.clone())
@@ -206,10 +169,12 @@ class AlphaZeroAgent(Agent):
         # Expand on first evaluation so the node is ready for future visits.
         if node._untried_moves is None:
             self._expand(node)
-        state = encode_state(node.game).unsqueeze(0).to(self.device)
+        spatial, flat = encode_state(node.game)
+        spatial = spatial.unsqueeze(0).to(self.device)
+        flat = flat.unsqueeze(0).to(self.device)
         self.net.eval()
         with torch.no_grad():
-            _, value = self.net(state)
+            _, value = self.net(spatial, flat)
         return value.item()
 
     def _backpropagate(self, node: AZNode, value: float) -> None:
@@ -225,10 +190,12 @@ class AlphaZeroAgent(Agent):
 
     def _policy_priors(self, game: Game, legal: list[Move]) -> list[float]:
         """Return softmax probabilities over legal moves from the policy head."""
-        state = encode_state(game).unsqueeze(0).to(self.device)
+        spatial, flat = encode_state(game)
+        spatial = spatial.unsqueeze(0).to(self.device)
+        flat = flat.unsqueeze(0).to(self.device)
         self.net.eval()
         with torch.no_grad():
-            logits, _ = self.net(state)
+            logits, _ = self.net(spatial, flat)
         logits = logits.squeeze(0)
         mask = torch.full((MOVE_SPACE_SIZE,), float("-inf"), device=self.device)
         for move in legal:

@@ -119,3 +119,4 @@ class RecordingSummary(BaseModel):
     player_names: list[str]
     final_scores: list[int]
     winner: int | None
+    folder: str  # e.g. "human" or "eval"

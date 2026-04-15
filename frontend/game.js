@@ -100,15 +100,31 @@ function initMenu() {
       opt.disabled = true;
       replaySelect.appendChild(opt);
     } else {
+      const groups = { eval: [], human: [] };
       summaries.forEach(s => {
-        const date = new Date(s.timestamp).toLocaleString();
-        const scores = s.final_scores.join(" \u2013 ");
-        const winnerName = s.winner !== null ? s.player_names[s.winner] : "Tie";
-        const opt = document.createElement("option");
-        opt.value = s.game_id;
-        opt.textContent = `${date} | ${s.player_names.join(" vs ")} | ${scores} | ${winnerName}`;
-        replaySelect.appendChild(opt);
+        const bucket = groups[s.folder] ?? groups.human;
+        bucket.push(s);
       });
+
+      const addGroup = (label, items) => {
+        if (items.length === 0) return;
+        const sep = document.createElement("option");
+        sep.textContent = `── ${label} ──`;
+        sep.disabled = true;
+        replaySelect.appendChild(sep);
+        items.forEach(s => {
+          const date = new Date(s.timestamp).toLocaleString();
+          const scores = s.final_scores.join(" \u2013 ");
+          const winnerName = s.winner !== null ? s.player_names[s.winner] : "Tie";
+          const opt = document.createElement("option");
+          opt.value = s.game_id;
+          opt.textContent = `${date} | ${s.player_names.join(" vs ")} | ${scores} | ${winnerName}`;
+          replaySelect.appendChild(opt);
+        });
+      };
+
+      addGroup("Eval Games", groups.eval);
+      addGroup("Human Games", groups.human);
     }
   });
 

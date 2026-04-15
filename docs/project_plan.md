@@ -242,3 +242,4 @@ Complete redesign of the neural network input encoding and MCTS search:
 | 2026-04-13 | Phase 7d complete |
 | 2026-04-14 | Phase 8a complete — spatial encoder, conv+MLP model, Zobrist hashing, SearchTree, AlphaZeroAgent refactor |
 | 2026-04-14 | Phase 8b complete — batched multithreaded MCTS with virtual loss, thread pool backprop, tests |
+| 2026-04-14 | Fixed advance_round_if_needed in eval loops, suppressed engine log noise, added eval recording per iteration, subfolder recording scan |

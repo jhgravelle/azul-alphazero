@@ -41,11 +41,6 @@ _MAX_MOVES = 300
 
 
 def setup_logging() -> Path:
-    """Configure console (INFO) and file (DEBUG) handlers.
-
-    Per-game lines are logged at DEBUG so they appear in the file only.
-    Returns the path of the log file created.
-    """
     LOG_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = LOG_DIR / f"run_{timestamp}.log"
@@ -67,6 +62,11 @@ def setup_logging() -> Path:
 
     root.addHandler(console)
     root.addHandler(fh)
+
+    # Silence engine-level noise — board/factory/bag construction and bag
+    # refills are not useful during training runs.
+    logging.getLogger("engine.game_state").setLevel(logging.WARNING)
+    logging.getLogger("engine.game").setLevel(logging.WARNING)
 
     return log_path
 
@@ -103,6 +103,57 @@ def save_checkpoint(net: AzulNet, generation: int) -> Path:
 def load_checkpoint(net: AzulNet, path: str) -> None:
     net.load_state_dict(torch.load(path, map_location=DEVICE))
     logger.info("loaded checkpoint <- %s", path)
+
+
+def save_eval_recording(
+    new_net: AzulNet,
+    old_net: AzulNet,
+    iteration: int,
+    generation: int,
+    simulations: int,
+) -> None:
+    """Play and record one eval game between candidate and best net."""
+    from engine.game_recorder import GameRecorder
+
+    eval_dir = Path("recordings/eval")
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
+    new_agent = AlphaZeroAgent(
+        new_net, simulations=simulations, temperature=0.0, device=DEVICE
+    )
+    old_agent = AlphaZeroAgent(
+        old_net, simulations=simulations, temperature=0.0, device=DEVICE
+    )
+    agents = [new_agent, old_agent]
+
+    recorder = GameRecorder(
+        player_names=[f"candidate (iter {iteration})", f"best (gen {generation:04d})"],
+        player_types=["alphazero", "alphazero"],
+    )
+    game = Game()
+    game.setup_round()
+    recorder.start_round(game)
+
+    last_round = game.state.round
+    moves = 0
+
+    while not game.is_game_over() and moves < _MAX_MOVES:
+        if not game.legal_moves():
+            break
+        current = game.state.current_player
+        move = agents[current].choose_move(game)
+        recorder.record_move(move, player_index=current)
+        game.make_move(move)
+        game.advance_round_if_needed()
+        if not game.is_game_over() and game.state.round != last_round:
+            last_round = game.state.round
+            recorder.start_round(game)
+        moves += 1
+
+    recorder.finalize(game)
+    filename = f"eval_iter_{iteration:03d}_vs_gen_{generation:04d}.json"
+    recorder.save(eval_dir / filename)
+    logger.info("saved eval recording -> %s", filename)
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -524,6 +575,13 @@ def main() -> None:
             "evaluating new net vs best net (%d games, %d sims)...",
             args.eval_games,
             args.eval_simulations,
+        )
+        save_eval_recording(
+            net,
+            best_net,
+            iteration=iteration,
+            generation=generation,
+            simulations=args.eval_simulations,
         )
         win_rate = evaluate(
             net,

@@ -719,49 +719,59 @@ def setup_factories_commit() -> GameStateResponse:
 
 @app.get("/recordings", response_model=list[RecordingSummary])
 def list_recordings() -> list[RecordingSummary]:
-    """Return a summary of every saved game, newest first."""
-    if not _RECORDINGS_DIR.exists():
-        return []
+    """Return a summary of every saved game across all subfolders, newest first."""
+    folders = {
+        "human": _RECORDINGS_DIR,
+        "eval": _RECORDINGS_DIR / "eval",
+    }
     summaries = []
-    for path in sorted(
-        _RECORDINGS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
-    ):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            summaries.append(
-                RecordingSummary(
-                    game_id=data["game_id"],
-                    timestamp=data["timestamp"],
-                    player_names=data["player_names"],
-                    final_scores=data.get("final_scores", []),
-                    winner=data.get("winner"),
+    for folder_name, folder_path in folders.items():
+        if not folder_path.exists():
+            continue
+        for path in folder_path.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                summaries.append(
+                    RecordingSummary(
+                        game_id=data["game_id"],
+                        timestamp=data["timestamp"],
+                        player_names=data["player_names"],
+                        final_scores=data.get("final_scores", []),
+                        winner=data.get("winner"),
+                        folder=folder_name,
+                    )
                 )
-            )
-        except Exception:
-            logger.warning("skipping unreadable recording: %s", path.name)
+            except Exception:
+                logger.warning("skipping unreadable recording: %s", path.name)
+    summaries.sort(key=lambda s: s.timestamp, reverse=True)
     return summaries
 
 
 @app.get("/recordings/{game_id}")
 def get_recording(game_id: str) -> dict:
     """Return the full record plus pre-computed turn states for one game."""
-    if not _RECORDINGS_DIR.exists():
-        raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")
-    for path in _RECORDINGS_DIR.glob("*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("game_id") == game_id:
-                record = GameRecord.from_dict(data)
-                computed_turns, final_boards = record.reconstruct()
-                return {
-                    **data,
-                    "computed_turns": computed_turns,
-                    "final_boards": final_boards,
-                }
-        except Exception:
-            logger.exception("failed to load or reconstruct recording %s", game_id)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to reconstruct recording {game_id!r}",
-            )
+    folders = {
+        "human": _RECORDINGS_DIR,
+        "eval": _RECORDINGS_DIR / "eval",
+    }
+    for folder_path in folders.values():
+        if not folder_path.exists():
+            continue
+        for path in folder_path.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data.get("game_id") == game_id:
+                    record = GameRecord.from_dict(data)
+                    computed_turns, final_boards = record.reconstruct()
+                    return {
+                        **data,
+                        "computed_turns": computed_turns,
+                        "final_boards": final_boards,
+                    }
+            except Exception:
+                logger.exception("failed to load or reconstruct recording %s", game_id)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to reconstruct recording {game_id!r}",
+                )
     raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")

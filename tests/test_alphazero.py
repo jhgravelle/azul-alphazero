@@ -153,3 +153,30 @@ def test_reset_tree_clears_root():
     agent.reset_tree(game)
     # After reset the root should reflect the new game
     assert agent._tree._root is not None
+
+
+def test_alphazero_choose_move_returns_legal_move_after_advance():
+    """After a move is made and the tree advanced, the next move must still be legal.
+
+    Regression test: a stale tree that isn't advanced keeps recommending
+    moves that are no longer legal.
+    """
+    from neural.model import AzulNet
+    from agents.alphazero import AlphaZeroAgent
+    from engine.game import Game
+
+    net = AzulNet()
+    agent = AlphaZeroAgent(net, simulations=5, temperature=0.0)
+    game = Game()
+    game.setup_round()
+
+    for _ in range(10):
+        if game.is_game_over():
+            break
+        legal_before = game.legal_moves()
+        move = agent.choose_move(game)
+        assert move in legal_before, f"Move {move} not in legal moves"
+        game.make_move(move)
+        game.advance_round_if_needed()
+        # Advance the agent's internal tree
+        agent.advance(move)

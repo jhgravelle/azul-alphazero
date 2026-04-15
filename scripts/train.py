@@ -34,7 +34,7 @@ from engine.game import Game
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
 LOG_DIR = Path("logs")
-_MAX_MOVES = 300
+_MAX_MOVES = 2000
 
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -114,17 +114,12 @@ def save_eval_recording(
 ) -> None:
     """Play and record one eval game between candidate and best net."""
     from engine.game_recorder import GameRecorder
+    from neural.search_tree import SearchTree, make_policy_value_fn
 
     eval_dir = Path("recordings/eval")
     eval_dir.mkdir(parents=True, exist_ok=True)
 
-    new_agent = AlphaZeroAgent(
-        new_net, simulations=simulations, temperature=0.0, device=DEVICE
-    )
-    old_agent = AlphaZeroAgent(
-        old_net, simulations=simulations, temperature=0.0, device=DEVICE
-    )
-    agents = [new_agent, old_agent]
+    nets = [new_net, old_net]
 
     recorder = GameRecorder(
         player_names=[f"candidate (iter {iteration})", f"best (gen {generation:04d})"],
@@ -141,7 +136,13 @@ def save_eval_recording(
         if not game.legal_moves():
             break
         current = game.state.current_player
-        move = agents[current].choose_move(game)
+        # Fresh tree each move — no stale state possible.
+        tree = SearchTree(
+            policy_value_fn=make_policy_value_fn(nets[current], DEVICE),
+            simulations=simulations,
+            temperature=0.0,
+        )
+        move = tree.choose_move(game)
         recorder.record_move(move, player_index=current)
         game.make_move(move)
         game.advance_round_if_needed()

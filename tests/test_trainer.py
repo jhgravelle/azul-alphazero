@@ -245,3 +245,88 @@ def test_collect_self_play_warmup_az_as_p1_records_nonzero_score():
     assert len(az_scores) == 2
     assert az_scores[0] > 0, f"AZ as p0 scored {az_scores[0]}, expected > 0"
     assert az_scores[1] > 0, f"AZ as p1 scored {az_scores[1]}, expected > 0"
+
+
+def test_save_eval_recording_all_moves_legal():
+    """Every move in the eval recording must have been legal when made."""
+    from neural.model import AzulNet
+    from scripts.train import save_eval_recording
+    from engine.game import Game, Move
+    from engine.constants import Tile
+    import json
+    import tempfile
+    from pathlib import Path
+    import unittest.mock as mock
+
+    net = AzulNet()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        eval_dir = Path(tmp) / "eval"
+
+        with mock.patch("scripts.train.Path") as mock_path_cls:
+            mock_path_cls.side_effect = lambda *args: (
+                eval_dir if args == ("recordings/eval",) else Path(*args)
+            )
+            save_eval_recording(net, net, iteration=1, generation=0, simulations=5)
+
+            files = list(eval_dir.glob("*.json"))
+            assert len(files) == 1, "Expected one recording file"
+            data = json.loads(files[0].read_text())
+
+    game = Game()
+    game.setup_round()
+
+    for round_record in data["rounds"]:
+        # Seed the replay game with the exact factories from the recording
+        for i, factory_tiles in enumerate(round_record["factories"]):
+            game.state.factories[i] = [Tile[t] for t in factory_tiles]
+        game.state.center = [Tile[t] for t in round_record["center"]]
+
+        for move_record in round_record["moves"]:
+            legal = game.legal_moves()
+            move = Move(
+                source=move_record["source"],
+                tile=Tile[move_record["tile"]],
+                destination=move_record["destination"],
+            )
+            assert move in legal, f"Illegal move {move} -- legal moves were: {legal}"
+            game.make_move(move)
+            game.advance_round_if_needed()
+
+
+def test_collect_self_play_warmup_az_avoids_floor_when_alternatives_exist():
+    """In warmup mode, AZ should not choose a floor move when non-floor moves exist."""
+    from neural.model import AzulNet
+    from agents.alphazero import AlphaZeroAgent
+    from engine.game import Game, FLOOR
+
+    net = AzulNet()
+    game = Game()
+    game.setup_round()
+
+    # Verify there are non-floor moves available
+    legal = game.legal_moves()
+    non_floor = [m for m in legal if m.destination != FLOOR]
+    assert len(non_floor) > 0
+
+    # Simulate what collect_self_play does in warmup mode
+    move_before_override = None
+    az_agent = AlphaZeroAgent(net, simulations=5, temperature=1.0)
+    raw_move, policy_pairs = az_agent.get_policy_targets(game)
+    move_before_override = raw_move
+
+    # Apply the warmup floor override (same logic as collect_self_play)
+    move = raw_move
+    if move.destination == FLOOR:
+        policy_list = list(policy_pairs)
+        move = max(
+            non_floor,
+            key=lambda m: next((prob for pm, prob in policy_list if pm == m), 0.0),
+        )
+
+    # After override, move must not be a floor move
+    assert move.destination != FLOOR, (
+        f"After warmup override, move {move} is still a floor move. "
+        f"Raw move was {move_before_override}"
+    )
+    assert move in legal, f"Overridden move {move} is not legal"

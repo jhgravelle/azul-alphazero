@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from agents.base import Agent
+from engine.game import FLOOR
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -121,6 +122,20 @@ def collect_self_play(
 
             if is_az_turn:
                 move, policy_pairs = az_agent.get_policy_targets(game)
+                # In warmup mode, avoid floor moves when non-floor moves exist.
+                # Untrained AZ learns to floor everything — this keeps games meaningful.
+                if opponent is not None and move.destination == FLOOR:
+                    legal = game.legal_moves()
+                    non_floor = [m for m in legal if m.destination != FLOOR]
+                    if non_floor:
+                        # Pick the non-floor move with the highest policy probability.
+                        policy_list = list(policy_pairs)
+                        move = max(
+                            non_floor,
+                            key=lambda m: next(
+                                (prob for pm, prob in policy_list if pm == m), 0.0
+                            ),
+                        )
                 policy_vec = torch.zeros(MOVE_SPACE_SIZE)
                 for m, prob in policy_pairs:
                     policy_vec[encode_move(m, game)] = prob

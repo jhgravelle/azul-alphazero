@@ -193,3 +193,55 @@ def test_collect_self_play_warmup_records_both_players():
         f"Buffer has {len(buf)} examples from 4 games. "
         f"Expected >100 if recording both players."
     )
+
+
+def test_collect_self_play_warmup_az_as_p1_records_nonzero_score():
+    """AZ as player 1 in warmup mode should record actual score, not zero.
+
+    We engineer a near-complete game state where both players are guaranteed
+    to score: pattern line row 0 is full (scores 5 points — connects to 4
+    wall neighbors), completing row 0 triggers a +2 row bonus. Starting score
+    of 15 ensures floor penalties (-14 max) can't reach zero (15+5+2-14=8).
+    """
+    from neural.trainer import collect_self_play
+    from neural.replay import ReplayBuffer
+    from neural.model import AzulNet
+    from agents.greedy import GreedyAgent
+    from engine.constants import Tile, WALL_PATTERN, COLUMN_FOR_TILE_IN_ROW
+    from engine import game as game_module
+
+    net = AzulNet()
+    buf = ReplayBuffer(capacity=1000)
+    opponent = GreedyAgent()
+
+    original_setup = game_module.Game.setup_round
+
+    def rigged_setup(self, factories=None):
+        original_setup(self, factories)
+        for board in self.state.players:
+            board.score = 15
+        for board in self.state.players:
+            board.pattern_lines[0] = [Tile.BLUE]
+        blue_col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+        for board in self.state.players:
+            for col in range(5):
+                if col != blue_col:
+                    board.wall[0][col] = WALL_PATTERN[0][col]
+
+    game_module.Game.setup_round = rigged_setup
+    try:
+        az_scores = collect_self_play(
+            buf,
+            net=net,
+            num_games=2,
+            simulations=5,
+            temperature=1.0,
+            opponent=opponent,
+            device=torch.device("cpu"),
+        )
+    finally:
+        game_module.Game.setup_round = original_setup
+
+    assert len(az_scores) == 2
+    assert az_scores[0] > 0, f"AZ as p0 scored {az_scores[0]}, expected > 0"
+    assert az_scores[1] > 0, f"AZ as p1 scored {az_scores[1]}, expected > 0"

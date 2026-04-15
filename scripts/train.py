@@ -147,6 +147,7 @@ def evaluate(
                 break
             agent = agents[game.state.current_player]
             game.make_move(agent.choose_move(game))
+            game.advance_round_if_needed()
             moves += 1
 
         if moves >= _MAX_MOVES:
@@ -220,6 +221,7 @@ def evaluate_vs_random(
             if not game.legal_moves():
                 break
             game.make_move(agents[game.state.current_player].choose_move(game))
+            game.advance_round_if_needed()
             moves += 1
         scores = [p.score for p in game.state.players]
         if scores[0] == scores[1]:

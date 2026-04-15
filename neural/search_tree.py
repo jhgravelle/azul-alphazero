@@ -29,12 +29,51 @@ from dataclasses import dataclass, field
 from typing import Callable
 import torch
 from engine.game import Game, Move, CENTER
+from neural.model import AzulNet
 from neural.zobrist import ZobristTable
 
 _PUCT_C = 1.5
 
 # Shared Zobrist table — one instance for the lifetime of the process.
 _ZOBRIST = ZobristTable()
+
+
+def make_policy_value_fn(
+    net: "AzulNet",
+    device: "torch.device | None" = None,
+) -> "PolicyValueFn":
+    """Build a policy/value function backed by an AzulNet.
+
+    This is the standard way to create a PolicyValueFn for AlphaZeroAgent.
+    A uniform/zero function is available for testing by passing net=None
+    via the existing make_policy_value_fn in test_search_tree.py.
+    """
+    import torch
+    import torch.nn.functional as F
+    from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+
+    if device is None:
+        device = torch.device("cpu")
+
+    def fn(game: "Game", legal: "list[Move]") -> "tuple[list[float], float]":
+        spatial, flat = encode_state(game)
+        spatial = spatial.unsqueeze(0).to(device)
+        flat = flat.unsqueeze(0).to(device)
+        net.eval()
+        with torch.no_grad():
+            logits, value = net(spatial, flat)
+        if not legal:
+            return [], value.item()
+        logits = logits.squeeze(0)
+        mask = torch.full((MOVE_SPACE_SIZE,), float("-inf"), device=device)
+        for move in legal:
+            idx = encode_move(move, game)
+            mask[idx] = logits[idx]
+        probs = F.softmax(mask, dim=0)
+        priors = [probs[encode_move(m, game)].item() for m in legal]
+        return priors, value.item()
+
+    return fn
 
 
 # ── Node ──────────────────────────────────────────────────────────────────────

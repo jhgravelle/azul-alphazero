@@ -8,7 +8,6 @@ import json
 import logging
 import random
 from pathlib import Path
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -40,6 +39,8 @@ from engine.scoring import (
     pending_bonus_details,
     pending_placement_details,
 )
+from neural.search_tree import SearchTree, make_policy_value_fn
+from agents.alphazero import AlphaZeroAgent
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ _manual_factories: bool = False
 _in_factory_setup: bool = False
 _factory_cursor: int = 0
 _last_game_id: str | None = None
+_search_tree: SearchTree | None = None
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -91,6 +93,8 @@ def _make_agent(player_type: PlayerType) -> Agent | None:
             return GreedyAgent()
         case "mcts":
             return MCTSAgent()
+        # case "alphazero":
+        #     return AlphaZeroAgent(...)  # wire in once checkpoint exists
         case _:
             return None
 
@@ -277,6 +281,8 @@ def _handle_round_end() -> None:
         _enter_factory_setup()
     else:
         _game.setup_round()
+        if _search_tree is not None:
+            _search_tree.reset(_game)
         if _recorder is not None:
             _recorder.start_round(_game)
 
@@ -350,6 +356,8 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
     _push_history()
     _game.make_move(move)
 
+    if _search_tree is not None:
+        _search_tree.advance(move)
     if _hyp_marker is not None:
         pass
     else:
@@ -368,9 +376,20 @@ def new_game(request: NewGameRequest = NewGameRequest()) -> GameStateResponse:
     global _hyp_marker, _hyp_player_types, _hyp_agents
     global _manual_factories, _in_factory_setup, _factory_cursor
     global _last_game_id
+    global _search_tree
 
     _player_types = request.player_types
     _agents = [_make_agent(t) for t in _player_types]
+    _search_tree = None
+    az_agents = [a for a in _agents if isinstance(a, AlphaZeroAgent)]
+    if az_agents:
+        _search_tree = SearchTree(
+            policy_value_fn=make_policy_value_fn(az_agents[0].net),
+            simulations=az_agents[0].simulations,
+            temperature=az_agents[0].temperature,
+        )
+        _search_tree.reset(_game)
+
     _game = Game()
     _recorder = GameRecorder(
         player_names=list(_player_types), player_types=list(_player_types)
@@ -406,13 +425,19 @@ def agent_move() -> GameStateResponse:
             status_code=422,
             detail=f"Player {current + 1} is human -- use /move instead",
         )
-    move = agent.choose_move(_game)
+    move = (
+        agent.choose_move(_game, tree=_search_tree)
+        if isinstance(agent, AlphaZeroAgent)
+        else agent.choose_move(_game)
+    )
 
     if _recorder is not None:
         _recorder.record_move(move, player_index=current)
 
     _push_history()
     _game.make_move(move)
+    if _search_tree is not None:
+        _search_tree.advance(move)
     _handle_round_end()
 
     if _hyp_marker is not None:

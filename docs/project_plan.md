@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-04-14
-> Status: Phase 8 in progress. Batched multithreaded MCTS up next.
+> Status: Phase 8 in progress.
 
 ---
 
@@ -173,7 +173,7 @@ Complete redesign of the neural network input encoding and MCTS search:
 - Owns a persistent `SearchTree` at session level
 - Tree advanced after every move, reset at every round boundary
 
-#### 8b — Batched Multithreaded MCTS 🔜 (up next)
+#### 8b — Batched Multithreaded MCTS ✅
 
 - Virtual loss to discourage thread collision on same path
 - N threads collect leaves in parallel, single net forward pass per batch
@@ -241,3 +241,4 @@ Complete redesign of the neural network input encoding and MCTS search:
 | 2026-04-13 | Phase 7 complete |
 | 2026-04-13 | Phase 7d complete |
 | 2026-04-14 | Phase 8a complete — spatial encoder, conv+MLP model, Zobrist hashing, SearchTree, AlphaZeroAgent refactor |
+| 2026-04-14 | Phase 8b complete — batched multithreaded MCTS with virtual loss, thread pool backprop, tests |

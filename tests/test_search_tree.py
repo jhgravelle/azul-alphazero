@@ -61,6 +61,22 @@ def make_tree(simulations: int = 10) -> SearchTree:
     )
 
 
+def make_batch_fn():
+    """Return a uniform batched policy/value function for testing."""
+
+    def fn(batch):
+        results = []
+        for game, legal in batch:
+            if not legal:
+                results.append(([], 0.0))
+            else:
+                n = len(legal)
+                results.append(([1.0 / n] * n, 0.0))
+        return results
+
+    return fn
+
+
 # ── AZNode ─────────────────────────────────────────────────────────────────
 
 
@@ -320,3 +336,143 @@ def test_get_policy_targets_all_moves_legal():
     legal = game.legal_moves()
     for move, _ in policy:
         assert move in legal
+
+
+# ── Batched multithreaded MCTS ─────────────────────────────────────────────
+
+
+def test_batched_choose_move_returns_legal_move():
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=16,
+        batch_size=4,
+        temperature=0.0,
+    )
+    move = tree.choose_move(game)
+    assert move in game.legal_moves()
+
+
+def test_batched_choose_move_does_not_mutate_game():
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=16,
+        batch_size=4,
+        temperature=0.0,
+    )
+    factories_before = [list(f) for f in game.state.factories]
+    tree.choose_move(game)
+    assert [list(f) for f in game.state.factories] == factories_before
+
+
+def test_batched_get_policy_targets_sums_to_one():
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=16,
+        batch_size=4,
+        temperature=0.0,
+    )
+    _, policy = tree.get_policy_targets(game)
+    total = sum(p for _, p in policy)
+    assert total == pytest.approx(1.0, abs=0.01)
+
+
+def test_batched_policy_targets_all_moves_legal():
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=16,
+        batch_size=4,
+        temperature=0.0,
+    )
+    _, policy = tree.get_policy_targets(game)
+    legal = game.legal_moves()
+    for move, _ in policy:
+        assert move in legal
+
+
+def test_virtual_loss_zeroed_after_batched_search():
+    """After batched search completes, no node should have residual virtual loss."""
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=16,
+        batch_size=4,
+        temperature=0.0,
+    )
+    tree.choose_move(game)
+
+    def check_no_vl(node):
+        assert (
+            node.virtual_loss == 0
+        ), f"Node has residual virtual_loss={node.virtual_loss}"
+        for child in node.children:
+            check_no_vl(child)
+
+    assert tree._root is not None
+    check_no_vl(tree._root)
+
+
+def test_batched_simulations_batch_larger_than_sim_count():
+    """batch_size > simulations should not crash — last batch is just smaller."""
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=3,
+        batch_size=16,
+        temperature=0.0,
+    )
+    move = tree.choose_move(game)
+    assert move in game.legal_moves()
+
+
+def test_batched_simulations_batch_size_one():
+    """batch_size=1 should behave like single-threaded (one leaf per pass)."""
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=10,
+        batch_size=1,
+        temperature=0.0,
+    )
+    move = tree.choose_move(game)
+    assert move in game.legal_moves()
+
+
+def test_batched_advance_updates_root():
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=16,
+        batch_size=4,
+        temperature=0.0,
+    )
+    move = tree.choose_move(game)
+    old_root = tree._root
+    tree.advance(move)
+    assert tree._root is not old_root
+
+
+def test_batched_advance_root_has_no_parent():
+    game = fresh_game()
+    tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(),
+        batch_policy_value_fn=make_batch_fn(),
+        simulations=16,
+        batch_size=4,
+        temperature=0.0,
+    )
+    move = tree.choose_move(game)
+    tree.advance(move)
+    assert tree._root is not None
+    assert tree._root.parent is None

@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-04-13
-> Status: Phase 7 complete. Phase 8 (Evaluation and Iteration) up next.
+> Last updated: 2026-04-14
+> Status: Phase 8 in progress. Batched multithreaded MCTS up next.
 
 ---
 
@@ -15,7 +15,7 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Language | Python 3.14 | Primary language, best ML ecosystem |
+| Language | Python 3.12 | Primary language, best ML ecosystem |
 | Front end | FastAPI + HTML/JS | Web-first, iPhone-compatible via Capacitor, shareable by URL |
 | Testing | pytest | Industry standard for Python TDD |
 | Version control | Git + GitHub | Standard, CI/CD integration |
@@ -43,24 +43,26 @@ azul-alphazero/
 │   ├── efficient.py
 │   ├── greedy.py
 │   ├── mcts.py
-│   └── alphazero.py
+│   └── alphazero.py       # Thin wrapper — delegates to SearchTree
 ├── neural/
-│   ├── encoder.py
-│   ├── model.py
+│   ├── encoder.py         # (12,5,6) spatial + (47,) flat encoding
+│   ├── model.py           # Conv+MLP hybrid: spatial branch + flat branch
+│   ├── zobrist.py         # Zobrist hashing for within-round game states
+│   ├── search_tree.py     # SearchTree: MCTS, transposition table, subtree reuse
 │   ├── trainer.py
 │   └── replay.py
 ├── api/
-│   ├── main.py            # FastAPI app, endpoints, recorder integration
-│   └── schemas.py         # Pydantic request/response models
+│   ├── main.py            # FastAPI app, persistent SearchTree per session
+│   └── schemas.py
 ├── frontend/
-│   ├── index.html         # Single page — live game + replay
-│   ├── render.js          # Shared rendering functions (no API calls)
-│   ├── game.js            # Live game logic + replay mode + menu
+│   ├── index.html
+│   ├── render.js
+│   ├── game.js
 │   └── style.css
 ├── scripts/
 │   ├── self_play.py
 │   ├── train.py
-│   └── migrate_recordings.py  # Migrates old recordings to current format
+│   └── migrate_recordings.py
 ├── tests/
 │   ├── test_tile.py
 │   ├── test_board.py
@@ -75,11 +77,13 @@ azul-alphazero/
 │   ├── test_model.py
 │   ├── test_replay.py
 │   ├── test_trainer.py
+│   ├── test_zobrist.py
+│   ├── test_search_tree.py
 │   └── test_alphazero.py
 ├── recordings/            # gitignored — one JSON per completed human game
 ├── checkpoints/           # gitignored
 └── docs/
-    └── PROJECT_PLAN.md
+└── PROJECT_PLAN.md
 ```
 
 ---
@@ -98,8 +102,8 @@ azul-alphazero/
 ### Phase 6 — AlphaZero Self-Play Training 🔄 (paused)
 
 #### What's built
-- `AlphaZeroAgent` — PUCT tree search, value head evaluation, no rollouts
-- `collect_self_play` — opponent=None (AZ vs AZ) or opponent=Agent (warmup mode); records both players
+- `AlphaZeroAgent` — thin wrapper around `SearchTree`
+- `collect_self_play` — opponent=None (AZ vs AZ) or opponent=Agent (warmup mode)
 - `collect_heuristic_games` — Greedy vs Random; skips Random-wins games
 - `scripts/train.py` — full training loop with greedy warmup, auto-switch, per-game eval logging
 
@@ -119,54 +123,72 @@ azul-alphazero/
 
 ### Phase 6b — Reward Shaping + UI Polish ✅
 
-- `earned_score(board)` — simulates pending placements, includes floor penalty and wall bonus
-- `grand_total(board)` — carried_score + earned_score
-- `pending_placement_details(board)` — per-cell placement scores for UI annotations
-- `pending_bonus_details(wall)` — completed row/column/color bonuses for UI
-- Score bar: carried + pending placements + floor penalty + bonuses = grand total
-- Wall annotations: `+N` on pending placement cells, row/column/color bonus indicators
-- Sources row: factories + Center panel + Bag/Box panel
-- Game recorder, replay viewer, bag/box counts, full UI polish pass
+- `earned_score(board)`, `grand_total(board)`, `pending_placement_details`, `pending_bonus_details`
+- Score bar, wall annotations, sources row, game recorder, replay viewer, bag/box counts, full UI polish
 
 ---
 
 ### Phase 7 — Undo + Hypothetical + Manual Factory Setup ✅
 
 #### 7a — Undo ✅
-- `_history: list[GameState]` in `api/main.py`
-- Deep copy pushed before every `make_move`
-- `POST /undo` — pops and restores; automatically skips through bot moves to land on human turn
-- Disabled in bot-vs-bot games
-
 #### 7b — Hypothetical mode ✅
-- "What if?" button overrides both players to human
-- Hypothetical tree panel — branching, node jumping, commit execution
-- From-replay hypothetical entry
-- Terminal states in hypothetical are leaf nodes — no round setup, no recording saved
-
 #### 7c — Manual factory setup ✅
-- Pre-game step: human clicks tiles into each factory
-- `POST /setup-factories/*` endpoints
-- Persists across all rounds of the game — `_handle_round_end` re-enters setup mode
-- First-player marker correctly placed in center on setup entry
-
 #### 7d — Replay Improvements ✅
-- **Compact recording format** — rounds/moves instead of full board snapshots per turn
-- **`GameRecord.reconstruct()`** — replays moves server-side, embeds `computed_turns` and `final_boards` in API response; `computed_turns[0]` is always the initial state
-- **Move list panel** — below boards; round headers (Round 1, 2…); turn numbers; player emoji (👤/🤖); tile chip; source→destination; grand totals; scroll-to-current; keyboard navigation (arrow keys)
-- **Grand totals in replay** — boards show earned scores immediately, not end-of-round scored values; pending placements and bonuses computed during reconstruction
-- **Auto-load replay** — game automatically transitions to replay mode 1500ms after game over using `last_game_id` in `GameStateResponse`
-- **P1/P2 labels** — player boards labeled `P1 Human`, `P2 Greedy Bot` etc. in live game; recordings store prefixed names
-- **Human-readable recording filenames** — `YYYYMMDD HHMMSS P1 name score - P2 name score.json`
-- **Migration script** — `scripts/migrate_recordings.py` converts old verbose format to compact format; detects round boundaries from factory state; adds P1/P2 prefixes; idempotent with .bak backups
 
 ---
 
-### Phase 8 — Evaluation and Iteration 🔜 (up next)
+### Phase 8 — Evaluation and Iteration 🔄 (in progress)
 
+#### 8a — Search and Encoding Rewrite ✅
+
+Complete redesign of the neural network input encoding and MCTS search:
+
+**Encoder (`neural/encoder.py`)**
+- Spatial tensor `(12, 5, 6)` — 6 planes per player (5 color + 1 any-tile), rows = wall rows, cols 0–4 = wall cells, col 5 = pattern line fill ratio
+- Flat vector `(47,)` — factories, center, tokens, floor lines, scores, bag, discard
+- Move encoding unchanged: `(source, color, destination)` triple
+
+**Model (`neural/model.py`)**
+- Conv branch: two Conv2d layers over `(12, 5, 6)` spatial tensor
+- MLP branch: linear projection of `(47,)` flat vector
+- Branches merged before ResBlock trunk and policy/value heads
+
+**Zobrist hashing (`neural/zobrist.py`)**
+- Hashes only within-round state: pattern lines, floor lines, factories, center, current player
+- Wall and scores excluded — frozen within a round
+
+**SearchTree (`neural/search_tree.py`)**
+- Game-owned, persists across turns within a round
+- Transposition table: Zobrist hash → AZNode
+- Subtree reuse: selected child becomes new root, siblings pruned
+- Factory canonicalization: identical factories collapsed, reducing branching
+- Round boundaries as leaf nodes: simulations stop at end-of-round, evaluated by value head
+
+**AlphaZeroAgent (`agents/alphazero.py`)**
+- Now a thin wrapper — owns an internal `SearchTree` for self-play/training contexts
+- API passes in a shared external tree via `choose_move(game, tree=...)`
+- Exposes `advance(move)` and `reset_tree(game)` for tree lifecycle management
+
+**API (`api/main.py`)**
+- Owns a persistent `SearchTree` at session level
+- Tree advanced after every move, reset at every round boundary
+
+#### 8b — Batched Multithreaded MCTS 🔜 (up next)
+
+- Virtual loss to discourage thread collision on same path
+- N threads collect leaves in parallel, single net forward pass per batch
+- Single tree lock for thread safety (simple first implementation)
+- Batch size and thread count as tunable parameters
+
+#### 8c — Training Run + Iteration
+- [ ] Fix rolling average bug in `collect_self_play`
+- [ ] Increase train steps, tune eval threshold
+- [ ] Run training with new search and encoding
 - [ ] Elo ladder across all agent versions
 - [ ] Hyperparameter search
 - [ ] Difficulty levels in UI
+
+---
 
 ### Phase 9 — Polish and Release
 - [ ] Animated tile placement
@@ -176,10 +198,11 @@ azul-alphazero/
 - [ ] README with screenshots
 
 ### Future features discussed but not planned
-- AlphaZero as UI opponent — once a trained checkpoint exists, wire into `_make_agent()`
-- Policy head annotations on hypothetical tree — show each move's prior probability and value estimate
-- Multiple agent perspectives — annotate same position with evaluations from different checkpoints
-- Bot moves in hypothetical tree show no move label — fixable by diffing pre/post state or having API return last move made
+- AlphaZero as UI opponent — wire into `_make_agent()` once a trained checkpoint exists
+- Policy head annotations on hypothetical tree
+- Multiple agent perspectives
+- Shared-weight twin tower architecture for spatial encoding (considered, deferred)
+- Two-phase moves for UI (considered, not needed for search)
 
 ---
 
@@ -192,7 +215,7 @@ azul-alphazero/
 | `EfficientAgent` | Partial-line preference | Completes lines faster |
 | `GreedyAgent` | Both heuristics | Default UI opponent |
 | `MCTSAgent` | UCB1 + random rollouts | Lookahead without neural net |
-| `AlphaZeroAgent` | PUCT + neural net | Final goal |
+| `AlphaZeroAgent` | PUCT + neural net via SearchTree | Final goal |
 
 ---
 
@@ -212,8 +235,9 @@ azul-alphazero/
 | 2026-04-02 | Phase 5 complete |
 | 2026-04-02 | Phase 6 in progress |
 | 2026-04-03 | Phase 6 run 4 complete — failure analysis, reward shaping planned |
-| 2026-04-03 | Phase 6b defined — carried_score, earned_score, grand_total, UI display |
-| 2026-04-07 | Phase 6b complete — recorder, replay viewer, bag/box counts, full UI polish pass |
-| 2026-04-07 | Phase 7 defined — undo, hypothetical mode, manual factory setup |
-| 2026-04-13 | Phase 7 complete — undo, hypothetical, manual factories, replay improvements |
-| 2026-04-13 | Phase 7d complete — compact recording format, move list panel, grand totals in replay, auto-load replay, P1/P2 labels, migration script |
+| 2026-04-03 | Phase 6b defined |
+| 2026-04-07 | Phase 6b complete |
+| 2026-04-07 | Phase 7 defined |
+| 2026-04-13 | Phase 7 complete |
+| 2026-04-13 | Phase 7d complete |
+| 2026-04-14 | Phase 8a complete — spatial encoder, conv+MLP model, Zobrist hashing, SearchTree, AlphaZeroAgent refactor |

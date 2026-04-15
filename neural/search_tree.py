@@ -25,6 +25,8 @@ rather than crossing into the next round's random factory setup.
 from __future__ import annotations
 
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 import torch
@@ -91,6 +93,7 @@ class AZNode:
 
     visits: int = 0
     total_value: float = 0.0
+    virtual_loss: int = 0
 
     children: list[AZNode] = field(default_factory=list)
 
@@ -124,8 +127,15 @@ class AZNode:
         return self._untried_moves is not None and len(self._untried_moves) == 0
 
     def puct_score(self, parent_visits: int) -> float:
-        u = _PUCT_C * self.prior * math.sqrt(parent_visits) / (1 + self.visits)
-        return self.q_value + u
+        # Virtual loss: add pessimistic -1 per virtual visit to discourage
+        # other threads from selecting the same path before real backprop.
+        adj_visits = self.visits + self.virtual_loss
+        if adj_visits == 0:
+            q = 0.0
+        else:
+            q = (self.total_value - float(self.virtual_loss)) / adj_visits
+        u = _PUCT_C * self.prior * math.sqrt(parent_visits) / (1 + adj_visits)
+        return q + u
 
 
 # ── Policy/value callable type ────────────────────────────────────────────────
@@ -133,6 +143,70 @@ class AZNode:
 # A function that takes a Game and a list of legal moves, and returns
 # (priors, value) where priors is a list of floats parallel to legal_moves.
 PolicyValueFn = Callable[[Game, list[Move]], tuple[list[float], float]]
+
+# A batched variant: takes a list of (game, legal_moves) pairs and returns
+# a parallel list of (priors, value) results — one net forward pass for all.
+BatchPolicyValueFn = Callable[
+    [list[tuple[Game, list[Move]]]],
+    list[tuple[list[float], float]],
+]
+
+
+def make_batch_policy_value_fn(
+    net: "AzulNet",
+    device: "torch.device | None" = None,
+) -> "BatchPolicyValueFn":
+    """Build a batched policy/value function backed by an AzulNet.
+
+    Encodes all positions in the batch, runs a single forward pass, and
+    returns (priors, value) for each position.  Use this together with
+    SearchTree(batch_policy_value_fn=...) to enable batched MCTS.
+    """
+    import torch
+    import torch.nn.functional as F
+    from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+
+    if device is None:
+        device = torch.device("cpu")
+
+    def fn(
+        batch: list[tuple[Game, list[Move]]],
+    ) -> list[tuple[list[float], float]]:
+        if not batch:
+            return []
+
+        spatials = []
+        flats = []
+        for game, _ in batch:
+            spatial, flat = encode_state(game)
+            spatials.append(spatial)
+            flats.append(flat)
+
+        spatial_t = torch.stack(spatials).to(device)  # (B, 12, 5, 6)
+        flat_t = torch.stack(flats).to(device)  # (B, 47)
+
+        net.eval()
+        with torch.no_grad():
+            logits_b, values_b = net(spatial_t, flat_t)
+
+        results: list[tuple[list[float], float]] = []
+        for i, (game, legal) in enumerate(batch):
+            value = values_b[i].item()
+            if not legal:
+                results.append(([], value))
+                continue
+            logits = logits_b[i]
+            mask = torch.full((MOVE_SPACE_SIZE,), float("-inf"), device=device)
+            for move in legal:
+                idx = encode_move(move, game)
+                mask[idx] = logits[idx]
+            probs = F.softmax(mask, dim=0)
+            priors = [probs[encode_move(m, game)].item() for m in legal]
+            results.append((priors, value))
+
+        return results
+
+    return fn
 
 
 # ── SearchTree ────────────────────────────────────────────────────────────────
@@ -152,14 +226,22 @@ class SearchTree:
         policy_value_fn: PolicyValueFn,
         simulations: int = 200,
         temperature: float = 0.0,
+        n_threads: int = 1,
+        batch_size: int = 8,
+        batch_policy_value_fn: BatchPolicyValueFn | None = None,
     ) -> None:
         self.policy_value_fn = policy_value_fn
         self.simulations = simulations
         self.temperature = temperature
+        self.n_threads = n_threads
+        self.batch_size = batch_size
+        self.batch_policy_value_fn = batch_policy_value_fn
 
         self._root: AZNode | None = None
         # Transposition table: zobrist_hash → AZNode
         self._table: dict[int, AZNode] = {}
+        # Lock for tree mutations in batched/multi-threaded mode
+        self._lock = threading.Lock()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -174,11 +256,7 @@ class SearchTree:
             self.reset(game)
         assert self._root is not None
         self._ensure_expanded(self._root)
-        for _ in range(self.simulations):
-            node = self._select(self._root)
-            value = self._evaluate(node)
-            self._backpropagate(node, value)
-
+        self._run_simulations()
         return self._pick_move(self._root)
 
     def advance(self, move: Move) -> None:
@@ -219,10 +297,7 @@ class SearchTree:
             self.reset(game)
         assert self._root is not None
         self._ensure_expanded(self._root)
-        for _ in range(self.simulations):
-            node = self._select(self._root)
-            value = self._evaluate(node)
-            self._backpropagate(node, value)
+        self._run_simulations()
 
         total_visits = sum(c.visits for c in self._root.children)
         policy = [
@@ -231,6 +306,132 @@ class SearchTree:
             if c.move is not None
         ]
         return self._pick_move(self._root), policy
+
+    # ── Simulation dispatch ────────────────────────────────────────────────
+
+    def _run_simulations(self) -> None:
+        """Run all simulations, dispatching to batched or single-threaded mode."""
+        if self.batch_policy_value_fn is not None:
+            self._run_batched_simulations()
+        else:
+            assert self._root is not None
+            for _ in range(self.simulations):
+                node = self._select(self._root)
+                value = self._evaluate(node)
+                self._backpropagate(node, value)
+
+    def _run_batched_simulations(self) -> None:
+        """Run simulations in batches with virtual loss for diverse leaf selection.
+
+        Phase 1 — Select batch_size leaves sequentially under the lock, applying
+                   virtual loss to each path so later selections diverge.
+        Phase 2 — Evaluate all leaves in a single batched net forward pass
+                   (no lock held — this is the expensive GPU step).
+        Phase 3 — Undo virtual loss, expand leaves with returned priors, and
+                   backpropagate values, each under the lock.
+
+        n_threads controls the ThreadPoolExecutor used for Phase 3 backprop;
+        for the current simple implementation Phase 1 is sequential (the lock
+        serialises selection) and Phase 2 is always single-threaded (one GPU
+        call).  True parallel selection is a future improvement.
+        """
+        assert self._root is not None
+        assert self.batch_policy_value_fn is not None
+
+        remaining = self.simulations
+        while remaining > 0:
+            batch_n = min(self.batch_size, remaining)
+            remaining -= batch_n
+
+            # ── Phase 1: select leaves under lock ─────────────────────────
+            leaves_and_legals: list[tuple[AZNode, list[Move]]] = []
+            for _ in range(batch_n):
+                with self._lock:
+                    node = self._select_vl(self._root)
+                    if node.is_terminal or node.is_round_boundary:
+                        legal: list[Move] = []
+                    else:
+                        legal = self._canonical_moves(node.game)
+                    leaves_and_legals.append((node, legal))
+
+            # ── Phase 2: batch evaluate (no lock) ─────────────────────────
+            batch_results = self.batch_policy_value_fn(
+                [(node.game, legal) for node, legal in leaves_and_legals]
+            )
+
+            # ── Phase 3: expand + backpropagate under lock ─────────────────
+            def _backprop_one(
+                node: AZNode,
+                legal: list[Move],
+                priors: list[float],
+                value: float,
+            ) -> None:
+                with self._lock:
+                    self._undo_vl(node)
+                    if node.is_terminal:
+                        value = self._terminal_value(node.game)
+                    elif node._untried_moves is None:
+                        # First visit — expand with priors from batch
+                        if legal:
+                            node._untried_moves = list(legal)
+                            node._untried_priors = list(priors)
+                        else:
+                            node._untried_moves = []
+                            node._untried_priors = []
+                    self._backpropagate(node, value)
+
+            with ThreadPoolExecutor(max_workers=self.n_threads) as pool:
+                futs = [
+                    pool.submit(_backprop_one, node, legal, priors, value)
+                    for (node, legal), (priors, value) in zip(
+                        leaves_and_legals, batch_results
+                    )
+                ]
+                for f in futs:
+                    f.result()  # propagate any exceptions
+
+    # ── Virtual loss helpers ───────────────────────────────────────────────
+
+    def _select_vl(self, root: AZNode) -> AZNode:
+        """Like _select but applies +1 virtual loss to every node on the path.
+
+        Called under self._lock.  Virtual loss makes the chosen path look
+        pessimistic to subsequent selections in the same batch, encouraging
+        diversity without full thread synchronisation.
+        """
+        node = root
+        while not node.is_terminal and not node.is_round_boundary:
+            if node._untried_moves is None:
+                # Unexpanded leaf — stop here
+                node.virtual_loss += 1
+                return node
+            if node._untried_moves:
+                # Expand one new child (priors already set on parent)
+                move = node._untried_moves.pop()
+                prior = node._untried_priors.pop()  # type: ignore[union-attr]
+                child_game = node.game.clone()
+                child_game.make_move(move)
+                child = self._make_node(child_game, parent=node, move=move, prior=prior)
+                node.children.append(child)
+                node.virtual_loss += 1
+                child.virtual_loss += 1
+                return child
+            # Fully expanded — pick best PUCT child (scores include VL)
+            node.virtual_loss += 1
+            node = max(node.children, key=lambda c: c.puct_score(node.visits))
+        node.virtual_loss += 1
+        return node
+
+    def _undo_vl(self, node: AZNode) -> None:
+        """Walk up the parent chain removing one virtual loss from each node.
+
+        Called under self._lock after backpropagation is complete.
+        """
+        current: AZNode | None = node
+        while current is not None:
+            if current.virtual_loss > 0:
+                current.virtual_loss -= 1
+            current = current.parent
 
     # ── Tree operations ────────────────────────────────────────────────────
 

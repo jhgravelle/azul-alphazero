@@ -260,31 +260,35 @@ class SearchTree:
         return self._pick_move(self._root)
 
     def advance(self, move: Move) -> None:
-        """Carry the subtree forward after a move is made.
-
-        Finds the child matching the move (if it exists), makes it the new
-        root, and prunes all siblings. Updates the transposition table.
-        """
         if self._root is None:
             return
 
-        # Find matching child if already created
         new_root = None
         for child in self._root.children:
             if child.move == move:
                 new_root = child
                 break
 
+        # Discard the child if it was treated as a boundary/terminal during
+        # simulation (fully expanded but no children = never actually explored).
+        if (
+            new_root is not None
+            and new_root.children == []
+            and new_root._untried_moves == []
+        ):
+            new_root = None
+
         if new_root is None:
-            # Move was never explored — build a fresh node
             new_game = self._root.game.clone()
             new_game.make_move(move)
-            # Do not advance round — round boundaries are leaf nodes
+            new_game.advance_round_if_needed()
+            # Remove any stale transposition entry before making a new node
+            old_hash = _ZOBRIST.hash_state(new_game)
+            self._table.pop(old_hash, None)
             new_root = self._make_node(new_game, parent=None, move=move, prior=0.0)
         else:
             new_root.parent = None
 
-        # Prune siblings from transposition table
         for child in self._root.children:
             if child is not new_root:
                 self._prune(child)
@@ -566,7 +570,12 @@ class SearchTree:
     def _pick_move(self, root: AZNode) -> Move:
         """Select a move from root's children based on temperature."""
         if not root.children:
-            return root.game.legal_moves()[0]
+            legal = root.game.legal_moves()
+            if not legal:
+                raise RuntimeError(
+                    "_pick_move called on terminal/boundary node with no children"
+                )
+            return legal[0]
         if self.temperature == 0.0:
             best = max(root.children, key=lambda c: c.visits)
             assert best.move is not None

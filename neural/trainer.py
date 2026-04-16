@@ -43,9 +43,6 @@ def compute_loss(
     else:
         policy_loss = -(policies * log_probs).sum(dim=1).mean()
     value_loss = F.mse_loss(pred_values, values)
-    logger.debug(
-        "policy_loss=%.4f value_loss=%.4f", policy_loss.item(), value_loss.item()
-    )
     return {
         "total": policy_loss + value_loss,
         "policy": policy_loss,
@@ -120,6 +117,7 @@ def collect_self_play(
     for game_num in range(num_games):
         game = Game()
         game.setup_round()
+        az_agent.reset_tree(game)
 
         if opponent is not None:
             az_player = game_num % 2
@@ -139,6 +137,13 @@ def collect_self_play(
             spatial, flat = encode_state(game)
 
             if is_az_turn:
+                # assert game.legal_moves(), (
+                #     f"get_policy_targets called with no legal moves -- "
+                #     f"round={game.state.round}, "
+                #     f"game_over={game.is_game_over()}, "
+                #     f"factories={[len(f) for f in game.state.factories]}, "
+                #     f"center={game.state.center}"
+                # )
                 move, policy_pairs = az_agent.get_policy_targets(game)
                 # In warmup mode, avoid floor moves when non-floor moves exist.
                 # Untrained AZ learns to floor everything — this keeps games meaningful.
@@ -164,8 +169,18 @@ def collect_self_play(
 
             history.append((current_player, spatial, flat, policy_vec))
 
+            prev_round = game.state.round
             game.make_move(move)
             game.advance_round_if_needed()
+
+            if game.state.round != prev_round:
+                # assert game.legal_moves(), (
+                #     f"reset_tree called with no legal moves: "
+                #     f"round={game.state.round}, game_over={game.is_game_over()}"
+                # )
+                az_agent.reset_tree(game)
+            elif not game.is_game_over():
+                az_agent.advance(move)
 
         scores = [p.score for p in game.state.players]
 

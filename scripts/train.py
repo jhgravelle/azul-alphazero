@@ -26,7 +26,6 @@ import torch
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.trainer import Trainer, collect_self_play, collect_heuristic_games
-from agents.alphazero import AlphaZeroAgent
 from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
@@ -167,18 +166,7 @@ def evaluate(
     simulations: int = 25,
     win_threshold: float = 0.52,
 ) -> float:
-    """Play new vs old; return new_net win rate (ties count as 0.5).
-
-    Exits early if the outcome is already decided:
-      - early pass: new_net has won enough to clear the threshold regardless
-      - early fail: new_net has lost too many to clear the threshold
-    """
-    new_agent = AlphaZeroAgent(
-        new_net, simulations=simulations, temperature=0.0, device=DEVICE
-    )
-    old_agent = AlphaZeroAgent(
-        old_net, simulations=simulations, temperature=0.0, device=DEVICE
-    )
+    from neural.search_tree import SearchTree, make_policy_value_fn
 
     wins_needed = math.ceil(num_games * win_threshold)
     losses_allowed = num_games - wins_needed
@@ -190,15 +178,22 @@ def evaluate(
     for i in range(num_games):
         game = Game()
         game.setup_round()
-        agents = [new_agent, old_agent] if i % 2 == 0 else [old_agent, new_agent]
         new_is_p0 = i % 2 == 0
+        # net index for each player slot
+        player_nets = [new_net, old_net] if new_is_p0 else [old_net, new_net]
         moves = 0
 
         while not game.is_game_over() and moves < _MAX_MOVES:
             if not game.legal_moves():
                 break
-            agent = agents[game.state.current_player]
-            game.make_move(agent.choose_move(game))
+            current = game.state.current_player
+            tree = SearchTree(
+                policy_value_fn=make_policy_value_fn(player_nets[current], DEVICE),
+                simulations=simulations,
+                temperature=0.0,
+            )
+            move = tree.choose_move(game)
+            game.make_move(move)
             game.advance_round_if_needed()
             moves += 1
 
@@ -220,7 +215,7 @@ def evaluate(
             result = "old ✗"
             losses += 1
 
-        logger.debug(
+        logger.info(
             "  eval game %d/%d -- scores %s -- %s (new win rate so far: %.0f%%)",
             i + 1,
             num_games,
@@ -229,7 +224,6 @@ def evaluate(
             new_wins / games_played * 100,
         )
 
-        # Early exit checks
         if new_wins >= wins_needed:
             logger.info(
                 "  eval early pass after %d/%d games -- %.0f wins >= %d needed",
@@ -257,22 +251,30 @@ def evaluate_vs_random(
     num_games: int = 20,
     simulations: int = 25,
 ) -> float:
-    """Quick sanity check: win rate vs RandomAgent."""
-    az_agent = AlphaZeroAgent(
-        net, simulations=simulations, temperature=0.0, device=DEVICE
-    )
-    rng_agent = RandomAgent()
+    from neural.search_tree import SearchTree, make_policy_value_fn
+
     wins = 0.0
     for i in range(num_games):
         game = Game()
         game.setup_round()
-        agents = [az_agent, rng_agent] if i % 2 == 0 else [rng_agent, az_agent]
         az_is_p0 = i % 2 == 0
+        rng_agent = RandomAgent()
         moves = 0
         while not game.is_game_over() and moves < _MAX_MOVES:
             if not game.legal_moves():
                 break
-            game.make_move(agents[game.state.current_player].choose_move(game))
+            current = game.state.current_player
+            is_az = (current == 0) == az_is_p0
+            if is_az:
+                tree = SearchTree(
+                    policy_value_fn=make_policy_value_fn(net, DEVICE),
+                    simulations=simulations,
+                    temperature=0.0,
+                )
+                move = tree.choose_move(game)
+            else:
+                move = rng_agent.choose_move(game)
+            game.make_move(move)
             game.advance_round_if_needed()
             moves += 1
         scores = [p.score for p in game.state.players]

@@ -41,23 +41,17 @@ def fill_buffer(buf: ReplayBuffer, n: int) -> None:
 # ── compute_loss ───────────────────────────────────────────────────────────
 
 
-def test_compute_loss_returns_scalar():
-    net = AzulNet()
-    loss = compute_loss(net, *make_batch())
-    assert loss.shape == ()
-
-
 def test_compute_loss_is_positive():
-    assert compute_loss(AzulNet(), *make_batch()).item() > 0.0
+    assert compute_loss(AzulNet(), *make_batch())["total"].item() > 0.0
 
 
 def test_compute_loss_is_finite():
-    assert torch.isfinite(compute_loss(AzulNet(), *make_batch()))
+    assert torch.isfinite(compute_loss(AzulNet(), *make_batch())["total"])
 
 
 def test_compute_loss_has_gradient():
     net = AzulNet()
-    compute_loss(net, *make_batch()).backward()
+    compute_loss(net, *make_batch())["total"].backward()
     grads = [p.grad for p in net.parameters() if p.grad is not None]
     assert len(grads) > 0
 
@@ -65,13 +59,13 @@ def test_compute_loss_has_gradient():
 def test_compute_loss_decreases_toward_perfect_value():
     net = AzulNet()
     batch = make_batch(32)
-    loss_before = compute_loss(net, *batch).item()
+    loss_before = compute_loss(net, *batch)["total"].item()
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     for _ in range(200):
         optimizer.zero_grad()
-        compute_loss(net, *batch).backward()
+        compute_loss(net, *batch)["total"].backward()
         optimizer.step()
-    assert compute_loss(net, *batch).item() < loss_before
+    assert compute_loss(net, *batch)["total"].item() < loss_before
 
 
 # ── Trainer construction ───────────────────────────────────────────────────
@@ -101,25 +95,11 @@ def test_trainer_has_optimizer():
 # ── Trainer.train_step ─────────────────────────────────────────────────────
 
 
-def test_train_step_returns_float():
-    trainer = make_trainer()
-    buf = ReplayBuffer(capacity=1000)
-    fill_buffer(buf, 300)
-    assert isinstance(trainer.train_step(buf), float)
-
-
 def test_train_step_loss_is_positive():
     trainer = make_trainer()
     buf = ReplayBuffer(capacity=1000)
     fill_buffer(buf, 300)
-    assert trainer.train_step(buf) > 0.0
-
-
-def test_train_step_returns_zero_when_buffer_too_small():
-    trainer = make_trainer()
-    buf = ReplayBuffer(capacity=1000)
-    fill_buffer(buf, 10)
-    assert trainer.train_step(buf) == 0.0
+    assert trainer.train_step(buf)["total"] > 0.0
 
 
 def test_train_step_updates_weights():
@@ -136,7 +116,7 @@ def test_train_step_loss_trends_down():
     trainer = Trainer(AzulNet(), lr=1e-2)
     buf = ReplayBuffer(capacity=1000)
     fill_buffer(buf, 300)
-    losses = [trainer.train_step(buf) for _ in range(100)]
+    losses = [trainer.train_step(buf)["total"] for _ in range(100)]
     assert sum(losses[:10]) > sum(losses[-10:])
 
 
@@ -330,3 +310,112 @@ def test_collect_self_play_warmup_az_avoids_floor_when_alternatives_exist():
         f"Raw move was {move_before_override}"
     )
     assert move in legal, f"Overridden move {move} is not legal"
+
+
+# ── compute_loss — dict return and value_only ──────────────────────────────
+
+
+def test_compute_loss_returns_dict():
+    """compute_loss should return a dict with 'total', 'policy', 'value' keys."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    assert isinstance(result, dict)
+    assert "total" in result
+    assert "policy" in result
+    assert "value" in result
+
+
+def test_compute_loss_total_is_scalar():
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    assert result["total"].shape == ()
+
+
+def test_compute_loss_components_are_positive():
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    assert result["policy"].item() > 0.0
+    assert result["value"].item() > 0.0
+
+
+def test_compute_loss_value_only_zeroes_policy_loss():
+    """When value_only=True, policy loss must be exactly 0."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch(), value_only=True)
+    assert result["policy"].item() == 0.0
+
+
+def test_compute_loss_value_only_preserves_value_loss():
+    """When value_only=True, value loss must still be nonzero."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch(), value_only=True)
+    assert result["value"].item() > 0.0
+
+
+def test_compute_loss_value_only_total_equals_value_loss():
+    """When value_only=True, total == value loss (policy contributes nothing)."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch(), value_only=True)
+    assert torch.isclose(result["total"], result["value"])
+
+
+def test_compute_loss_value_only_gradient_flows():
+    """Gradient should still flow through value head when value_only=True."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch(), value_only=True)
+    result["total"].backward()
+    grads = [p.grad for p in net.parameters() if p.grad is not None]
+    assert len(grads) > 0
+
+
+def test_compute_loss_full_has_larger_total_than_value_only():
+    """Full loss (policy + value) should exceed value-only loss on a fresh net."""
+    net = AzulNet()
+    batch = make_batch()
+    full = compute_loss(net, *batch, value_only=False)
+    value_only = compute_loss(net, *batch, value_only=True)
+    assert full["total"].item() > value_only["total"].item()
+
+
+# ── train_step — value_only ────────────────────────────────────────────────
+
+
+def test_train_step_value_only_returns_dict():
+    """train_step should return a loss dict, not a plain float."""
+    trainer = make_trainer()
+    buf = ReplayBuffer(capacity=1000)
+    fill_buffer(buf, 300)
+    result = trainer.train_step(buf)
+    assert isinstance(result, dict)
+    assert "total" in result
+
+
+def test_train_step_value_only_flag_zeroes_policy_loss():
+    trainer = make_trainer()
+    buf = ReplayBuffer(capacity=1000)
+    fill_buffer(buf, 300)
+    result = trainer.train_step(buf, value_only=True)
+    assert result["policy"] == 0.0
+
+
+def test_train_step_value_only_still_updates_weights():
+    """Even with value_only=True, the value head gradient should change weights."""
+    trainer = make_trainer()
+    buf = ReplayBuffer(capacity=1000)
+    fill_buffer(buf, 300)
+    before = [p.clone() for p in trainer.net.parameters()]
+    trainer.train_step(buf, value_only=True)
+    after = list(trainer.net.parameters())
+    assert any(not torch.equal(b, a) for b, a in zip(before, after))
+
+
+def test_train_step_too_small_buffer_returns_zero_dict():
+    """When buffer is too small, return a zeroed dict rather than a plain 0.0."""
+    trainer = make_trainer()
+    buf = ReplayBuffer(capacity=1000)
+    fill_buffer(buf, 10)
+    result = trainer.train_step(buf)
+    assert isinstance(result, dict)
+    assert result["total"] == 0.0
+    assert result["policy"] == 0.0
+    assert result["value"] == 0.0

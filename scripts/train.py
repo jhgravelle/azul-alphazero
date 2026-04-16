@@ -472,7 +472,7 @@ def main() -> None:
         )
         total_loss = 0.0
         for step in range(1, args.pretrain_steps + 1):
-            total_loss += trainer.train_step(buf)
+            total_loss += trainer.train_step(buf, value_only=True)["total"]
             if step % 500 == 0:
                 logger.info(
                     "  pretrain step %d/%d -- avg loss: %.4f",
@@ -502,7 +502,7 @@ def main() -> None:
                 continue
             total_loss = 0.0
             for _ in range(args.train_steps):
-                total_loss += trainer.train_step(buf)
+                total_loss += trainer.train_step(buf, value_only=True)["total"]
             avg_loss = total_loss / args.train_steps
             logger.info(
                 "  heuristic iter %d/%d -- buffer size %d -- avg loss: %.4f",
@@ -567,7 +567,7 @@ def main() -> None:
         logger.info("running %d training steps...", args.train_steps)
         total_loss = 0.0
         for _ in range(args.train_steps):
-            total_loss += trainer.train_step(buf)
+            total_loss += trainer.train_step(buf, value_only=True)["total"]
         avg_loss = total_loss / args.train_steps
         logger.info("avg loss: %.4f", avg_loss)
 

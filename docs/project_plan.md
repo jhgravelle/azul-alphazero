@@ -180,10 +180,29 @@ Complete redesign of the neural network input encoding and MCTS search:
 - Single tree lock for thread safety (simple first implementation)
 - Batch size and thread count as tunable parameters
 
-#### 8c — Training Run + Iteration
-- [ ] Fix rolling average bug in `collect_self_play`
-- [ ] Increase train steps, tune eval threshold
-- [ ] Run training with new search and encoding
+#### 8c — Training Run + Iteration 🔄 (in progress)
+
+**Completed**
+- Rolling average bug confirmed fixed (regression test added)
+- `advance_round_if_needed` added to `evaluate()` and `evaluate_vs_random()`
+- Engine debug noise suppressed from training logs
+- Eval recording saved each iteration to `recordings/eval/`
+- Subfolder recording scan in API (`recordings/human/` and `recordings/eval/`)
+- `_MAX_MOVES` raised to 2000
+- Floor avoidance in warmup (`collect_self_play`) — prevents untrained model flooring everything
+- Heuristic pretraining flags (`--pretrain-games`, `--pretrain-steps`, `--heuristic-iterations`)
+- Loss diagnostic added — revealed policy vs value loss split
+
+**Key finding**
+Heuristic pretraining with one-hot policy targets causes policy head overfitting.
+The value head learns score differentials quickly (~200 steps). The policy head
+memorizes Greedy's exact moves rather than learning strategy. Fix: pretrain value
+head only, let MCTS self-play train the policy from soft visit-count distributions.
+
+**Next up**
+- [ ] Implement `value_only=True` flag in `compute_loss` and `train_step`
+- [ ] Update pretrain and heuristic iteration loops to use `value_only=True`
+- [ ] Run training and verify self-play games complete without hitting move cap
 - [ ] Elo ladder across all agent versions
 - [ ] Hyperparameter search
 - [ ] Difficulty levels in UI
@@ -243,3 +262,4 @@ Complete redesign of the neural network input encoding and MCTS search:
 | 2026-04-14 | Phase 8a complete — spatial encoder, conv+MLP model, Zobrist hashing, SearchTree, AlphaZeroAgent refactor |
 | 2026-04-14 | Phase 8b complete — batched multithreaded MCTS with virtual loss, thread pool backprop, tests |
 | 2026-04-14 | Fixed advance_round_if_needed in eval loops, suppressed engine log noise, added eval recording per iteration, subfolder recording scan |
+| 2026-04-15 | Phase 8c begun — fixed advance_round_if_needed in eval, floor avoidance in warmup, eval recordings, subfolder scan, raised move cap, loss diagnostic |

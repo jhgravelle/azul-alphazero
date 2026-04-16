@@ -33,13 +33,24 @@ def compute_loss(
     flats: torch.Tensor,  # (B, FLAT_SIZE)
     policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE)
     values: torch.Tensor,  # (B, 1)
-) -> torch.Tensor:
-    """Combined policy + value loss."""
+    value_only: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Combined policy + value loss. Returns dict with 'total', 'policy', 'value'."""
     logits, pred_values = net(spatials, flats)
     log_probs = F.log_softmax(logits, dim=1)
-    policy_loss = -(policies * log_probs).sum(dim=1).mean()
+    if value_only:
+        policy_loss = torch.tensor(0.0, requires_grad=False)
+    else:
+        policy_loss = -(policies * log_probs).sum(dim=1).mean()
     value_loss = F.mse_loss(pred_values, values)
-    return policy_loss + value_loss
+    logger.debug(
+        "policy_loss=%.4f value_loss=%.4f", policy_loss.item(), value_loss.item()
+    )
+    return {
+        "total": policy_loss + value_loss,
+        "policy": policy_loss,
+        "value": value_loss,
+    }
 
 
 # ── Trainer ───────────────────────────────────────────────────────────────────
@@ -61,10 +72,12 @@ class Trainer:
         self.device = device
         self.optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
-    def train_step(self, buf: ReplayBuffer) -> float:
-        """Sample a batch, backpropagate, and return the scalar loss."""
+    def train_step(
+        self, buf: ReplayBuffer, value_only: bool = False
+    ) -> dict[str, float]:
+        """Sample a batch, backpropagate, and return a loss dict."""
         if len(buf) < self.batch_size:
-            return 0.0
+            return {"total": 0.0, "policy": 0.0, "value": 0.0}
         spatials, flats, policies, values = buf.sample(self.batch_size)
         spatials = spatials.to(self.device)
         flats = flats.to(self.device)
@@ -72,10 +85,15 @@ class Trainer:
         values = values.to(self.device)
         self.net.train()
         self.optimizer.zero_grad()
-        loss = compute_loss(self.net, spatials, flats, policies, values)
-        loss.backward()
+        loss_dict = compute_loss(
+            self.net, spatials, flats, policies, values, value_only=value_only
+        )
+        loss_dict["total"].backward()
         self.optimizer.step()
-        return loss.item()
+        return {
+            k: float(v.item() if hasattr(v, "item") else v)
+            for k, v in loss_dict.items()
+        }
 
 
 # ── Self-play data collection ─────────────────────────────────────────────────

@@ -104,58 +104,6 @@ def load_checkpoint(net: AzulNet, path: str) -> None:
     logger.info("loaded checkpoint <- %s", path)
 
 
-def save_eval_recording(
-    new_net: AzulNet,
-    old_net: AzulNet,
-    iteration: int,
-    generation: int,
-    simulations: int,
-) -> None:
-    """Play and record one eval game between candidate and best net."""
-    from engine.game_recorder import GameRecorder
-    from neural.search_tree import SearchTree, make_policy_value_fn
-
-    eval_dir = Path("recordings/eval")
-    eval_dir.mkdir(parents=True, exist_ok=True)
-
-    nets = [new_net, old_net]
-
-    recorder = GameRecorder(
-        player_names=[f"candidate (iter {iteration})", f"best (gen {generation:04d})"],
-        player_types=["alphazero", "alphazero"],
-    )
-    game = Game()
-    game.setup_round()
-    recorder.start_round(game)
-
-    last_round = game.state.round
-    moves = 0
-
-    while not game.is_game_over() and moves < _MAX_MOVES:
-        if not game.legal_moves():
-            break
-        current = game.state.current_player
-        # Fresh tree each move — no stale state possible.
-        tree = SearchTree(
-            policy_value_fn=make_policy_value_fn(nets[current], DEVICE),
-            simulations=simulations,
-            temperature=0.0,
-        )
-        move = tree.choose_move(game)
-        recorder.record_move(move, player_index=current)
-        game.make_move(move)
-        game.advance_round_if_needed()
-        if not game.is_game_over() and game.state.round != last_round:
-            last_round = game.state.round
-            recorder.start_round(game)
-        moves += 1
-
-    recorder.finalize(game)
-    filename = f"eval_iter_{iteration:03d}_vs_gen_{generation:04d}.json"
-    recorder.save(eval_dir / filename)
-    logger.info("saved eval recording -> %s", filename)
-
-
 # ── Evaluation ────────────────────────────────────────────────────────────────
 
 
@@ -165,8 +113,15 @@ def evaluate(
     num_games: int = 40,
     simulations: int = 25,
     win_threshold: float = 0.52,
+    buf: ReplayBuffer | None = None,
+    record: bool = False,
+    iteration: int = 0,
+    generation: int = 0,
 ) -> float:
     from neural.search_tree import SearchTree, make_policy_value_fn
+    from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+    from neural.trainer import score_differential_value
+    from engine.game_recorder import GameRecorder
 
     wins_needed = math.ceil(num_games * win_threshold)
     losses_allowed = num_games - wins_needed
@@ -179,9 +134,22 @@ def evaluate(
         game = Game()
         game.setup_round()
         new_is_p0 = i % 2 == 0
-        # net index for each player slot
         player_nets = [new_net, old_net] if new_is_p0 else [old_net, new_net]
         moves = 0
+        history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+
+        # Set up recorder for first game only
+        recorder: GameRecorder | None = None
+        if record and i == 0:
+            recorder = GameRecorder(
+                player_names=[
+                    f"candidate (iter {iteration})",
+                    f"best (gen {generation:04d})",
+                ],
+                player_types=["alphazero", "alphazero"],
+            )
+            recorder.start_round(game)
+        last_round = game.state.round
 
         while not game.is_game_over() and moves < _MAX_MOVES:
             if not game.legal_moves():
@@ -192,17 +160,53 @@ def evaluate(
                 simulations=simulations,
                 temperature=0.0,
             )
-            move = tree.choose_move(game)
+            if buf is not None:
+                spatial, flat = encode_state(game)
+                move, policy_pairs = tree.get_policy_targets(game)
+                policy_vec = torch.zeros(MOVE_SPACE_SIZE)
+                for m, prob in policy_pairs:
+                    policy_vec[encode_move(m, game)] = prob
+                history.append((current, spatial, flat, policy_vec))
+            else:
+                move = tree.choose_move(game)
+
+            if recorder is not None:
+                recorder.record_move(move, player_index=current)
+
             game.make_move(move)
             game.advance_round_if_needed()
+
+            if (
+                recorder is not None
+                and not game.is_game_over()
+                and game.state.round != last_round
+            ):
+                last_round = game.state.round
+                recorder.start_round(game)
+
             moves += 1
 
         if moves >= _MAX_MOVES:
             logger.warning(
-                "eval game %d hit move cap (%d) -- scoring as tie", i, _MAX_MOVES
+                f"eval game {i} hit move cap ({_MAX_MOVES}) -- scoring as tie"
             )
 
-        scores = [p.score for p in game.state.players]
+        if recorder is not None:
+            recorder.finalize(game)
+            eval_dir = Path("recordings/eval")
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"eval_iter_{iteration:03d}_vs_gen_{generation:04d}.json"
+            recorder.save(eval_dir / filename)
+            logger.info(f"saved eval recording -> {filename}")
+
+        if buf is not None:
+            scores = [p.score - p.clamped_points for p in game.state.players]
+            for player_idx, spatial, flat, policy_vec in history:
+                value = score_differential_value(scores, player_idx)
+                buf.push(spatial, flat, policy_vec, value)
+        else:
+            scores = [p.score for p in game.state.players]
+
         games_played += 1
 
         if scores[0] == scores[1]:
@@ -216,30 +220,20 @@ def evaluate(
             losses += 1
 
         logger.info(
-            "  eval game %d/%d -- scores %s -- %s (new win rate so far: %.0f%%)",
-            i + 1,
-            num_games,
-            scores,
-            result,
-            new_wins / games_played * 100,
+            f"  eval game {i + 1}/{num_games} -- scores {scores} -- "
+            f"{result} (new win rate so far: {new_wins / games_played:.0%})"
         )
 
         if new_wins >= wins_needed:
             logger.info(
-                "  eval early pass after %d/%d games -- %.0f wins >= %d needed",
-                games_played,
-                num_games,
-                new_wins,
-                wins_needed,
+                f"  eval early pass after {games_played}/{num_games} games -- "
+                f"{new_wins:.0f} wins >= {wins_needed} needed"
             )
             break
         if losses > losses_allowed:
             logger.info(
-                "  eval early fail after %d/%d games -- %d losses > %d allowed",
-                games_played,
-                num_games,
-                losses,
-                losses_allowed,
+                f"  eval early fail after {games_played}/{num_games} games -- "
+                f"{losses} losses > {losses_allowed} allowed"
             )
             break
 
@@ -579,19 +573,16 @@ def main() -> None:
             args.eval_games,
             args.eval_simulations,
         )
-        save_eval_recording(
-            net,
-            best_net,
-            iteration=iteration,
-            generation=generation,
-            simulations=args.eval_simulations,
-        )
         win_rate = evaluate(
             net,
             best_net,
             num_games=args.eval_games,
             simulations=args.eval_simulations,
             win_threshold=args.win_threshold,
+            buf=buf,
+            record=True,
+            iteration=iteration,
+            generation=generation,
         )
         logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
 

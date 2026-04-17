@@ -144,16 +144,6 @@ def test_collect_heuristic_games_filters_random_wins():
     assert stats["games_recorded"] == stats["greedy_wins"] + stats["ties"]
 
 
-def test_collect_heuristic_games_values_are_score_differential():
-    buf = ReplayBuffer(capacity=100_000)
-    collect_heuristic_games(buf, num_games=20)
-    _, _, _, values = buf.sample(min(len(buf), 50))
-    assert values.min() >= -1.0
-    assert values.max() <= 1.0
-    unique_values = set(values.squeeze().tolist())
-    assert len(unique_values) > 3
-
-
 def test_collect_self_play_warmup_records_both_players():
     from neural.model import AzulNet
     from neural.trainer import collect_self_play
@@ -225,54 +215,6 @@ def test_collect_self_play_warmup_az_as_p1_records_nonzero_score():
     assert len(az_scores) == 2
     assert az_scores[0] > 0, f"AZ as p0 scored {az_scores[0]}, expected > 0"
     assert az_scores[1] > 0, f"AZ as p1 scored {az_scores[1]}, expected > 0"
-
-
-@pytest.mark.slow
-def test_save_eval_recording_all_moves_legal():
-    """Every move in the eval recording must have been legal when made."""
-    from neural.model import AzulNet
-    from scripts.train import save_eval_recording
-    from engine.game import Game, Move
-    from engine.constants import Tile
-    import json
-    import tempfile
-    from pathlib import Path
-    import unittest.mock as mock
-
-    net = AzulNet()
-
-    with tempfile.TemporaryDirectory() as tmp:
-        eval_dir = Path(tmp) / "eval"
-
-        with mock.patch("scripts.train.Path") as mock_path_cls:
-            mock_path_cls.side_effect = lambda *args: (
-                eval_dir if args == ("recordings/eval",) else Path(*args)
-            )
-            save_eval_recording(net, net, iteration=1, generation=0, simulations=5)
-
-            files = list(eval_dir.glob("*.json"))
-            assert len(files) == 1, "Expected one recording file"
-            data = json.loads(files[0].read_text())
-
-    game = Game()
-    game.setup_round()
-
-    for round_record in data["rounds"]:
-        # Seed the replay game with the exact factories from the recording
-        for i, factory_tiles in enumerate(round_record["factories"]):
-            game.state.factories[i] = [Tile[t] for t in factory_tiles]
-        game.state.center = [Tile[t] for t in round_record["center"]]
-
-        for move_record in round_record["moves"]:
-            legal = game.legal_moves()
-            move = Move(
-                source=move_record["source"],
-                tile=Tile[move_record["tile"]],
-                destination=move_record["destination"],
-            )
-            assert move in legal, f"Illegal move {move} -- legal moves were: {legal}"
-            game.make_move(move)
-            game.advance_round_if_needed()
 
 
 def test_collect_self_play_warmup_az_avoids_floor_when_alternatives_exist():

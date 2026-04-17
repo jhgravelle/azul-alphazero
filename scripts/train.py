@@ -20,7 +20,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
 import torch
 
 from neural.model import AzulNet

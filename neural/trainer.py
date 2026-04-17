@@ -163,6 +163,12 @@ def collect_self_play(
                                 (prob for pm, prob in policy_list if pm == m), 0.0
                             ),
                         )
+                        non_floor_pairs = [
+                            (m, p) for m, p in policy_pairs if m.destination != FLOOR
+                        ]
+                        total = sum(p for _, p in non_floor_pairs)
+                        if total > 0:
+                            policy_pairs = [(m, p / total) for m, p in non_floor_pairs]
                 policy_vec = torch.zeros(MOVE_SPACE_SIZE)
                 for m, prob in policy_pairs:
                     policy_vec[encode_move(m, game)] = prob

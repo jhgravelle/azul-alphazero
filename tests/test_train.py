@@ -5,7 +5,6 @@ import pytest
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 
-
 # ── evaluate with buffer feeding ───────────────────────────────────────────
 
 

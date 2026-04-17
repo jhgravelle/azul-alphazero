@@ -40,13 +40,8 @@ class AlphaZeroAgent(Agent):
     # ── Public API ─────────────────────────────────────────────────────────
 
     def choose_move(self, game: Game, tree: SearchTree | None = None) -> Move:
-        """Run simulations and return the best move.
-
-        If tree is provided (e.g. from the API session), use it.
-        Otherwise use the agent's own internal tree.
-        """
         t = tree if tree is not None else self._tree
-        if t._root is None:
+        if t._root is None or not t._root.game.legal_moves():
             t.reset(game)
         return t.choose_move(game)
 
@@ -55,9 +50,8 @@ class AlphaZeroAgent(Agent):
         game: Game,
         tree: SearchTree | None = None,
     ) -> tuple[Move, list[tuple[Move, float]]]:
-        """Run simulations and return (chosen_move, [(move, visit_fraction)])."""
         t = tree if tree is not None else self._tree
-        if t._root is None:
+        if t._root is None or not t._root.game.legal_moves():
             t.reset(game)
         return t.get_policy_targets(game)
 

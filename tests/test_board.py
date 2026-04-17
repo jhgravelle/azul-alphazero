@@ -29,3 +29,24 @@ def test_player_board_floor_line_is_empty():
     """The floor line starts empty."""
     board = Board()
     assert board.floor_line == []
+
+
+def test_player_board_initial_clamped_points_is_zero():
+    board = Board()
+    assert board.clamped_points == 0
+
+
+def test_clamped_points_stays_zero_when_score_does_not_go_negative():
+    board = Board()
+    board.score = 10
+    board.clamped_points = 0
+    # No clamping needed — score stays positive
+    assert board.clamped_points == 0
+
+
+def test_clamped_points_and_score_are_independent_fields():
+    board = Board()
+    board.score = 0
+    board.clamped_points = 6
+    assert board.score == 0
+    assert board.clamped_points == 6

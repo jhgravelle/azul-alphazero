@@ -699,3 +699,93 @@ def test_setup_round_places_first_player_marker_in_center():
     game = Game()
     game.setup_round()
     assert Tile.FIRST_PLAYER in game.state.center
+
+
+# endregion
+# region clamped_points ----------------------------------------------------
+
+
+def test_clamped_points_initialized_to_zero():
+    game = Game()
+    assert game.state.players[0].clamped_points == 0
+    assert game.state.players[1].clamped_points == 0
+
+
+def test_clamped_points_zero_when_floor_does_not_cause_clamp():
+    game = Game()
+    player = game.state.players[0]
+    player.score = 10
+    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4
+    game._score_floor(player)
+    assert player.score == 6
+    assert player.clamped_points == 0
+
+
+def test_clamped_points_records_amount_lost_to_clamp():
+    game = Game()
+    player = game.state.players[0]
+    player.score = 1
+    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4
+    game._score_floor(player)
+    assert player.score == 0  # clamped
+    assert player.clamped_points == 3  # 3 points lost to clamp
+
+
+def test_clamped_points_accumulates_across_rounds():
+    game = Game()
+    player = game.state.players[0]
+    player.score = 1
+    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4, clamps 3
+    game._score_floor(player)
+    assert player.clamped_points == 3
+
+    player.score = 2
+    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4, clamps 2
+    game._score_floor(player)
+    assert player.clamped_points == 5  # 3 + 2
+
+
+def test_full_floor_line_clamped_points():
+    game = Game()
+    player = game.state.players[0]
+    # Full floor: -1-1-2-2-2-3-3 = -14, score starts at 0
+    player.floor_line = [
+        Tile.BLUE,
+        Tile.RED,
+        Tile.YELLOW,
+        Tile.BLACK,
+        Tile.WHITE,
+        Tile.BLUE,
+        Tile.RED,
+    ]
+    game._score_floor(player)
+    assert player.score == 0
+    assert player.clamped_points == 14
+
+
+def test_raw_score_is_score_plus_clamped_points():
+    game = Game()
+    player = game.state.players[0]
+    player.score = 1
+    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4
+    game._score_floor(player)
+    raw = player.score - player.clamped_points
+    assert raw == -3  # true unclamped score: 1 - 4
+
+
+def test_clone_preserves_clamped_points():
+    game = Game()
+    game.state.players[0].clamped_points = 7
+    clone = game.clone()
+    assert clone.state.players[0].clamped_points == 7
+
+
+def test_clone_clamped_points_is_independent():
+    game = Game()
+    game.state.players[0].clamped_points = 7
+    clone = game.clone()
+    clone.state.players[0].clamped_points = 99
+    assert game.state.players[0].clamped_points == 7
+
+
+# endregion

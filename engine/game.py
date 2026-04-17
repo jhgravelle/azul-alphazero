@@ -218,7 +218,9 @@ class Game:
 
     def _score_floor(self, player: Board) -> None:
         """Apply floor line penalties to the player and clear the floor."""
-        player.score = max(0, player.score + score_floor_penalty(player.floor_line))
+        penalty = score_floor_penalty(player.floor_line)
+        player.clamped_points += max(0, -(player.score + penalty))
+        player.score = max(0, player.score + penalty)
         self.state.discard.extend(
             t for t in player.floor_line if t != Tile.FIRST_PLAYER
         )

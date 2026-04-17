@@ -363,7 +363,7 @@ def main() -> None:
     parser.add_argument(
         "--buffer-size",
         type=int,
-        default=50_000,
+        default=100_000,
         help="replay buffer capacity (default 50000)",
     )
     parser.add_argument(

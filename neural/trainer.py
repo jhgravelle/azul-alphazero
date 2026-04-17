@@ -19,7 +19,11 @@ _SCORE_DIFF_DIVISOR = 20.0
 
 
 def score_differential_value(scores: list[int], player_index: int) -> float:
-    """Normalized score-differential value target for a player."""
+    """Normalized score-differential value target for a player.
+
+    scores should be raw scores (score - clamped_points) so that floor
+    penalties below zero carry gradient signal even when board.score is 0.
+    """
     diff = (scores[player_index] - scores[1 - player_index]) / _SCORE_DIFF_DIVISOR
     return max(-1.0, min(1.0, diff))
 
@@ -182,7 +186,7 @@ def collect_self_play(
             elif not game.is_game_over():
                 az_agent.advance(move)
 
-        scores = [p.score for p in game.state.players]
+        scores = [p.score - p.clamped_points for p in game.state.players]
 
         for player_idx, spatial, flat, policy_vec in history:
             value = score_differential_value(scores, player_idx)
@@ -255,7 +259,7 @@ def collect_heuristic_games(
             game.make_move(move)
             game.advance_round_if_needed()
 
-        scores = [p.score for p in game.state.players]
+        scores = [p.score - p.clamped_points for p in game.state.players]
         greedy_score = scores[0] if greedy_is_p0 else scores[1]
         random_score = scores[1] if greedy_is_p0 else scores[0]
         greedy_scores.append(greedy_score)

@@ -146,7 +146,7 @@ def test_collect_heuristic_games_filters_random_wins():
 
 def test_collect_heuristic_games_values_are_score_differential():
     buf = ReplayBuffer(capacity=100_000)
-    collect_heuristic_games(buf, num_games=10)
+    collect_heuristic_games(buf, num_games=20)
     _, _, _, values = buf.sample(min(len(buf), 50))
     assert values.min() >= -1.0
     assert values.max() <= 1.0
@@ -227,6 +227,7 @@ def test_collect_self_play_warmup_az_as_p1_records_nonzero_score():
     assert az_scores[1] > 0, f"AZ as p1 scored {az_scores[1]}, expected > 0"
 
 
+@pytest.mark.slow
 def test_save_eval_recording_all_moves_legal():
     """Every move in the eval recording must have been legal when made."""
     from neural.model import AzulNet

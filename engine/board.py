@@ -17,11 +17,10 @@ class Board:
     """
 
     score: int = 0
-
+    clamped_points: int = 0  # number of points saved by clamping score at 0
     pattern_lines: list[list[Tile]] = field(
         default_factory=lambda: [[] for _ in range(BOARD_SIZE)]
     )
-
     wall: list[list[Tile | None]] = field(
         default_factory=lambda: [
             [None for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)
@@ -38,6 +37,7 @@ class Board:
         """
         b = object.__new__(Board)
         b.score = self.score
+        b.clamped_points = self.clamped_points
         b.wall = [row[:] for row in self.wall]
         b.pattern_lines = [line[:] for line in self.pattern_lines]
         b.floor_line = self.floor_line[:]

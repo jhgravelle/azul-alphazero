@@ -102,3 +102,56 @@ def test_greedy_agent_prefers_partial_line_without_biasing_color_selection():
         assert (
             len(blue_non_floor) / len(non_floor) < 0.9
         ), "Color selection appears biased toward BLUE"
+
+
+# ── policy_distribution (base class default) ───────────────────────────────
+
+
+def test_agent_policy_distribution_returns_list():
+    """Default policy_distribution returns a list."""
+    game = Game()
+    game.setup_round()
+    dist = RandomAgent().policy_distribution(game)
+    assert isinstance(dist, list)
+
+
+def test_agent_policy_distribution_returns_tuples_of_move_and_float():
+    """Each entry is (Move, probability) where probability is a float."""
+    game = Game()
+    game.setup_round()
+    dist = RandomAgent().policy_distribution(game)
+    for move, prob in dist:
+        assert move in game.legal_moves()
+        assert isinstance(prob, float)
+
+
+def test_agent_policy_distribution_sums_to_one():
+    """Probabilities sum to 1.0 across all returned moves."""
+    game = Game()
+    game.setup_round()
+    dist = RandomAgent().policy_distribution(game)
+    total = sum(p for _, p in dist)
+    assert total == pytest.approx(1.0)
+
+
+def test_agent_policy_distribution_covers_all_legal_moves():
+    """Default distribution includes every legal move."""
+    game = Game()
+    game.setup_round()
+    dist = RandomAgent().policy_distribution(game)
+    legal = game.legal_moves()
+    moves_in_dist = [m for m, _ in dist]
+    assert len(moves_in_dist) == len(legal)
+    for m in legal:
+        assert m in moves_in_dist
+
+
+def test_agent_policy_distribution_uniform_by_default():
+    """Default distribution has equal probability for each legal move."""
+    game = Game()
+    game.setup_round()
+    dist = RandomAgent().policy_distribution(game)
+    probs = [p for _, p in dist]
+    expected = 1.0 / len(probs)
+    for p in probs:
+        assert p == pytest.approx(expected)

@@ -17,6 +17,22 @@ from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
 logger = logging.getLogger(__name__)
 
 _SCORE_DIFF_DIVISOR = 20.0
+_TOTAL_SCORE_DIVISOR = 50.0
+
+
+def win_loss_value(scores: list[int], player_index: int) -> float:
+    """+1 if this player won, -1 if lost, 0 if tied.
+
+    scores should be raw scores (score - clamped_points) so floor-penalty
+    games are ranked correctly even when board.score is clamped at 0.
+    """
+    own = scores[player_index]
+    opp = scores[1 - player_index]
+    if own > opp:
+        return 1.0
+    if own < opp:
+        return -1.0
+    return 0.0
 
 
 def score_differential_value(scores: list[int], player_index: int) -> float:
@@ -27,6 +43,20 @@ def score_differential_value(scores: list[int], player_index: int) -> float:
     """
     diff = (scores[player_index] - scores[1 - player_index]) / _SCORE_DIFF_DIVISOR
     return max(-1.0, min(1.0, diff))
+
+
+def total_score_value(scores: list[int], player_index: int) -> float:
+    """Normalized absolute-score value target for a player.
+
+    Only this player's score matters — opponent's score is ignored.
+    Divisor chosen so that competitive-skilled-play scores (~50) land
+    at the +1 boundary; typical catastrophic play (~-30) maps to -0.6.
+
+    scores should be raw scores (score - clamped_points) so floor
+    penalties below zero produce appropriately negative targets.
+    """
+    value = scores[player_index] / _TOTAL_SCORE_DIVISOR
+    return max(-1.0, min(1.0, value))
 
 
 # ── Loss ──────────────────────────────────────────────────────────────────────

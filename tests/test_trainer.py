@@ -11,6 +11,9 @@ from neural.trainer import (
     Trainer,
     compute_loss,
     collect_heuristic_games,
+    score_differential_value,
+    total_score_value,
+    win_loss_value,
 )
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -362,3 +365,72 @@ def test_train_step_too_small_buffer_returns_zero_dict():
     assert result["total"] == 0.0
     assert result["policy"] == 0.0
     assert result["value"] == 0.0
+
+
+# ── Value target functions ─────────────────────────────────────────────────
+
+
+def test_win_loss_value_p0_wins():
+    assert win_loss_value([50, 30], 0) == 1.0
+    assert win_loss_value([50, 30], 1) == -1.0
+
+
+def test_win_loss_value_p1_wins():
+    assert win_loss_value([30, 50], 0) == -1.0
+    assert win_loss_value([30, 50], 1) == 1.0
+
+
+def test_win_loss_value_tie():
+    assert win_loss_value([40, 40], 0) == 0.0
+    assert win_loss_value([40, 40], 1) == 0.0
+
+
+def test_score_differential_value_equal():
+    assert score_differential_value([40, 40], 0) == 0.0
+
+
+def test_score_differential_value_positive_boundary():
+    # +20 diff / 20 divisor = +1.0 exactly
+    assert score_differential_value([50, 30], 0) == pytest.approx(1.0)
+
+
+def test_score_differential_value_clips_positive():
+    assert score_differential_value([60, 30], 0) == 1.0
+
+
+def test_score_differential_value_clips_negative():
+    assert score_differential_value([30, 60], 0) == -1.0
+
+
+def test_score_differential_value_midrange():
+    # +10 diff / 20 = +0.5
+    assert score_differential_value([45, 35], 0) == pytest.approx(0.5)
+
+
+def test_total_score_value_zero():
+    assert total_score_value([0, 0], 0) == 0.0
+
+
+def test_total_score_value_positive_boundary():
+    # score 50 / divisor 50 = +1.0
+    assert total_score_value([50, 30], 0) == pytest.approx(1.0)
+
+
+def test_total_score_value_clips_positive():
+    assert total_score_value([60, 30], 0) == 1.0
+
+
+def test_total_score_value_clips_negative():
+    assert total_score_value([-60, 30], 0) == -1.0
+
+
+def test_total_score_value_midrange():
+    # score 25 / 50 = +0.5
+    assert total_score_value([25, 30], 0) == pytest.approx(0.5)
+
+
+def test_total_score_value_only_depends_on_own_score():
+    """Total score for player 0 should not depend on player 1's score."""
+    v1 = total_score_value([40, 10], 0)
+    v2 = total_score_value([40, 80], 0)
+    assert v1 == v2

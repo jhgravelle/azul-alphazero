@@ -452,6 +452,12 @@ def main() -> None:
         help="train value head only for first N iterations before enabling policy "
         "training (default 0)",
     )
+    parser.add_argument(
+        "--skip-eval-iterations",
+        type=int,
+        default=0,
+        help="skip evaluation for the first N iterations (default 0)",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -610,32 +616,47 @@ def main() -> None:
         logger.info("avg loss: %.4f", avg_loss)
 
         # ── 3. Evaluation ──────────────────────────────────────────────────
-        logger.info(
-            "evaluating new net vs best net (%d games, %d sims)...",
-            args.eval_games,
-            args.eval_simulations,
-        )
-        win_rate = evaluate(
-            net,
-            best_net,
-            num_games=args.eval_games,
-            simulations=args.eval_simulations,
-            win_threshold=args.win_threshold,
-            buf=buf,
-            record=True,
-            iteration=iteration,
-            generation=generation,
-        )
-        logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
-
-        if args.random_eval_interval > 0 and iteration % args.random_eval_interval == 0:
-            rng_wr = evaluate_vs_random(
-                net, num_games=20, simulations=args.eval_simulations
+        if iteration <= args.skip_eval_iterations:
+            logger.info(
+                "skipping eval (iteration %d <= skip-eval-iterations %d)",
+                iteration,
+                args.skip_eval_iterations,
             )
-            logger.info("new net win rate vs random: %.1f%%", rng_wr * 100)
+            win_rate = 0.0
+            promoted = False
+        else:
+            logger.info(
+                "evaluating new net vs best net (%d games, %d sims)...",
+                args.eval_games,
+                args.eval_simulations,
+            )
+            win_rate = evaluate(
+                net,
+                best_net,
+                num_games=args.eval_games,
+                simulations=args.eval_simulations,
+                win_threshold=args.win_threshold,
+                buf=buf,
+                record=True,
+                iteration=iteration,
+                generation=generation,
+            )
+            logger.info(f"new net win rate vs best: {win_rate * 100:.1f}%")
+
+            if (
+                args.random_eval_interval > 0
+                and iteration % args.random_eval_interval == 0
+            ):
+                rng_wr = evaluate_vs_random(
+                    net, num_games=20, simulations=args.eval_simulations
+                )
+                logger.info(f"new net win rate vs random: {rng_wr * 100:.1f}%")
 
         # ── 4. Keep if better ──────────────────────────────────────────────
-        promoted = win_rate >= args.win_threshold
+        # ── 4. Keep if better ──────────────────────────────────────────────
+        promoted = (iteration > args.skip_eval_iterations) and (
+            win_rate >= args.win_threshold
+        )
         if promoted:
             generation += 1
             best_net = copy.deepcopy(net)

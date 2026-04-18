@@ -164,3 +164,36 @@ def test_sample_preserves_value_independence():
     assert vw.item() == pytest.approx(0.1)
     assert vd.item() == pytest.approx(0.2)
     assert va.item() == pytest.approx(0.3)
+
+
+# ── Clear ──────────────────────────────────────────────────────────────────
+
+
+def test_clear_empties_buffer():
+    buf = ReplayBuffer(capacity=100)
+    fill_buffer(buf, 20)
+    buf.clear()
+    assert len(buf) == 0
+
+
+def test_clear_allows_new_pushes():
+    buf = ReplayBuffer(capacity=100)
+    fill_buffer(buf, 20)
+    buf.clear()
+    buf.push(*make_experience())
+    assert len(buf) == 1
+
+
+def test_clear_resets_position():
+    """After clear, new pushes start at position 0 (overwrite from the beginning)."""
+    buf = ReplayBuffer(capacity=3)
+    s0 = torch.zeros(*SPATIAL_SHAPE)
+    f = torch.zeros(FLAT_SIZE)
+    p = torch.zeros(MOVE_SPACE_SIZE)
+    buf.push(s0, f, p, 0.0, 0.0, 0.0)
+    buf.clear()
+    # A fresh push should be retrievable as the only item
+    s_marker = torch.full(SPATIAL_SHAPE, 7.0)
+    buf.push(s_marker, f, p, 0.9, 0.8, 0.7)
+    spatials, _, _, _, _, _ = buf.sample(1)
+    assert torch.equal(spatials[0], s_marker)

@@ -494,6 +494,12 @@ def main() -> None:
         default=0,
         help="skip evaluation for the first N iterations (default 0)",
     )
+    parser.add_argument(
+        "--clear-buffer-after-pretrain",
+        action="store_true",
+        help="clear the replay buffer after heuristic pretraining so self-play "
+        "starts with a clean buffer (default: keep pretrain data mixed in)",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -585,6 +591,14 @@ def main() -> None:
                 _format_loss_line(accum, args.train_steps),
             )
         logger.info("heuristic iterations complete")
+
+    # ── Optionally clear the buffer before self-play ───────────────────────
+    if args.clear_buffer_after_pretrain and len(buf) > 0:
+        logger.info(
+            "clearing replay buffer (was %d examples) before self-play starts",
+            len(buf),
+        )
+        buf.clear()
 
     # ── Self-play loop ─────────────────────────────────────────────────────
     logger.info(

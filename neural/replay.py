@@ -36,6 +36,12 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return self._size
 
+    def clear(self) -> None:
+        """Empty the buffer. Underlying storage tensors are retained but
+        their content is no longer considered valid (size = 0, position = 0)."""
+        self._pos = 0
+        self._size = 0
+
     def push(
         self,
         spatial: torch.Tensor,  # (12, 5, 6)

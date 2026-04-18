@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-from html import parser
 import logging
 import math
 import time

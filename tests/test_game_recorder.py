@@ -223,6 +223,7 @@ def test_finalize_sets_final_scores():
     assert len(recorder.record.final_scores) == PLAYERS
 
 
+@pytest.mark.slow
 def test_finalize_winner_has_highest_score():
     game = Game()
     game.setup_round()

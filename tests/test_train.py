@@ -155,6 +155,7 @@ def test_value_only_iterations_zero_uses_full_training():
     assert result["policy"] > 0.0
 
 
+@pytest.mark.slow
 def test_batched_mcts_faster_than_serial():
     """Batched MCTS should complete more simulations in less time than serial."""
     import time

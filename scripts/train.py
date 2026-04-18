@@ -93,6 +93,33 @@ class IterResult:
     elapsed: float  # seconds
 
 
+# ── Loss accumulator helpers ──────────────────────────────────────────────────
+
+_LOSS_KEYS = ("total", "policy", "value", "value_win", "value_diff", "value_abs")
+
+
+def _init_loss_accumulator() -> dict[str, float]:
+    return {k: 0.0 for k in _LOSS_KEYS}
+
+
+def _accumulate_losses(accum: dict[str, float], step_losses: dict[str, float]) -> None:
+    for k in _LOSS_KEYS:
+        accum[k] += step_losses.get(k, 0.0)
+
+
+def _format_loss_line(accum: dict[str, float], n_steps: int) -> str:
+    """Format the per-head loss breakdown for logging."""
+    avg = {k: accum[k] / n_steps for k in _LOSS_KEYS}
+    return (
+        f"avg loss: {avg['total']:.4f} | "
+        f"policy: {avg['policy']:.4f} | "
+        f"value: {avg['value']:.4f} "
+        f"(win {avg['value_win']:.4f}, "
+        f"diff {avg['value_diff']:.4f}, "
+        f"abs {avg['value_abs']:.4f})"
+    )
+
+
 # ── Checkpoint helpers ────────────────────────────────────────────────────────
 
 
@@ -514,20 +541,21 @@ def main() -> None:
             "pretraining network for %d steps on heuristic buffer...",
             args.pretrain_steps,
         )
-        total_loss = 0.0
+        accum = _init_loss_accumulator()
         for step in range(1, args.pretrain_steps + 1):
-            total_loss += trainer.train_step(buf, value_only=True)["total"]
+            losses = trainer.train_step(buf, value_only=True)
+            _accumulate_losses(accum, losses)
             if step % 500 == 0:
                 logger.info(
-                    "  pretrain step %d/%d -- avg loss: %.4f",
+                    "  pretrain step %d/%d -- %s",
                     step,
                     args.pretrain_steps,
-                    total_loss / step,
+                    _format_loss_line(accum, step),
                 )
         logger.info(
-            "pretraining complete -- %d steps -- final avg loss: %.4f",
+            "pretraining complete -- %d steps -- %s",
             args.pretrain_steps,
-            total_loss / args.pretrain_steps,
+            _format_loss_line(accum, args.pretrain_steps),
         )
 
     if args.heuristic_iterations > 0:
@@ -544,16 +572,17 @@ def main() -> None:
                     "  heuristic iter %d -- buffer too small, skipping train", h_iter
                 )
                 continue
-            total_loss = 0.0
+            accum = _init_loss_accumulator()
             for _ in range(args.train_steps):
-                total_loss += trainer.train_step(buf, value_only=True)["total"]
-            avg_loss = total_loss / args.train_steps
+                losses = trainer.train_step(buf, value_only=True)
+                _accumulate_losses(accum, losses)
+            avg_loss = accum["total"] / args.train_steps
             logger.info(
-                "  heuristic iter %d/%d -- buffer size %d -- avg loss: %.4f",
+                "  heuristic iter %d/%d -- buffer size %d -- %s",
                 h_iter,
                 args.heuristic_iterations,
                 len(buf),
-                avg_loss,
+                _format_loss_line(accum, args.train_steps),
             )
         logger.info("heuristic iterations complete")
 
@@ -618,11 +647,12 @@ def main() -> None:
             logger.info("★ switching to full policy+value training")
 
         logger.info("running %d training steps...", args.train_steps)
-        total_loss = 0.0
+        accum = _init_loss_accumulator()
         for _ in range(args.train_steps):
-            total_loss += trainer.train_step(buf, value_only=value_only)["total"]
-        avg_loss = total_loss / args.train_steps
-        logger.info("avg loss: %.4f", avg_loss)
+            losses = trainer.train_step(buf, value_only=value_only)
+            _accumulate_losses(accum, losses)
+        avg_loss = accum["total"] / args.train_steps
+        logger.info(_format_loss_line(accum, args.train_steps))
 
         # ── 3. Evaluation ──────────────────────────────────────────────────
         if iteration <= args.skip_eval_iterations:

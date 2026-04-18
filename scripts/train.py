@@ -24,7 +24,13 @@ import torch
 
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
-from neural.trainer import Trainer, collect_self_play, collect_heuristic_games
+from neural.trainer import (
+    Trainer,
+    collect_self_play,
+    collect_heuristic_games,
+    total_score_value,
+    win_loss_value,
+)
 from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
@@ -229,8 +235,10 @@ def evaluate(
         if buf is not None:
             scores = [p.score - p.clamped_points for p in game.state.players]
             for player_idx, spatial, flat, policy_vec in history:
-                value = score_differential_value(scores, player_idx)
-                buf.push(spatial, flat, policy_vec, value)
+                vw = win_loss_value(scores, player_idx)
+                vd = score_differential_value(scores, player_idx)
+                va = total_score_value(scores, player_idx)
+                buf.push(spatial, flat, policy_vec, vw, vd, va)
         else:
             scores = [p.score for p in game.state.players]
 

@@ -62,33 +62,51 @@ def total_score_value(scores: list[int], player_index: int) -> float:
 # ── Loss ──────────────────────────────────────────────────────────────────────
 
 
+# Auxiliary loss weights. value_win is the primary target and carries
+# weight 1.0; the auxiliary heads regularize without dominating.
+_AUX_WEIGHT_DIFF = 0.3
+_AUX_WEIGHT_ABS = 0.3
+
+
 def compute_loss(
     net: AzulNet,
     spatials: torch.Tensor,  # (B, 12, 5, 6)
     flats: torch.Tensor,  # (B, FLAT_SIZE)
     policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE)
-    values: torch.Tensor,  # (B, 1)
+    values_win: torch.Tensor,  # (B, 1)
+    values_diff: torch.Tensor,  # (B, 1)
+    values_abs: torch.Tensor,  # (B, 1)
     value_only: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Combined policy + value loss. Returns dict with 'total', 'policy', 'value'.
+    """Combined policy + multi-head value loss.
 
-    Note: this is a temporary bridge during the multi-head refactor. The net
-    now has three value heads, but this function currently uses only value_win
-    (matching the single-target behavior before the refactor). Step 3 will
-    update this to compute loss against all three heads.
+    Returns a dict with:
+        total:      policy_loss + combined_value_loss
+        policy:     cross-entropy on MCTS visit distribution (0 if value_only)
+        value:      combined value loss (value_win + α·value_diff + β·value_abs)
+        value_win:  MSE on win/loss target (primary)
+        value_diff: MSE on score-differential target (auxiliary)
+        value_abs:  MSE on absolute-score target (auxiliary)
     """
-    logits, value_win, _value_diff, _value_abs = net(spatials, flats)
-    pred_values = value_win
+    logits, pred_win, pred_diff, pred_abs = net(spatials, flats)
     log_probs = F.log_softmax(logits, dim=1)
     if value_only:
         policy_loss = torch.tensor(0.0, requires_grad=False)
     else:
         policy_loss = -(policies * log_probs).sum(dim=1).mean()
-    value_loss = F.mse_loss(pred_values, values)
+    loss_win = F.mse_loss(pred_win, values_win)
+    loss_diff = F.mse_loss(pred_diff, values_diff)
+    loss_abs = F.mse_loss(pred_abs, values_abs)
+    combined_value = (
+        loss_win + _AUX_WEIGHT_DIFF * loss_diff + _AUX_WEIGHT_ABS * loss_abs
+    )
     return {
-        "total": policy_loss + value_loss,
+        "total": policy_loss + combined_value,
         "policy": policy_loss,
-        "value": value_loss,
+        "value": combined_value,
+        "value_win": loss_win,
+        "value_diff": loss_diff,
+        "value_abs": loss_abs,
     }
 
 
@@ -116,16 +134,25 @@ class Trainer:
     ) -> dict[str, float]:
         """Sample a batch, backpropagate, and return a loss dict."""
         if len(buf) < self.batch_size:
-            return {"total": 0.0, "policy": 0.0, "value": 0.0}
-        spatials, flats, policies, values = buf.sample(self.batch_size)
+            return {
+                "total": 0.0,
+                "policy": 0.0,
+                "value": 0.0,
+                "value_win": 0.0,
+                "value_diff": 0.0,
+                "value_abs": 0.0,
+            }
+        spatials, flats, policies, vw, vd, va = buf.sample(self.batch_size)
         spatials = spatials.to(self.device)
         flats = flats.to(self.device)
         policies = policies.to(self.device)
-        values = values.to(self.device)
+        vw = vw.to(self.device)
+        vd = vd.to(self.device)
+        va = va.to(self.device)
         self.net.train()
         self.optimizer.zero_grad()
         loss_dict = compute_loss(
-            self.net, spatials, flats, policies, values, value_only=value_only
+            self.net, spatials, flats, policies, vw, vd, va, value_only=value_only
         )
         loss_dict["total"].backward()
         self.optimizer.step()
@@ -244,8 +271,10 @@ def collect_self_play(
         scores = [p.score - p.clamped_points for p in game.state.players]
 
         for player_idx, spatial, flat, policy_vec in history:
-            value = score_differential_value(scores, player_idx)
-            buf.push(spatial, flat, policy_vec, value)
+            vw = win_loss_value(scores, player_idx)
+            vd = score_differential_value(scores, player_idx)
+            va = total_score_value(scores, player_idx)
+            buf.push(spatial, flat, policy_vec, vw, vd, va)
 
         az_score = scores[az_player] if az_player is not None else max(scores)
         az_scores.append(az_score)
@@ -330,8 +359,10 @@ def collect_heuristic_games(
         random_won = random_score > greedy_score
         if not random_won:
             for player_idx, spatial, flat, policy_vec in history:
-                value = score_differential_value(scores, player_idx)
-                buf.push(spatial, flat, policy_vec, value)
+                vw = win_loss_value(scores, player_idx)
+                vd = score_differential_value(scores, player_idx)
+                va = total_score_value(scores, player_idx)
+                buf.push(spatial, flat, policy_vec, vw, vd, va)
 
         greedy_label = "GreedyAgent" if greedy_is_p0 else "RandomAgent"
         random_label = "RandomAgent" if greedy_is_p0 else "GreedyAgent"

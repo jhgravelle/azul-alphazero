@@ -48,9 +48,10 @@ def test_evaluate_with_buf_values_in_range():
     net = AzulNet()
     buf = ReplayBuffer(capacity=10_000)
     evaluate(net, net, num_games=2, simulations=2, buf=buf)
-    _, _, _, values = buf.sample(min(len(buf), 32))
-    assert values.min() >= -1.0
-    assert values.max() <= 1.0
+    _, _, _, vw, vd, va = buf.sample(min(len(buf), 32))
+    for values in (vw, vd, va):
+        assert values.min() >= -1.0
+        assert values.max() <= 1.0
 
 
 @pytest.mark.slow
@@ -61,7 +62,7 @@ def test_evaluate_with_buf_policies_sum_to_one():
     net = AzulNet()
     buf = ReplayBuffer(capacity=10_000)
     evaluate(net, net, num_games=2, simulations=2, buf=buf)
-    _, _, policies, _ = buf.sample(min(len(buf), 32))
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 32))
     sums = policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 

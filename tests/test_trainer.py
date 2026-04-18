@@ -25,20 +25,36 @@ def make_trainer() -> Trainer:
 
 def make_batch(
     batch_size: int = 16,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return a random (spatials, flats, policies, values) batch."""
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """Return a random (spatials, flats, policies, v_win, v_diff, v_abs) batch."""
     spatials = torch.rand(batch_size, *SPATIAL_SHAPE)
     flats = torch.rand(batch_size, FLAT_SIZE)
     raw = torch.rand(batch_size, MOVE_SPACE_SIZE)
     policies = raw / raw.sum(dim=-1, keepdim=True)
-    values = torch.rand(batch_size, 1) * 2 - 1
-    return spatials, flats, policies, values
+    values_win = torch.rand(batch_size, 1) * 2 - 1
+    values_diff = torch.rand(batch_size, 1) * 2 - 1
+    values_abs = torch.rand(batch_size, 1) * 2 - 1
+    return spatials, flats, policies, values_win, values_diff, values_abs
 
 
 def fill_buffer(buf: ReplayBuffer, n: int) -> None:
-    spatials, flats, policies, values = make_batch(n)
+    spatials, flats, policies, vw, vd, va = make_batch(n)
     for i in range(n):
-        buf.push(spatials[i], flats[i], policies[i], values[i, 0].item())
+        buf.push(
+            spatials[i],
+            flats[i],
+            policies[i],
+            vw[i, 0].item(),
+            vd[i, 0].item(),
+            va[i, 0].item(),
+        )
 
 
 # ── compute_loss ───────────────────────────────────────────────────────────
@@ -135,7 +151,7 @@ def test_collect_heuristic_games_fills_buffer():
 def test_collect_heuristic_games_policy_is_one_hot():
     buf = ReplayBuffer(capacity=10_000)
     collect_heuristic_games(buf, num_games=2)
-    _, _, policies, _ = buf.sample(min(len(buf), 10))
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 10))
     sums = policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums))
 
@@ -434,3 +450,56 @@ def test_total_score_value_only_depends_on_own_score():
     v1 = total_score_value([40, 10], 0)
     v2 = total_score_value([40, 80], 0)
     assert v1 == v2
+
+
+# ── Multi-head value loss ──────────────────────────────────────────────────
+
+
+def test_compute_loss_returns_per_head_keys():
+    """compute_loss dict should include per-head breakdown."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    assert "value_win" in result
+    assert "value_diff" in result
+    assert "value_abs" in result
+
+
+def test_compute_loss_per_head_components_are_positive():
+    """Each head's MSE should be > 0 on a fresh net with random targets."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    assert result["value_win"].item() > 0.0
+    assert result["value_diff"].item() > 0.0
+    assert result["value_abs"].item() > 0.0
+
+
+def test_compute_loss_value_equals_weighted_sum():
+    """Combined value loss should equal win + 0.3·diff + 0.3·abs."""
+    import torch
+
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    expected = (
+        result["value_win"] + 0.3 * result["value_diff"] + 0.3 * result["value_abs"]
+    )
+    assert torch.isclose(result["value"], expected)
+
+
+def test_compute_loss_value_only_preserves_all_three_value_losses():
+    """value_only zeroes policy but all three value components remain."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch(), value_only=True)
+    assert result["value_win"].item() > 0.0
+    assert result["value_diff"].item() > 0.0
+    assert result["value_abs"].item() > 0.0
+
+
+def test_train_step_too_small_buffer_returns_all_value_keys():
+    """The empty-buffer early-return dict should include all value keys."""
+    trainer = make_trainer()
+    buf = ReplayBuffer(capacity=1000)
+    fill_buffer(buf, 10)
+    result = trainer.train_step(buf)
+    assert result["value_win"] == 0.0
+    assert result["value_diff"] == 0.0
+    assert result["value_abs"] == 0.0

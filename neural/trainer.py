@@ -70,8 +70,15 @@ def compute_loss(
     values: torch.Tensor,  # (B, 1)
     value_only: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Combined policy + value loss. Returns dict with 'total', 'policy', 'value'."""
-    logits, pred_values = net(spatials, flats)
+    """Combined policy + value loss. Returns dict with 'total', 'policy', 'value'.
+
+    Note: this is a temporary bridge during the multi-head refactor. The net
+    now has three value heads, but this function currently uses only value_win
+    (matching the single-target behavior before the refactor). Step 3 will
+    update this to compute loss against all three heads.
+    """
+    logits, value_win, _value_diff, _value_abs = net(spatials, flats)
+    pred_values = value_win
     log_probs = F.log_softmax(logits, dim=1)
     if value_only:
         policy_loss = torch.tensor(0.0, requires_grad=False)

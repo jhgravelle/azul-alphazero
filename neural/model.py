@@ -20,9 +20,13 @@ Merged trunk:
 Policy head:
     Linear(hidden_dim → MOVE_SPACE_SIZE)   [raw logits]
 
-Value head:
+Value heads (three independent heads, each with the same structure):
     Linear(hidden_dim → 64) → ReLU
     Linear(64 → 1) → Tanh                  [scalar in (-1, 1)]
+
+    value_win:  predicts win/loss outcome (+1 win / 0 tie / -1 loss)
+    value_diff: predicts normalized score differential
+    value_abs:  predicts normalized absolute score for this player
 
 Softmax is NOT applied inside the network. The caller applies it after
 masking illegal moves to -inf so illegal moves get zero probability.
@@ -119,7 +123,19 @@ class AzulNet(nn.Module):
 
         # ── Heads ─────────────────────────────────────────────────────────
         self.policy_head = nn.Linear(hidden_dim, MOVE_SPACE_SIZE)
-        self.value_head = nn.Sequential(
+
+        # Three independent value heads, each with the same structure.
+        # Each predicts a different target in [-1, +1]:
+        #   value_win:  +1/0/-1 win-loss outcome (primary, used by PUCT)
+        #   value_diff: normalized score differential (auxiliary)
+        #   value_abs:  normalized absolute score for this player (auxiliary)
+        self.value_win_head = self._make_value_head(hidden_dim)
+        self.value_diff_head = self._make_value_head(hidden_dim)
+        self.value_abs_head = self._make_value_head(hidden_dim)
+
+    @staticmethod
+    def _make_value_head(hidden_dim: int) -> nn.Sequential:
+        return nn.Sequential(
             nn.Linear(hidden_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 1),
@@ -130,12 +146,14 @@ class AzulNet(nn.Module):
         self,
         spatial: torch.Tensor,  # (batch, 12, 5, 6)
         flat: torch.Tensor,  # (batch, FLAT_SIZE)
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run a forward pass.
 
         Returns:
-            policy: (batch, MOVE_SPACE_SIZE) raw logits
-            value:  (batch, 1) scalar in (-1, 1)
+            policy:     (batch, MOVE_SPACE_SIZE) raw logits
+            value_win:  (batch, 1) win/loss prediction in (-1, 1)
+            value_diff: (batch, 1) score-differential prediction in (-1, 1)
+            value_abs:  (batch, 1) absolute-score prediction in (-1, 1)
         """
         # Spatial branch
         s = self.relu(self.norm1(self.conv1(spatial)))
@@ -147,4 +165,9 @@ class AzulNet(nn.Module):
 
         # Merge and trunk
         trunk = self.blocks(self.merge(torch.cat([s, f], dim=1)))
-        return self.policy_head(trunk), self.value_head(trunk)
+        return (
+            self.policy_head(trunk),
+            self.value_win_head(trunk),
+            self.value_diff_head(trunk),
+            self.value_abs_head(trunk),
+        )

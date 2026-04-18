@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
-from engine.game import FLOOR
+from engine.game import Game, FLOOR
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -307,95 +307,109 @@ def collect_heuristic_games(
     buf: ReplayBuffer,
     num_games: int = 200,
 ) -> dict[str, int]:
-    """Pretrain the buffer with GreedyAgent vs RandomAgent games."""
+    """Pretrain the buffer with GreedyAgent vs CautiousAgent games.
+
+    Both agents avoid the floor when possible, so games are coherent and
+    worth recording. Policy targets are soft distributions from each
+    agent's policy_distribution method, not one-hot.
+    """
+    from agents.cautious import CautiousAgent
     from agents.greedy import GreedyAgent
-    from agents.random import RandomAgent
-    from engine.game import Game
 
     greedy_wins = 0
-    random_wins = 0
+    cautious_wins = 0
     ties = 0
     greedy_scores: list[float] = []
-    random_scores: list[float] = []
+    cautious_scores: list[float] = []
 
     for game_num in range(num_games):
         game = Game()
         game.setup_round()
 
         greedy = GreedyAgent()
-        random_agent = RandomAgent()
+        cautious = CautiousAgent()
         if game_num % 2 == 0:
-            agents: list[Agent] = [greedy, random_agent]
+            agents: list[Agent] = [greedy, cautious]
             greedy_is_p0 = True
         else:
-            agents = [random_agent, greedy]
+            agents = [cautious, greedy]
             greedy_is_p0 = False
 
-        history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-
-        while not game.is_game_over():
-            current_player = game.state.current_player
-            spatial, flat = encode_state(game)
-            move = agents[current_player].choose_move(game)
-            policy_vec = torch.zeros(MOVE_SPACE_SIZE)
-            policy_vec[encode_move(move, game)] = 1.0
-            history.append((current_player, spatial, flat, policy_vec))
-            game.make_move(move)
-            game.advance_round_if_needed()
+        history = _play_heuristic_game(game, agents)
 
         scores = [p.score - p.clamped_points for p in game.state.players]
         greedy_score = scores[0] if greedy_is_p0 else scores[1]
-        random_score = scores[1] if greedy_is_p0 else scores[0]
+        cautious_score = scores[1] if greedy_is_p0 else scores[0]
         greedy_scores.append(greedy_score)
-        random_scores.append(random_score)
+        cautious_scores.append(cautious_score)
 
-        if greedy_score > random_score:
+        if greedy_score > cautious_score:
             greedy_wins += 1
-        elif random_score > greedy_score:
-            random_wins += 1
+        elif cautious_score > greedy_score:
+            cautious_wins += 1
         else:
             ties += 1
 
-        random_won = random_score > greedy_score
-        if not random_won:
-            for player_idx, spatial, flat, policy_vec in history:
-                vw = win_loss_value(scores, player_idx)
-                vd = score_differential_value(scores, player_idx)
-                va = total_score_value(scores, player_idx)
-                buf.push(spatial, flat, policy_vec, vw, vd, va)
+        # Every game gets recorded — both agents play coherently.
+        for player_idx, spatial, flat, policy_vec in history:
+            vw = win_loss_value(scores, player_idx)
+            vd = score_differential_value(scores, player_idx)
+            va = total_score_value(scores, player_idx)
+            buf.push(spatial, flat, policy_vec, vw, vd, va)
 
-        greedy_label = "GreedyAgent" if greedy_is_p0 else "RandomAgent"
-        random_label = "RandomAgent" if greedy_is_p0 else "GreedyAgent"
-        recorded = "recorded" if not random_won else "SKIPPED (Random won)"
+        greedy_label = "GreedyAgent" if greedy_is_p0 else "CautiousAgent"
+        cautious_label = "CautiousAgent" if greedy_is_p0 else "GreedyAgent"
         logger.debug(
-            "heuristic game %d/%d -- %s vs %s -- scores %s -- %s -- buffer size %d",
-            game_num + 1,
-            num_games,
-            greedy_label,
-            random_label,
-            scores,
-            recorded,
-            len(buf),
+            f"heuristic game {game_num + 1}/{num_games} -- "
+            f"{greedy_label} vs {cautious_label} -- scores {scores} -- "
+            f"buffer size {len(buf)}"
         )
 
     avg_greedy = sum(greedy_scores) / len(greedy_scores)
-    avg_random = sum(random_scores) / len(random_scores)
-    games_recorded = greedy_wins + ties
+    avg_cautious = sum(cautious_scores) / len(cautious_scores)
     logger.debug(
-        "heuristic summary -- GreedyAgent: %d W / %d L / %d T -- "
-        "avg score: Greedy %.1f, Random %.1f -- %d/%d games recorded",
-        greedy_wins,
-        random_wins,
-        ties,
-        avg_greedy,
-        avg_random,
-        games_recorded,
-        num_games,
+        f"heuristic summary -- GreedyAgent: {greedy_wins} W / "
+        f"{cautious_wins} L / {ties} T -- "
+        f"avg score: Greedy {avg_greedy:.1f}, Cautious {avg_cautious:.1f} -- "
+        f"{num_games}/{num_games} games recorded"
     )
 
     return {
         "greedy_wins": greedy_wins,
-        "random_wins": random_wins,
+        "cautious_wins": cautious_wins,
         "ties": ties,
-        "games_recorded": games_recorded,
+        "games_recorded": num_games,
     }
+
+
+def _play_heuristic_game(
+    game: "Game",
+    agents: list[Agent],
+) -> list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Play a single heuristic game to completion, collecting history.
+
+    Each history entry is (player_index, spatial, flat, policy_vec)
+    where policy_vec comes from the acting agent's policy_distribution.
+    """
+    history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+
+    while not game.is_game_over():
+        current_player = game.state.current_player
+        spatial, flat = encode_state(game)
+
+        agent = agents[current_player]
+        policy_pairs = agent.policy_distribution(game)
+        policy_vec = torch.zeros(MOVE_SPACE_SIZE)
+        for m, prob in policy_pairs:
+            policy_vec[encode_move(m, game)] = prob
+
+        # The distribution is what policy_distribution returns; choose_move
+        # samples from it. We ask the agent to choose, not resample ourselves,
+        # to keep the agent's choose_move logic authoritative.
+        move = agent.choose_move(game)
+
+        history.append((current_player, spatial, flat, policy_vec))
+        game.make_move(move)
+        game.advance_round_if_needed()
+
+    return history

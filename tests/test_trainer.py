@@ -148,19 +148,37 @@ def test_collect_heuristic_games_fills_buffer():
     assert len(buf) > 0
 
 
-def test_collect_heuristic_games_policy_is_one_hot():
+def test_collect_heuristic_games_policy_is_distribution_not_one_hot():
+    """Policy targets should be multi-move distributions, not one-hot.
+    At least one example in the buffer should have multiple non-zero
+    entries in its policy vector."""
+    buf = ReplayBuffer(capacity=10_000)
+    collect_heuristic_games(buf, num_games=3)
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 50))
+    nonzero_counts = (policies > 0).sum(dim=1)
+    multi_move_rows = (nonzero_counts > 1).sum().item()
+    assert multi_move_rows > 0, (
+        f"Expected some examples with multi-move distributions, "
+        f"got {multi_move_rows} rows with >1 non-zero entry"
+    )
+
+
+def test_collect_heuristic_games_policy_sums_to_one():
+    """Every policy target should sum to exactly 1.0."""
     buf = ReplayBuffer(capacity=10_000)
     collect_heuristic_games(buf, num_games=2)
-    _, _, policies, _, _, _ = buf.sample(min(len(buf), 10))
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 30))
     sums = policies.sum(dim=1)
-    assert torch.allclose(sums, torch.ones_like(sums))
+    assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
 
-def test_collect_heuristic_games_filters_random_wins():
+def test_collect_heuristic_games_records_all_games():
+    """No games should be skipped — stats should show all games recorded."""
     buf = ReplayBuffer(capacity=100_000)
-    stats = collect_heuristic_games(buf, num_games=40)
-    assert stats["greedy_wins"] + stats["random_wins"] + stats["ties"] == 40
-    assert stats["games_recorded"] == stats["greedy_wins"] + stats["ties"]
+    stats = collect_heuristic_games(buf, num_games=20)
+    total_games = stats["greedy_wins"] + stats["cautious_wins"] + stats["ties"]
+    assert total_games == 20
+    assert stats["games_recorded"] == 20
 
 
 def test_collect_self_play_warmup_records_both_players():

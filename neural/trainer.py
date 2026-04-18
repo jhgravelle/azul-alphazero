@@ -7,6 +7,7 @@ import logging
 import torch
 import torch.nn.functional as F
 
+from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
 from engine.game import FLOOR
 from neural.model import AzulNet
@@ -110,11 +111,22 @@ def collect_self_play(
     device: torch.device = torch.device("cpu"),
 ) -> list[float]:
     """Play num_games games and push training examples into buf."""
-    from agents.alphazero import AlphaZeroAgent
     from engine.game import Game
 
+    # MCTS inference is faster on CPU than GPU for this model size.
+    # Create a CPU copy of the net if it's on another device.
+    cpu = torch.device("cpu")
+    if next(net.parameters()).device.type != "cpu":
+        net_cpu = AzulNet()
+        net_cpu.load_state_dict(net.state_dict())
+    else:
+        net_cpu = net
+
     az_agent = AlphaZeroAgent(
-        net, simulations=simulations, temperature=temperature, device=device
+        net_cpu,
+        simulations=simulations,
+        temperature=temperature,
+        device=cpu,
     )
     az_scores: list[float] = []
 

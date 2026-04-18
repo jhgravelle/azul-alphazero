@@ -23,18 +23,27 @@ class AlphaZeroAgent(Agent):
     def __init__(
         self,
         net: AzulNet,
-        simulations: int = 200,
+        simulations: int = 500,
         temperature: float = 0.0,
         device: torch.device = torch.device("cpu"),
+        batched: bool = True,
     ) -> None:
         self.net = net
         self.simulations = simulations
         self.temperature = temperature
         self.device = device
+        self.batched = batched
+
+        from neural.search_tree import make_batch_policy_value_fn
+
         self._tree = SearchTree(
             policy_value_fn=make_policy_value_fn(net, device=device),
+            batch_policy_value_fn=(
+                make_batch_policy_value_fn(net, device=device) if batched else None
+            ),
             simulations=simulations,
             temperature=temperature,
+            batch_size=simulations,  # batch all sims in one forward pass
         )
 
     # ── Public API ─────────────────────────────────────────────────────────

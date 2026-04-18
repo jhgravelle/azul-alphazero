@@ -153,3 +153,46 @@ def test_value_only_iterations_zero_uses_full_training():
     # Full training — policy loss should be nonzero
     result = trainer.train_step(buf, value_only=False)
     assert result["policy"] > 0.0
+
+
+def test_batched_mcts_faster_than_serial():
+    """Batched MCTS should complete more simulations in less time than serial."""
+    import time
+    from neural.search_tree import (
+        SearchTree,
+        make_policy_value_fn,
+        make_batch_policy_value_fn,
+    )
+    from engine.game import Game
+
+    net = AzulNet()
+    game = Game()
+    game.setup_round()
+
+    # Serial: 50 sims
+    serial_tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(net),
+        simulations=50,
+        temperature=1.0,
+    )
+    t0 = time.perf_counter()
+    serial_tree.choose_move(game)
+    serial_time = time.perf_counter() - t0
+
+    # Batched: 50 sims
+    game2 = game.clone()
+    batched_tree = SearchTree(
+        policy_value_fn=make_policy_value_fn(net),
+        batch_policy_value_fn=make_batch_policy_value_fn(net),
+        simulations=50,
+        temperature=1.0,
+        batch_size=50,
+    )
+    t0 = time.perf_counter()
+    batched_tree.choose_move(game2)
+    batched_time = time.perf_counter() - t0
+
+    assert (
+        batched_time < serial_time
+    ), f"Batched ({batched_time:.3f}s) should be faster than serial "
+    f"({serial_time:.3f}s)"

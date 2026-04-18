@@ -117,10 +117,29 @@ def evaluate(
     iteration: int = 0,
     generation: int = 0,
 ) -> float:
-    from neural.search_tree import SearchTree, make_policy_value_fn
+    from neural.search_tree import (
+        SearchTree,
+        make_policy_value_fn,
+        make_batch_policy_value_fn,
+    )
     from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
     from neural.trainer import score_differential_value
     from engine.game_recorder import GameRecorder
+
+    # MCTS inference is faster on CPU — use CPU copies of nets for tree search.
+    from neural.model import AzulNet as _AzulNet
+
+    # cpu = torch.device("cpu")
+
+    def _to_cpu(n: AzulNet) -> AzulNet:
+        if next(n.parameters()).device.type == "cpu":
+            return n
+        n_cpu = _AzulNet()
+        n_cpu.load_state_dict(n.state_dict())
+        return n_cpu
+
+    new_net_cpu = _to_cpu(new_net)
+    old_net_cpu = _to_cpu(old_net)
 
     wins_needed = math.ceil(num_games * win_threshold)
     losses_allowed = num_games - wins_needed
@@ -133,7 +152,9 @@ def evaluate(
         game = Game()
         game.setup_round()
         new_is_p0 = i % 2 == 0
-        player_nets = [new_net, old_net] if new_is_p0 else [old_net, new_net]
+        player_nets = (
+            [new_net_cpu, old_net_cpu] if new_is_p0 else [old_net_cpu, new_net_cpu]
+        )
         moves = 0
         history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
@@ -155,9 +176,15 @@ def evaluate(
                 break
             current = game.state.current_player
             tree = SearchTree(
-                policy_value_fn=make_policy_value_fn(player_nets[current], DEVICE),
+                policy_value_fn=make_policy_value_fn(
+                    player_nets[current], torch.device("cpu")
+                ),
+                batch_policy_value_fn=make_batch_policy_value_fn(
+                    player_nets[current], torch.device("cpu")
+                ),
                 simulations=simulations,
                 temperature=0.0,
+                batch_size=simulations,
             )
             if buf is not None:
                 spatial, flat = encode_state(game)

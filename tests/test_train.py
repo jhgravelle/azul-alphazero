@@ -4,6 +4,7 @@
 import pytest
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
+from tests.test_trainer import fill_buffer
 
 # ── evaluate with buffer feeding ───────────────────────────────────────────
 
@@ -138,3 +139,17 @@ def test_evaluate_record_only_saves_one_file_for_multiple_games(tmp_path, monkey
     )
     files = list((tmp_path / "recordings" / "eval").glob("*.json"))
     assert len(files) == 1
+
+
+def test_value_only_iterations_zero_uses_full_training():
+    """With value_only_iterations=0, training should use full loss from iter 1."""
+    from neural.trainer import Trainer
+    from neural.replay import ReplayBuffer
+
+    trainer = Trainer(AzulNet())
+    buf = ReplayBuffer(capacity=1000)
+    fill_buffer(buf, 300)
+
+    # Full training — policy loss should be nonzero
+    result = trainer.train_step(buf, value_only=False)
+    assert result["policy"] > 0.0

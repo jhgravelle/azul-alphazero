@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from html import parser
 import logging
 import math
 import time
@@ -418,6 +419,13 @@ def main() -> None:
         default=0,
         help="evaluate vs random every N iterations (0 = never, default 0)",
     )
+    parser.add_argument(
+        "--value-only-iterations",
+        type=int,
+        default=0,
+        help="train value head only for first N iterations before enabling policy "
+        "training (default 0)",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -559,10 +567,19 @@ def main() -> None:
             logger.info("buffer too small to train yet, skipping training step")
             continue
 
+        value_only = iteration <= args.value_only_iterations
+        if value_only and iteration == 1:
+            logger.info(
+                "value-only training for first %d iterations",
+                args.value_only_iterations,
+            )
+        if not value_only and iteration == args.value_only_iterations + 1:
+            logger.info("★ switching to full policy+value training")
+
         logger.info("running %d training steps...", args.train_steps)
         total_loss = 0.0
         for _ in range(args.train_steps):
-            total_loss += trainer.train_step(buf, value_only=True)["total"]
+            total_loss += trainer.train_step(buf, value_only=value_only)["total"]
         avg_loss = total_loss / args.train_steps
         logger.info("avg loss: %.4f", avg_loss)
 

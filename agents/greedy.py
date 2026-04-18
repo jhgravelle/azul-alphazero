@@ -1,5 +1,4 @@
 # agents/greedy.py
-
 """An agent combining floor-avoidance and partial-line preference heuristics."""
 
 import random
@@ -20,29 +19,33 @@ class GreedyAgent(Agent):
     """
 
     def choose_move(self, game: Game) -> Move:
-        """Return a heuristically filtered random move.
+        """Return a heuristically filtered random move."""
+        candidates = non_floor_moves(game.legal_moves())
+        chosen_color = random.choice(list({m.tile for m in candidates}))
+        color_moves = self._color_candidates(game, candidates, chosen_color)
+        return random.choice(color_moves)
 
-        Args:
-            game: The current Game instance. Read only.
+    def policy_distribution(self, game: Game) -> list[tuple[Move, float]]:
+        candidates = non_floor_moves(game.legal_moves())
+        colors = list({m.tile for m in candidates})
+        num_colors = len(colors)
+        result: list[tuple[Move, float]] = []
+        for color in colors:
+            color_moves = self._color_candidates(game, candidates, color)
+            prob_within_color = 1.0 / len(color_moves)
+            prob_overall = (1.0 / num_colors) * prob_within_color
+            for m in color_moves:
+                result.append((m, prob_overall))
+        return result
 
-        Returns:
-            A randomly selected Move from the filtered candidate list.
-        """
-        moves = game.legal_moves()
-
-        # Heuristic 1 — avoid the floor if possible
-        candidates = non_floor_moves(moves)
-
-        # Pick a random color from the available candidates
-        available_colors = list({m.tile for m in candidates})
-        chosen_color = random.choice(available_colors)
-        color_moves = [m for m in candidates if m.tile == chosen_color]
-
-        # Heuristic 2 — among moves for that color, prefer a partial line
+    @staticmethod
+    def _color_candidates(game: Game, candidates: list[Move], color) -> list[Move]:
+        """Return the moves this agent would sample from for a given color."""
         player = game.state.players[game.state.current_player]
+        color_moves = [m for m in candidates if m.tile == color]
         preferred = [
             m
             for m in color_moves
             if m.destination >= 0 and len(player.pattern_lines[m.destination]) > 0
         ]
-        return random.choice(preferred if preferred else color_moves)
+        return preferred if preferred else color_moves

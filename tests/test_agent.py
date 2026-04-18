@@ -235,3 +235,171 @@ def test_cautious_policy_distribution_falls_back_to_floor_when_forced():
     # of whether filtering actually reduced the set.
     dist = CautiousAgent().policy_distribution(game)
     assert len(dist) == len(filtered)
+
+
+# ── EfficientAgent.policy_distribution ─────────────────────────────────────
+
+
+def test_efficient_policy_distribution_sums_to_one():
+    """Probabilities sum to 1.0."""
+    from agents.efficient import EfficientAgent
+
+    game = Game()
+    game.setup_round()
+    dist = EfficientAgent().policy_distribution(game)
+    total = sum(p for _, p in dist)
+    assert total == pytest.approx(1.0)
+
+
+def test_efficient_policy_distribution_uniform_over_candidates():
+    """All returned moves have equal probability."""
+    from agents.efficient import EfficientAgent
+
+    game = Game()
+    game.setup_round()
+    dist = EfficientAgent().policy_distribution(game)
+    probs = [p for _, p in dist]
+    expected = 1.0 / len(probs)
+    for p in probs:
+        assert p == pytest.approx(expected)
+
+
+def test_efficient_policy_distribution_falls_back_to_all_legal_moves():
+    """In a fresh game, all pattern lines are empty — no 'preferred' moves
+    exist, so distribution should cover all legal moves."""
+    from agents.efficient import EfficientAgent
+
+    game = Game()
+    game.setup_round()
+    dist = EfficientAgent().policy_distribution(game)
+    assert len(dist) == len(game.legal_moves())
+
+
+def test_efficient_policy_distribution_prefers_partial_lines_when_available():
+    """With a partial pattern line matching an available color, the
+    distribution should only include moves to that partial line (not all
+    legal moves)."""
+    from agents.efficient import EfficientAgent
+    from engine.constants import Tile
+
+    game = Game()
+    game.setup_round()
+    # Engineer a partial line: put BLUE on row 2
+    player = game.state.players[game.state.current_player]
+    player.pattern_lines[2] = [Tile.BLUE]
+    # Ensure there's BLUE in the center so BLUE moves are legal
+    game.state.center.append(Tile.BLUE)
+    dist = EfficientAgent().policy_distribution(game)
+    # Every move in the distribution should target a non-empty pattern line
+    for move, _ in dist:
+        assert move.destination >= 0
+        assert len(player.pattern_lines[move.destination]) > 0
+
+
+def test_efficient_policy_distribution_covers_all_preferred_moves():
+    """When partial lines exist, every legal move targeting a partial line
+    should appear in the distribution."""
+    from agents.efficient import EfficientAgent
+    from engine.constants import Tile
+
+    game = Game()
+    game.setup_round()
+    player = game.state.players[game.state.current_player]
+    player.pattern_lines[2] = [Tile.BLUE]
+    game.state.center.append(Tile.BLUE)
+    legal = game.legal_moves()
+    expected_preferred = [
+        m
+        for m in legal
+        if m.destination >= 0 and len(player.pattern_lines[m.destination]) > 0
+    ]
+    dist = EfficientAgent().policy_distribution(game)
+    moves_in_dist = [m for m, _ in dist]
+    assert len(moves_in_dist) == len(expected_preferred)
+    for m in expected_preferred:
+        assert m in moves_in_dist
+
+
+# ── GreedyAgent.policy_distribution ────────────────────────────────────────
+
+
+def test_greedy_policy_distribution_sums_to_one():
+    """Probabilities sum to 1.0."""
+    from agents.greedy import GreedyAgent
+
+    game = Game()
+    game.setup_round()
+    dist = GreedyAgent().policy_distribution(game)
+    total = sum(p for _, p in dist)
+    assert total == pytest.approx(1.0)
+
+
+def test_greedy_policy_distribution_excludes_floor_when_alternatives_exist():
+    """No floor moves appear when non-floor moves are available."""
+    from agents.greedy import GreedyAgent
+    from engine.game import FLOOR
+
+    game = Game()
+    game.setup_round()
+    dist = GreedyAgent().policy_distribution(game)
+    for move, _ in dist:
+        assert move.destination != FLOOR
+
+
+def test_greedy_policy_distribution_weights_each_color_equally():
+    """Probabilities grouped by color should each sum to 1/num_colors."""
+    from agents.greedy import GreedyAgent
+    from agents.move_filters import non_floor_moves
+
+    game = Game()
+    game.setup_round()
+    dist = GreedyAgent().policy_distribution(game)
+    num_colors = len({m.tile for m in non_floor_moves(game.legal_moves())})
+    # Sum probability per color
+    color_totals: dict = {}
+    for move, prob in dist:
+        color_totals[move.tile] = color_totals.get(move.tile, 0.0) + prob
+    for color, total in color_totals.items():
+        assert total == pytest.approx(
+            1.0 / num_colors
+        ), f"Color {color} has total prob {total}, expected {1.0 / num_colors}"
+
+
+def test_greedy_policy_distribution_uniform_within_each_color():
+    """Within a given color, all candidate moves should have equal probability."""
+    from agents.greedy import GreedyAgent
+
+    game = Game()
+    game.setup_round()
+    dist = GreedyAgent().policy_distribution(game)
+    # Group probabilities by color
+    by_color: dict = {}
+    for move, prob in dist:
+        by_color.setdefault(move.tile, []).append(prob)
+    for color, probs in by_color.items():
+        first = probs[0]
+        for p in probs:
+            assert p == pytest.approx(
+                first
+            ), f"Color {color} has unequal probabilities: {probs}"
+
+
+def test_greedy_policy_distribution_prefers_partial_lines_within_color():
+    """With a partial line for BLUE, only BLUE moves to that partial line
+    should be present in BLUE's distribution slice (not BLUE moves to
+    other destinations)."""
+    from agents.greedy import GreedyAgent
+    from engine.constants import Tile
+
+    game = Game()
+    game.setup_round()
+    player = game.state.players[game.state.current_player]
+    player.pattern_lines[2] = [Tile.BLUE]
+    game.state.center.append(Tile.BLUE)
+    dist = GreedyAgent().policy_distribution(game)
+    blue_moves = [m for m, _ in dist if m.tile == Tile.BLUE]
+    for m in blue_moves:
+        assert m.destination == 2, (
+            f"Blue move to destination {m.destination} shouldn't be in dist "
+            f"when row 2 has a blue partial line"
+        )

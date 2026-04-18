@@ -32,7 +32,7 @@ from engine.game import Game
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
 LOG_DIR = Path("logs")
-_MAX_MOVES = 2000
+_MAX_MOVES = 100
 
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -117,20 +117,13 @@ def evaluate(
     iteration: int = 0,
     generation: int = 0,
 ) -> float:
-    from neural.search_tree import (
-        SearchTree,
-        make_policy_value_fn,
-        make_batch_policy_value_fn,
-    )
     from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
     from neural.trainer import score_differential_value
     from engine.game_recorder import GameRecorder
+    from neural.model import AzulNet as _AzulNet
+    from agents.alphazero import AlphaZeroAgent
 
     # MCTS inference is faster on CPU — use CPU copies of nets for tree search.
-    from neural.model import AzulNet as _AzulNet
-
-    # cpu = torch.device("cpu")
-
     def _to_cpu(n: AzulNet) -> AzulNet:
         if next(n.parameters()).device.type == "cpu":
             return n
@@ -152,11 +145,21 @@ def evaluate(
         game = Game()
         game.setup_round()
         new_is_p0 = i % 2 == 0
-        player_nets = (
+
+        # Two agents, each with their own tree, using their own net.
+        nets_cpu = (
             [new_net_cpu, old_net_cpu] if new_is_p0 else [old_net_cpu, new_net_cpu]
         )
+        agents = [
+            AlphaZeroAgent(nets_cpu[0], simulations=simulations, temperature=1.0),
+            AlphaZeroAgent(nets_cpu[1], simulations=simulations, temperature=1.0),
+        ]
+        for agent in agents:
+            agent.reset_tree(game)
+
         moves = 0
         history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        prev_round = game.state.round
 
         # Set up recorder for first game only
         recorder: GameRecorder | None = None
@@ -175,32 +178,30 @@ def evaluate(
             if not game.legal_moves():
                 break
             current = game.state.current_player
-            tree = SearchTree(
-                policy_value_fn=make_policy_value_fn(
-                    player_nets[current], torch.device("cpu")
-                ),
-                batch_policy_value_fn=make_batch_policy_value_fn(
-                    player_nets[current], torch.device("cpu")
-                ),
-                simulations=simulations,
-                temperature=0.0,
-                batch_size=simulations,
-            )
+
             if buf is not None:
                 spatial, flat = encode_state(game)
-                move, policy_pairs = tree.get_policy_targets(game)
+                move, policy_pairs = agents[current].get_policy_targets(game)
                 policy_vec = torch.zeros(MOVE_SPACE_SIZE)
                 for m, prob in policy_pairs:
                     policy_vec[encode_move(m, game)] = prob
                 history.append((current, spatial, flat, policy_vec))
             else:
-                move = tree.choose_move(game)
+                move = agents[current].choose_move(game)
 
             if recorder is not None:
                 recorder.record_move(move, player_index=current)
 
+            prev_round = game.state.round
             game.make_move(move)
             game.advance_round_if_needed()
+
+            if game.state.round != prev_round:
+                for agent in agents:
+                    agent.reset_tree(game)
+            elif not game.is_game_over():
+                for agent in agents:
+                    agent.advance(move)
 
             if (
                 recorder is not None

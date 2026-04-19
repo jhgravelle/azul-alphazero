@@ -510,3 +510,81 @@ def test_policy_value_fn_uses_value_abs():
         f"Expected value_diff ({sentinel_diff}), got {value}. "
         f"PUCT may be using the wrong head."
     )
+
+
+def test_puct_prefers_winning_child():
+    """A child where the opponent did well (high total_value) should score
+    LOWER for the parent than a child where the opponent did poorly."""
+    from neural.search_tree import AZNode
+    from engine.game import Game
+
+    game = Game()
+    game.setup_round()
+
+    parent = AZNode(game=game, visits=10)
+
+    # opponent did well in this subtree — parent should avoid it
+    opponent_won_child = AZNode(game=game, visits=5, total_value=4.0, prior=0.5)
+    # opponent did poorly — parent should prefer it
+    opponent_lost_child = AZNode(game=game, visits=5, total_value=-4.0, prior=0.5)
+
+    assert opponent_lost_child.puct_score(
+        parent.visits
+    ) > opponent_won_child.puct_score(parent.visits), (
+        "Parent should prefer subtree where opponent did poorly (negative "
+        "total_value). If this fails, PUCT is not correctly negating child Q values."
+    )
+
+
+def test_puct_selects_move_leading_to_positive_value():
+    """Parent should prefer child where opponent did poorly (negative total_value)."""
+    from neural.search_tree import AZNode
+    from engine.game import Game
+
+    game = Game()
+    game.setup_round()
+
+    parent = AZNode(game=game, visits=100)
+
+    child_a = AZNode(game=game, visits=50, total_value=40.0, prior=0.5)  # opponent won
+    child_b = AZNode(
+        game=game, visits=50, total_value=-40.0, prior=0.5
+    )  # opponent lost
+
+    score_a = child_a.puct_score(parent.visits)
+    score_b = child_b.puct_score(parent.visits)
+
+    assert score_b > score_a, (
+        f"Parent should prefer child_b (opponent lost, total_value=-40, "
+        f"score={score_b:.3f}) over child_a (opponent won, total_value=+40, "
+        f"score={score_a:.3f}). If this fails, PUCT is not correctly negating child Q "
+        f"values."
+    )
+
+
+def test_terminal_value_positive_for_winning_player():
+    """_terminal_value should return positive for the current player if they
+    are winning, negative if losing."""
+    from neural.search_tree import SearchTree
+    from engine.game import Game
+
+    game = Game()
+    game.setup_round()
+
+    def dummy_fn(g, moves):
+        return ([1.0 / len(moves)] * len(moves) if moves else []), 0.0
+
+    tree = SearchTree(policy_value_fn=dummy_fn, simulations=1)
+
+    # Rig scores so current player (0) is winning
+    game.state.players[0].score = 40
+    game.state.players[1].score = 20
+    game.state.current_player = 0
+
+    val = tree._terminal_value(game)
+    assert val > 0, f"Winning player should get positive terminal value, got {val}"
+
+    # Flip — now current player is losing
+    game.state.current_player = 1
+    val = tree._terminal_value(game)
+    assert val < 0, f"Losing player should get negative terminal value, got {val}"

@@ -136,7 +136,7 @@ class AZNode:
         if adj_visits == 0:
             q = 0.0
         else:
-            q = (self.total_value - float(self.virtual_loss)) / adj_visits
+            q = -(self.total_value + float(self.virtual_loss)) / adj_visits
         u = _PUCT_C * self.prior * math.sqrt(parent_visits) / (1 + adj_visits)
         return q + u
 
@@ -596,14 +596,7 @@ class SearchTree:
         return chosen
 
     def _terminal_value(self, game: Game) -> float:
-        """Return +1 / -1 / 0 from the current player's perspective."""
         scores = [p.score for p in game.state.players]
-        if scores[0] > scores[1]:
-            val = 1.0
-        elif scores[1] > scores[0]:
-            val = -1.0
-        else:
-            val = 0.0
-        if game.state.current_player == 1:
-            val = -val
-        return val
+        idx = game.state.current_player
+        diff = (scores[idx] - scores[1 - idx]) / 20
+        return max(-1.0, min(1.0, diff))

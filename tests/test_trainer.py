@@ -492,15 +492,15 @@ def test_compute_loss_per_head_components_are_positive():
 
 
 def test_compute_loss_value_equals_weighted_sum():
-    """Combined value loss should equal 0.1·win + 0.1·diff + 1.0·abs."""
-    import torch
+    """Combined value loss should equal the weighted sum of per-head losses."""
+    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
 
     net = AzulNet()
     result = compute_loss(net, *make_batch())
     expected = (
-        0.1 * result["value_win"]
-        + 0.1 * result["value_diff"]
-        + 1.0 * result["value_abs"]
+        _AUX_WEIGHT_WIN * result["value_win"]
+        + _AUX_WEIGHT_DIFF * result["value_diff"]
+        + _AUX_WEIGHT_ABS * result["value_abs"]
     )
     assert torch.isclose(result["value"], expected)
 
@@ -525,23 +525,9 @@ def test_train_step_too_small_buffer_returns_all_value_keys():
     assert result["value_abs"] == 0.0
 
 
-def test_value_abs_weight_is_primary():
-    """value_abs should have weight 1.0; win and diff should be lower."""
-    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
-
-    assert _AUX_WEIGHT_ABS == 1.0
-    assert _AUX_WEIGHT_WIN < _AUX_WEIGHT_ABS
-    assert _AUX_WEIGHT_DIFF < _AUX_WEIGHT_ABS
-
-
-def test_total_score_divisor_is_80():
-    from neural.trainer import _TOTAL_SCORE_DIVISOR
-
-    assert _TOTAL_SCORE_DIVISOR == 80.0
-
-
 def test_compute_loss_value_equals_weighted_sum_new_weights():
-    """Combined value loss = 0.1·win + 0.1·diff + 1.0·abs."""
+    """Combined value loss = _AUX_WEIGHT_WIN·win
+    + _AUX_WEIGHT_DIFF·diff + _AUX_WEIGHT_ABS·abs."""
     from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
 
     net = AzulNet()

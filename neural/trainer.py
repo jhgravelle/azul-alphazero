@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 _SCORE_DIFF_DIVISOR = 20.0
 _TOTAL_SCORE_DIVISOR = 80.0
-_AUX_WEIGHT_WIN = 0.1
-_AUX_WEIGHT_DIFF = 0.1
-_AUX_WEIGHT_ABS = 1.0
+_AUX_WEIGHT_WIN = 0.3
+_AUX_WEIGHT_DIFF = 1.0
+_AUX_WEIGHT_ABS = 0.3
 
 
 def win_loss_value(scores: list[int], player_index: int) -> float:

@@ -826,6 +826,8 @@ def get_recording(game_id: str) -> dict:
 def _inspector_snapshot() -> dict:
     """Serialize current inspector state to a JSON-compatible dict."""
     assert _inspector_tree is not None
+    root = _inspector_tree._root
+    perspective = f"P{root.game.state.current_player + 1}" if root is not None else "P1"
     return {
         "game_id": _inspector_game_id,
         "move_index": _inspector_move_index,
@@ -833,6 +835,7 @@ def _inspector_snapshot() -> dict:
         "done": _inspector_tree.is_stable(),
         "tree": _inspector_tree.serialize(),
         "checkpoint": "uniform",
+        "perspective": perspective,
     }
 
 

@@ -525,3 +525,198 @@ function renderBoard(board, index, label, isActive, opts = {}) {
 
   return wrapper;
 }
+
+// ── Inspector tree panel ───────────────────────────────────────────────────
+
+/**
+ * Render the MCTS inspector panel.
+ *
+ * @param {object}   snapshot     - Inspector snapshot from the API.
+ * @param {object}   opts
+ * @param {boolean}  opts.enabled       - Whether the panel is open.
+ * @param {boolean}  opts.showPerspective - Whether to show the perspective label.
+ * @param {function} opts.onToggle      - Called when toggle button clicked.
+ * @param {function} opts.onExtend      - Called when Extend button clicked.
+ * @param {function} opts.onNodeToggle  - Called with nodeKey when chevron clicked.
+ * @param {Set}      opts.expandedKeys  - Set of node keys currently expanded.
+ */
+function renderInspectorPanel(snapshot, {
+  enabled = false,
+  showPerspective = false,
+  onToggle = null,
+  onExtend = null,
+  onNodeToggle = null,
+  expandedKeys = new Set(),
+} = {}) {
+  const panel = createElement("div", "inspector-panel");
+
+  // ── Header ──
+  const header = createElement("div", "inspector-header");
+  const titleGroup = createElement("div", "inspector-title-group");
+  titleGroup.appendChild(createElement("span", "inspector-title", "Search Tree"));
+
+  if (showPerspective && snapshot?.perspective) {
+    titleGroup.appendChild(
+      createElement("span", "inspector-perspective", `${snapshot.perspective}'s turn`)
+    );
+  }
+  header.appendChild(titleGroup);
+
+  const toggleBtn = createElement("button", "inspector-toggle-btn",
+    enabled ? "Hide" : "Show");
+  toggleBtn.addEventListener("click", onToggle);
+  header.appendChild(toggleBtn);
+  panel.appendChild(header);
+
+  if (!enabled) return panel;
+
+  // ── Status bar ──
+  const status = createElement("div", "inspector-status");
+  if (!snapshot) {
+    status.appendChild(createElement("span", "inspector-status-text", "Loading…"));
+  } else if (snapshot.done) {
+    status.appendChild(createElement("span", "inspector-status-text inspector-status-done",
+      `Stable · ${snapshot.sim_count.toLocaleString()} sims`));
+  } else {
+    const pulse = createElement("span", "inspector-pulse");
+    status.appendChild(pulse);
+    status.appendChild(createElement("span", "inspector-status-text",
+      `Searching · ${snapshot.sim_count.toLocaleString()} sims`));
+  }
+
+  const extendBtn = createElement("button", "inspector-extend-btn", "Extend");
+  extendBtn.disabled = !snapshot;
+  extendBtn.addEventListener("click", onExtend);
+  status.appendChild(extendBtn);
+  panel.appendChild(status);
+
+  if (!snapshot) return panel;
+
+  // ── Tree ──
+  const treeEl = createElement("div", "inspector-tree");
+  const root = snapshot.tree;
+
+  // Compute global scale: max |value_diff| across all visible nodes.
+  const maxAbs = _inspectorMaxAbs(root, expandedKeys, 0);
+  const scale = maxAbs > 0 ? maxAbs : 1;
+
+  _renderInspectorNode(treeEl, root, {
+    depth: 0,
+    scale,
+    expandedKeys,
+    onNodeToggle,
+    isRoot: true,
+  });
+
+  panel.appendChild(treeEl);
+  return panel;
+}
+
+function _inspectorMaxAbs(node, expandedKeys, depth) {
+  let max = Math.abs(node.value_diff ?? 0);
+  if (depth > 0 && node.children && expandedKeys.has(node.key)) {
+    for (const child of node.children) {
+      max = Math.max(max, _inspectorMaxAbs(child, expandedKeys, depth + 1));
+    }
+  } else if (depth === 0 && node.children) {
+    for (const child of node.children) {
+      max = Math.max(max, Math.abs(child.value_diff ?? 0));
+    }
+  }
+  return max;
+}
+
+function _renderInspectorNode(container, node, {
+  depth,
+  scale,
+  expandedKeys,
+  onNodeToggle,
+  isRoot = false,
+}) {
+  const hasChildren = node.children && node.children.length > 0;
+  const isExpanded = expandedKeys.has(node.key);
+
+  const row = createElement("div", "inspector-row");
+  row.style.paddingLeft = `${depth * 18}px`;
+
+  // ── Chevron ──
+  const chevron = createElement("span", "inspector-chevron",
+    isRoot ? "" : (hasChildren ? (isExpanded ? "▼" : "►") : "·"));
+  if (hasChildren && !isRoot) {
+    chevron.classList.add("inspector-chevron-clickable");
+    chevron.addEventListener("click", () => onNodeToggle(node.key));
+  }
+  row.appendChild(chevron);
+
+  // ── Move label ──
+  const moveLabel = createElement("span", "inspector-move-label",
+    isRoot ? "root" : (node.move ?? ""));
+  if (isRoot) moveLabel.classList.add("inspector-move-root");
+  row.appendChild(moveLabel);
+
+  // ── Bidirectional bar ──
+  const barWrap = createElement("div", "inspector-bar-wrap");
+  const barLeft = createElement("div", "inspector-bar-left");
+  const barZero = createElement("div", "inspector-bar-zero");
+  const barRight = createElement("div", "inspector-bar-right");
+
+  const v = node.value_diff ?? 0;
+  const pct = Math.min(1, Math.abs(v) / scale) * 50; // max 50% of total width
+
+  if (v >= 0) {
+    barLeft.style.flex = "1";
+    barRight.style.width = `${pct}%`;
+    barRight.style.minWidth = v > 0 ? "2px" : "0";
+    barRight.classList.add("inspector-bar-pos");
+  } else {
+    barLeft.style.width = `${pct}%`;
+    barLeft.style.minWidth = "2px";
+    barLeft.classList.add("inspector-bar-neg");
+    barRight.style.flex = "1";
+  }
+
+  barWrap.appendChild(barLeft);
+  barWrap.appendChild(barZero);
+  barWrap.appendChild(barRight);
+  row.appendChild(barWrap);
+
+  // ── Value label ──
+  const valueSign = v > 0 ? "+" : "";
+  const valueEl = createElement("span", "inspector-value",
+    `${valueSign}${v.toFixed(2)}`);
+  if (v > 0.1) valueEl.classList.add("inspector-value-pos");
+  else if (v < -0.1) valueEl.classList.add("inspector-value-neg");
+  row.appendChild(valueEl);
+
+  // ── Visit count ──
+  row.appendChild(createElement("span", "inspector-visits",
+    `${node.visits.toLocaleString()}v`));
+
+  container.appendChild(row);
+
+  // ── Children ──
+  if (!isRoot && isExpanded && hasChildren) {
+    for (const child of node.children) {
+      _renderInspectorNode(container, child, {
+        depth: depth + 1,
+        scale,
+        expandedKeys,
+        onNodeToggle,
+        isRoot: false,
+      });
+    }
+  }
+
+  // Root children always shown
+  if (isRoot && hasChildren) {
+    for (const child of node.children) {
+      _renderInspectorNode(container, child, {
+        depth: depth + 1,
+        scale,
+        expandedKeys,
+        onNodeToggle,
+        isRoot: false,
+      });
+    }
+  }
+}

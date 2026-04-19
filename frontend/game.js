@@ -58,6 +58,156 @@ function _countInSource(state, source, color) {
   return (state.factories[source] ?? []).filter(t => t === color).length;
 }
 
+// ── Inspector state ────────────────────────────────────────────────────────
+
+let _inspectorEnabled   = false;
+let _inspectorSnapshot  = null;
+let _inspectorSSE       = null;   // EventSource | null
+let _inspectorExpanded  = new Set();
+let _showPerspective    = false;  // hook: set to true to show perspective label
+
+function _inspectorToggle() {
+  _inspectorEnabled = !_inspectorEnabled;
+  if (!_inspectorEnabled) {
+    _inspectorCloseSSE();
+  } else {
+    _inspectorConnect();
+  }
+  _renderInspector();
+}
+
+function _inspectorCloseSSE() {
+  if (_inspectorSSE) {
+    _inspectorSSE.close();
+    _inspectorSSE = null;
+  }
+}
+
+function _inspectorConnect() {
+  _inspectorCloseSSE();
+  _inspectorSnapshot = null;
+
+  const url = _inspectorStreamURL();
+  if (!url) return;
+
+  const sse = new EventSource(url);
+  _inspectorSSE = sse;
+
+  sse.addEventListener("update", e => {
+    _inspectorSnapshot = JSON.parse(e.data);
+    _renderInspector();
+    if (_inspectorSnapshot.done) {
+      sse.close();
+      _inspectorSSE = null;
+    }
+  });
+
+  sse.onerror = () => {
+    sse.close();
+    _inspectorSSE = null;
+  };
+}
+
+function _inspectorStreamURL() {
+  if (replayRecord) {
+    // Replay mode: use game_id + flat move index
+    const gameId = replayRecord.game_id;
+    const moveIndex = replayTurnIndex;
+    return `${API}/inspect/${gameId}/${moveIndex}/stream`;
+  }
+  if (gameState) {
+    // Live mode: POST snapshot first, then connect to SSE
+    _inspectorPostLive().then(() => {
+      if (!_inspectorEnabled) return;
+      const sse = new EventSource(`${API}/inspect/live/stream`);
+      _inspectorSSE = sse;
+      sse.addEventListener("update", e => {
+        _inspectorSnapshot = JSON.parse(e.data);
+        _renderInspector();
+        if (_inspectorSnapshot.done) {
+          sse.close();
+          _inspectorSSE = null;
+        }
+      });
+      sse.onerror = () => { sse.close(); _inspectorSSE = null; };
+    });
+    return null; // SSE set up async above
+  }
+  return null;
+}
+
+async function _inspectorPostLive() {
+  if (!gameState) return;
+  const snapshot = {
+    current_player: gameState.current_player,
+    factories: gameState.factories,
+    center: gameState.center,
+    boards: gameState.boards.map(b => ({
+      score: b.score,
+      wall: b.wall,
+      pattern_lines: b.pattern_lines,
+      floor_line: b.floor_line,
+    })),
+  };
+  const res = await fetch(`${API}/inspect/live`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(snapshot),
+  });
+  if (res.ok) {
+    _inspectorSnapshot = await res.json();
+    _renderInspector();
+  }
+}
+
+async function _inspectorExtend() {
+  const res = await fetch(`${API}/inspect/extend`, { method: "POST" });
+  if (!res.ok) return;
+  _inspectorSnapshot = await res.json();
+  _renderInspector();
+  // If not yet stable, reconnect SSE to keep streaming
+  if (!_inspectorSnapshot.done && !_inspectorSSE) {
+    _inspectorConnect();
+  }
+}
+
+function _inspectorNodeToggle(key) {
+  if (_inspectorExpanded.has(key)) {
+    _inspectorExpanded.delete(key);
+  } else {
+    _inspectorExpanded.add(key);
+  }
+  _renderInspector();
+}
+
+function _renderInspector() {
+  // Re-render only the inspector panel in place.
+  // Find or create the inspector mount point.
+  const app = document.getElementById("app");
+  let mount = document.getElementById("inspector-mount");
+  if (!mount) {
+    mount = createElement("div", "");
+    mount.id = "inspector-mount";
+    app.appendChild(mount);
+  }
+  mount.innerHTML = "";
+  mount.appendChild(renderInspectorPanel(_inspectorSnapshot, {
+    enabled: _inspectorEnabled,
+    showPerspective: _showPerspective,
+    onToggle: _inspectorToggle,
+    onExtend: _inspectorExtend,
+    onNodeToggle: _inspectorNodeToggle,
+    expandedKeys: _inspectorExpanded,
+  }));
+}
+
+function _inspectorReset() {
+  _inspectorCloseSSE();
+  _inspectorSnapshot = null;
+  _inspectorExpanded = new Set();
+  // Don't reset _inspectorEnabled — keep panel open across navigation
+}
+
 // ── Menu ───────────────────────────────────────────────────────────────────
 
 function _makeMenuButton(cssClass = "header-btn secondary") {
@@ -166,6 +316,7 @@ async function loadState() {
   replayRecord = null;
   renderLive();
   maybeRunBot();
+  _renderInspector();
 }
 
 function _applyNewState(newState) {
@@ -234,6 +385,7 @@ async function startNewGame(playerTypes, manualFactories = false) {
   replayRecord = null;
   _hypRoot = null;
   _hypCurrent = null;
+  _inspectorReset();
   hasGameInProgress = true;
   renderLive();
   maybeRunBot();
@@ -242,6 +394,7 @@ async function startNewGame(playerTypes, manualFactories = false) {
 async function loadReplay(gameId) {
   replayRecord = await fetchRecord(gameId);
   replayTurnIndex = 0;
+  _inspectorReset();
   hasGameInProgress = true;
   renderReplay();
 }
@@ -543,6 +696,7 @@ function renderFactorySetup(state, app) {
     ));
   });
   app.appendChild(boards);
+  _renderInspector();
 }
 
 // ── Live render ────────────────────────────────────────────────────────────
@@ -638,6 +792,7 @@ function renderLive() {
   if (inHyp && _hypRoot) {
     app.appendChild(renderHypTree(_hypRoot, state.player_types));
   }
+  _renderInspector();
 }
 
 // ── Replay render ──────────────────────────────────────────────────────────
@@ -715,7 +870,7 @@ function renderReplayMoveList(record, currentIndex) {
         scores.join(" \u2013 ")));
     }
 
-    item.addEventListener("click", () => { replayTurnIndex = index; renderReplay(); });
+    item.addEventListener("click", () => { replayTurnIndex = index; _inspectorReset(); renderReplay(); });
     list.appendChild(item);
   });
 
@@ -734,7 +889,7 @@ function renderReplayMoveList(record, currentIndex) {
     endItem.appendChild(createElement("span", "replay-move-item-scores",
       record.final_scores.join(" \u2013 ")));
     endItem.addEventListener("click", () => {
-      replayTurnIndex = turns.length; renderReplay();
+      replayTurnIndex = turns.length; _inspectorReset(); renderReplay();
     });
     list.appendChild(endItem);
   }
@@ -765,12 +920,12 @@ function renderReplay() {
   const controls = createElement("div", "replay-controls");
   const prevBtn = createElement("button", "replay-btn", "\u25c4 Prev");
   prevBtn.disabled = replayTurnIndex === 0;
-  prevBtn.addEventListener("click", () => { replayTurnIndex--; renderReplay(); });
+  prevBtn.addEventListener("click", () => { replayTurnIndex--; _inspectorReset(); renderReplay(); });
   controls.appendChild(prevBtn);
 
   const nextBtn = createElement("button", "replay-btn", "Next \u25ba");
   nextBtn.disabled = isAfterLastMove;
-  nextBtn.addEventListener("click", () => { replayTurnIndex++; renderReplay(); });
+  nextBtn.addEventListener("click", () => { replayTurnIndex++; _inspectorReset(); renderReplay(); });
   controls.appendChild(nextBtn);
 
   controls.appendChild(createElement("span", "turn-counter",
@@ -823,6 +978,7 @@ function renderReplay() {
     const current = app.querySelector(".replay-move-item-current");
     if (current) current.scrollIntoView({ block: "center", behavior: "instant" });
   }, 0);
+  _renderInspector();
 }
 
 initMenu();
@@ -832,9 +988,18 @@ document.addEventListener("keydown", (event) => {
   const turns = replayRecord.computed_turns ?? [];
   if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
     event.preventDefault();
-    if (replayTurnIndex > 0) { replayTurnIndex--; renderReplay(); }
+    if (replayTurnIndex > 0) {
+      replayTurnIndex--;
+      _inspectorReset();
+      renderReplay();
+    }
   } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
     event.preventDefault();
-    if (replayTurnIndex < turns.length) { replayTurnIndex++; renderReplay(); }
+    if (replayTurnIndex < turns.length) {
+      replayTurnIndex++;
+      _inspectorReset();
+      renderReplay();
+    }
   }
 });
+

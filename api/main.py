@@ -42,6 +42,8 @@ from engine.scoring import (
 )
 from neural.search_tree import SearchTree, make_policy_value_fn
 from agents.alphazero import AlphaZeroAgent
+import asyncio
+from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,7 @@ _inspector_game_id: str | None = None
 _inspector_move_index: int | None = None
 _inspector_sim_count: int = 0
 _INSPECTOR_BATCH = 200
+_INSPECTOR_STREAM_INTERVAL: float = 0.75  # seconds between SSE updates
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -915,3 +918,35 @@ def inspect_reset() -> dict:
     _inspector_move_index = None
     _inspector_sim_count = 0
     return {"cleared": True}
+
+
+@app.get("/inspect/{game_id}/{move_index}/stream")
+async def inspect_stream(game_id: str, move_index: int) -> EventSourceResponse:
+    """Stream inspector tree snapshots via SSE until the tree stabilises.
+
+    On connect:
+    - If the requested position differs from the active inspector tree,
+      a fresh tree is created.
+    - Snapshots are sent every _INSPECTOR_STREAM_INTERVAL seconds.
+    - The stream ends with a final snapshot carrying done=True once
+      is_stable() returns True.
+    - The client can disconnect at any time; the tree remains in server
+      state for /inspect/extend or /inspect/{game_id}/{move_index}/state.
+    """
+    if (
+        _inspector_tree is None
+        or _inspector_game_id != game_id
+        or _inspector_move_index != move_index
+    ):
+        _inspector_load(game_id, move_index)
+
+    async def _generate():
+        while True:
+            _inspector_run_batch()
+            snapshot = _inspector_snapshot()
+            yield {"event": "update", "data": json.dumps(snapshot)}
+            if snapshot["done"]:
+                break
+            await asyncio.sleep(_INSPECTOR_STREAM_INTERVAL)
+
+    return EventSourceResponse(_generate())

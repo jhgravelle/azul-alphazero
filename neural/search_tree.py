@@ -602,3 +602,83 @@ class SearchTree:
         idx = game.state.current_player
         diff = (scores[idx] - scores[1 - idx]) / 20.0
         return max(-1.0, min(1.0, diff))
+
+    def serialize(
+        self,
+        max_depth: int = 4,
+        top_k: int = 6,
+    ) -> dict:
+        """Serialize the current search tree to a JSON-compatible dict.
+
+        Walks from _root up to max_depth levels, keeping the top_k children
+        by visit count at each node. Nodes with zero visits (untried) are
+        excluded.
+
+        Args:
+            max_depth: Maximum depth to walk from the root (0 = root only).
+            top_k:     Maximum number of children to include per node.
+
+        Returns:
+            A nested dict safe to pass to json.dumps().
+        """
+        if self._root is None:
+            return self._empty_node_dict()
+        return self._serialize_node(
+            self._root, depth=0, max_depth=max_depth, top_k=top_k
+        )
+
+    def _empty_node_dict(self) -> dict:
+        return {
+            "key": "0",
+            "move": None,
+            "visits": 0,
+            "value_diff": 0.0,
+            "prior": 0.0,
+            "is_round_boundary": False,
+            "depth": 0,
+            "children": [],
+        }
+
+    def _serialize_node(
+        self,
+        node: "AZNode",
+        depth: int,
+        max_depth: int,
+        top_k: int,
+    ) -> dict:
+        children: list[dict] = []
+        if depth < max_depth and node.children:
+            visited = [c for c in node.children if c.visits > 0]
+            top = sorted(visited, key=lambda c: c.visits, reverse=True)[:top_k]
+            children = [
+                self._serialize_node(c, depth + 1, max_depth, top_k) for c in top
+            ]
+        return {
+            "key": hex(node.zobrist_hash),
+            "move": _move_str(node.move) if node.move is not None else None,
+            "visits": node.visits,
+            "value_diff": float(node.q_value),
+            "prior": float(node.prior),
+            "is_round_boundary": bool(node.is_round_boundary),
+            "depth": depth,
+            "children": children,
+        }
+
+
+# ── Serialization helpers ──────────────────────────────────────────────────
+
+
+def _move_str(move: Move) -> str:
+    """Human-readable move label for the inspector UI.
+
+    Format: 'F<n> <COLOR> → row <r>'  for factory sources
+            'CTR <COLOR> → row <r>'   for center
+            'F<n> <COLOR> → floor'    for floor destination
+            'CTR <COLOR> → floor'     for center + floor
+    """
+    from engine.game import CENTER, FLOOR
+
+    source = "CTR" if move.source == CENTER else f"F{move.source + 1}"
+    color = move.tile.name.capitalize()
+    dest = "floor" if move.destination == FLOOR else f"row {move.destination + 1}"
+    return f"{source} {color} → {dest}"

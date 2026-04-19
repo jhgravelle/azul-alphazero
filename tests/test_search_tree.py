@@ -492,7 +492,7 @@ def test_policy_value_fn_uses_value_abs():
     game.setup_round()
     legal = game.legal_moves()
 
-    sentinel_abs = 0.777
+    sentinel_diff = 0.333
 
     def fake_forward(self, spatial, flat):
         b = spatial.shape[0]
@@ -500,13 +500,13 @@ def test_policy_value_fn_uses_value_abs():
             torch.zeros(b, 1526),
             torch.full((b, 1), 0.111),  # value_win
             torch.full((b, 1), 0.333),  # value_diff
-            torch.full((b, 1), sentinel_abs),  # value_abs
+            torch.full((b, 1), 0.777),  # value_abs
         )
 
     with patch.object(AzulNet, "forward", fake_forward):
         _, value = fn(game, legal)
 
-    assert abs(value - sentinel_abs) < 1e-5, (
-        f"Expected value_abs ({sentinel_abs}), got {value}. "
-        f"PUCT may still be using value_win."
+    assert abs(value - sentinel_diff) < 1e-5, (
+        f"Expected value_diff ({sentinel_diff}), got {value}. "
+        f"PUCT may be using the wrong head."
     )

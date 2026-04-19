@@ -65,8 +65,8 @@ def make_policy_value_fn(
         with torch.no_grad():
             # PUCT uses the absolute-score head; win/loss and diff are
             # training-only auxiliaries ignored here.
-            logits, _value_win, _value_diff, value_abs = net(spatial, flat)
-        value = value_abs
+            logits, _value_win, value_diff, _value_abs = net(spatial, flat)
+        value = value_diff
         if not legal:
             return [], value.item()
         logits = logits.squeeze(0)
@@ -192,7 +192,7 @@ def make_batch_policy_value_fn(
         with torch.no_grad():
             # PUCT uses the absolute-score head; win/loss and diff are
             # training-only auxiliaries ignored here.
-            logits_b, _wins_b, _diffs_b, values_b = net(spatial_t, flat_t)
+            logits_b, _wins_b, values_b, _abs_b = net(spatial_t, flat_t)
 
         results: list[tuple[list[float], float]] = []
         for i, (game, legal) in enumerate(batch):

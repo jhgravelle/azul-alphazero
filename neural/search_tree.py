@@ -596,7 +596,9 @@ class SearchTree:
         return chosen
 
     def _terminal_value(self, game: Game) -> float:
-        scores = [p.score for p in game.state.players]
+        from engine.scoring import earned_score
+
+        scores = [earned_score(p) - p.clamped_points for p in game.state.players]
         idx = game.state.current_player
-        diff = (scores[idx] - scores[1 - idx]) / 20
+        diff = (scores[idx] - scores[1 - idx]) / 20.0
         return max(-1.0, min(1.0, diff))

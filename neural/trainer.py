@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
 from engine.game import Game, FLOOR
+from engine.scoring import earned_score
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -271,7 +272,7 @@ def collect_self_play(
             elif not game.is_game_over():
                 az_agent.advance(move)
 
-        scores = [p.score - p.clamped_points for p in game.state.players]
+        scores = [earned_score(p) - p.clamped_points for p in game.state.players]
 
         for player_idx, spatial, flat, policy_vec in history:
             vw = win_loss_value(scores, player_idx)
@@ -340,7 +341,7 @@ def collect_heuristic_games(
 
         history = _play_heuristic_game(game, agents)
 
-        scores = [p.score - p.clamped_points for p in game.state.players]
+        scores = [earned_score(p) - p.clamped_points for p in game.state.players]
         greedy_score = scores[0] if greedy_is_p0 else scores[1]
         cautious_score = scores[1] if greedy_is_p0 else scores[0]
         greedy_scores.append(greedy_score)

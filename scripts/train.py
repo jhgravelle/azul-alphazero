@@ -34,6 +34,7 @@ from neural.trainer import (
 from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
+from engine.scoring import earned_score
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
@@ -260,7 +261,7 @@ def evaluate(
             logger.info(f"saved eval recording -> {filename}")
 
         if buf is not None:
-            scores = [p.score - p.clamped_points for p in game.state.players]
+            scores = [earned_score(p) - p.clamped_points for p in game.state.players]
             for player_idx, spatial, flat, policy_vec in history:
                 vw = win_loss_value(scores, player_idx)
                 vd = score_differential_value(scores, player_idx)

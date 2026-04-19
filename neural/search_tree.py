@@ -234,6 +234,7 @@ class SearchTree:
         n_threads: int = 1,
         batch_size: int = 8,
         batch_policy_value_fn: BatchPolicyValueFn | None = None,
+        use_heuristic_value: bool = False,
     ) -> None:
         self.policy_value_fn = policy_value_fn
         self.simulations = simulations
@@ -241,6 +242,7 @@ class SearchTree:
         self.n_threads = n_threads
         self.batch_size = batch_size
         self.batch_policy_value_fn = batch_policy_value_fn
+        self.use_heuristic_value = use_heuristic_value
         self._stable_batches: int = 0
         self._last_top_k: list[int] = []
         self._root: AZNode | None = None
@@ -486,10 +488,11 @@ class SearchTree:
         node._untried_priors = list(priors)
 
     def _evaluate(self, node: AZNode) -> float:
-        """Return a value estimate in (-1, 1) from the current player's perspective."""
         if node.is_terminal:
             return self._terminal_value(node.game)
         if node.is_round_boundary:
+            if self.use_heuristic_value:
+                return self._terminal_value(node.game)
             _, value = self.policy_value_fn(node.game, [])
             return value
         if node._untried_moves is None:
@@ -609,21 +612,8 @@ class SearchTree:
     def serialize(
         self,
         max_depth: int = 4,
-        top_k: int = 6,
+        top_k: int = 200,
     ) -> dict:
-        """Serialize the current search tree to a JSON-compatible dict.
-
-        Walks from _root up to max_depth levels, keeping the top_k children
-        by visit count at each node. Nodes with zero visits (untried) are
-        excluded.
-
-        Args:
-            max_depth: Maximum depth to walk from the root (0 = root only).
-            top_k:     Maximum number of children to include per node.
-
-        Returns:
-            A nested dict safe to pass to json.dumps().
-        """
         if self._root is None:
             return self._empty_node_dict()
         return self._serialize_node(
@@ -689,8 +679,8 @@ class SearchTree:
     ) -> dict:
         children: list[dict] = []
         if depth < max_depth and node.children:
-            visited = [c for c in node.children if c.visits > 0]
-            top = sorted(visited, key=lambda c: c.visits, reverse=True)[:top_k]
+            visited_children = [c for c in node.children if c.visits > 0]
+            top = sorted(visited_children, key=lambda c: c.visits, reverse=True)[:top_k]
             children = [
                 self._serialize_node(c, depth + 1, max_depth, top_k) for c in top
             ]

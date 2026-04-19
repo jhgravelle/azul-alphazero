@@ -66,10 +66,29 @@ let _inspectorSSE       = null;   // EventSource | null
 let _inspectorExpanded  = new Set();
 let _showPerspective    = false;  // hook: set to true to show perspective label
 
-function _inspectorToggle() {
+async function _inspectorToggle() {
   _inspectorEnabled = !_inspectorEnabled;
   if (!_inspectorEnabled) {
     _inspectorCloseSSE();
+    _renderInspector();
+    return;
+  }
+  // For live games, POST first to get initial snapshot, then stream
+  if (!replayRecord && gameState) {
+    await _inspectorPostLive();
+    if (!_inspectorEnabled) return; // user toggled off while waiting
+    _inspectorCloseSSE();
+    const sse = new EventSource(`${API}/inspect/live/stream`);
+    _inspectorSSE = sse;
+    sse.addEventListener("update", e => {
+      _inspectorSnapshot = JSON.parse(e.data);
+      _renderInspector();
+      if (_inspectorSnapshot.done) {
+        sse.close();
+        _inspectorSSE = null;
+      }
+    });
+    sse.onerror = () => { sse.close(); _inspectorSSE = null; };
   } else {
     _inspectorConnect();
   }
@@ -110,28 +129,9 @@ function _inspectorConnect() {
 
 function _inspectorStreamURL() {
   if (replayRecord) {
-    // Replay mode: use game_id + flat move index
     const gameId = replayRecord.game_id;
     const moveIndex = replayTurnIndex;
     return `${API}/inspect/${gameId}/${moveIndex}/stream`;
-  }
-  if (gameState) {
-    // Live mode: POST snapshot first, then connect to SSE
-    _inspectorPostLive().then(() => {
-      if (!_inspectorEnabled) return;
-      const sse = new EventSource(`${API}/inspect/live/stream`);
-      _inspectorSSE = sse;
-      sse.addEventListener("update", e => {
-        _inspectorSnapshot = JSON.parse(e.data);
-        _renderInspector();
-        if (_inspectorSnapshot.done) {
-          sse.close();
-          _inspectorSSE = null;
-        }
-      });
-      sse.onerror = () => { sse.close(); _inspectorSSE = null; };
-    });
-    return null; // SSE set up async above
   }
   return null;
 }

@@ -87,7 +87,7 @@ _inspector_tree: SearchTree | None = None
 _inspector_game_id: str | None = None
 _inspector_move_index: int | None = None
 _inspector_sim_count: int = 0
-_INSPECTOR_BATCH = 200
+_INSPECTOR_BATCH = 1000
 _INSPECTOR_STREAM_INTERVAL: float = 0.75  # seconds between SSE updates
 
 
@@ -847,6 +847,7 @@ def _inspector_init(game: Game, game_id: str, move_index: int) -> None:
     _inspector_tree = SearchTree(
         policy_value_fn=_uniform_pv,
         simulations=_INSPECTOR_BATCH,
+        use_heuristic_value=True,
     )
     _inspector_tree.reset(game)
     _inspector_game_id = game_id

@@ -34,7 +34,7 @@ def test_inspect_invalid_game_id_returns_404():
 
 def test_inspect_invalid_move_index_returns_422():
     game_id = _get_a_game_id()
-    response = client.get(f"/inspect/{game_id}/99999")
+    response = client.get(f"/inspect/{game_id}/99999/state")
     assert response.status_code == 422
 
 

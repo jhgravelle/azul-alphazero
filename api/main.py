@@ -110,6 +110,40 @@ def _make_agent(player_type: PlayerType) -> Agent | None:
             return None
 
 
+def _game_from_snapshot(request: HypotheticalSnapshotRequest) -> Game:
+    """Reconstruct a bare Game object from a hypothetical snapshot request.
+
+    The returned game has no recorder, no history, and no search tree —
+    it is only suitable for MCTS inspection or hypothetical branching.
+    Bag and discard are left at defaults (empty); the inspector does not
+    need them.
+    """
+    game = Game()
+    game.state.current_player = request.current_player
+
+    for factory, tile_names in zip(game.state.factories, request.factories):
+        factory.clear()
+        for name in tile_names:
+            factory.append(_str_to_tile(name))
+
+    game.state.center.clear()
+    for name in request.center:
+        game.state.center.append(_str_to_tile(name))
+
+    for player, board_req in zip(game.state.players, request.boards):
+        player.score = board_req.score
+        player.pattern_lines = [
+            [_str_to_tile(name) for name in line] for line in board_req.pattern_lines
+        ]
+        player.wall = [
+            [_str_to_tile(name) if name is not None else None for name in row]
+            for row in board_req.wall
+        ]
+        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+
+    return game
+
+
 def _uniform_pv(game: Game, legal: list[Move]) -> tuple[list[float], float]:
     """Uniform policy, zero value. Used by the inspector when no checkpoint
     is loaded. MCTS still produces meaningful score-differential values via
@@ -551,31 +585,21 @@ def hypothetical_from_snapshot(
     _player_types = ["human", "human"]
     _agents = [None, None]
 
-    # Load factories.
-    for factory, tile_names in zip(_game.state.factories, request.factories):
+    scratch = _game_from_snapshot(request)
+
+    for factory, scratch_factory in zip(_game.state.factories, scratch.state.factories):
         factory.clear()
-        for name in tile_names:
-            factory.append(_str_to_tile(name))
+        factory.extend(scratch_factory)
 
-    # Load center.
     _game.state.center.clear()
-    for name in request.center:
-        _game.state.center.append(_str_to_tile(name))
+    _game.state.center.extend(scratch.state.center)
+    _game.state.current_player = scratch.state.current_player
 
-    # Load current player.
-    _game.state.current_player = request.current_player
-
-    # Load board states.
-    for player, board_req in zip(_game.state.players, request.boards):
-        player.score = board_req.score
-        player.pattern_lines = [
-            [_str_to_tile(name) for name in line] for line in board_req.pattern_lines
-        ]
-        player.wall = [
-            [_str_to_tile(name) if name is not None else None for name in row]
-            for row in board_req.wall
-        ]
-        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+    for player, scratch_player in zip(_game.state.players, scratch.state.players):
+        player.score = scratch_player.score
+        player.pattern_lines = scratch_player.pattern_lines
+        player.wall = scratch_player.wall
+        player.floor_line = scratch_player.floor_line
 
     return _build_response(_game)
 
@@ -812,12 +836,23 @@ def _inspector_snapshot() -> dict:
     }
 
 
-def _inspector_load(game_id: str, move_index: int) -> None:
-    """Build a fresh inspector tree rooted at the given position."""
+def _inspector_init(game: Game, game_id: str, move_index: int) -> None:
+    """Root a fresh inspector tree at the given Game object."""
     global _inspector_tree, _inspector_game_id
     global _inspector_move_index, _inspector_sim_count
 
-    # Find the recording.
+    _inspector_tree = SearchTree(
+        policy_value_fn=_uniform_pv,
+        simulations=_INSPECTOR_BATCH,
+    )
+    _inspector_tree.reset(game)
+    _inspector_game_id = game_id
+    _inspector_move_index = move_index
+    _inspector_sim_count = 0
+
+
+def _inspector_load(game_id: str, move_index: int) -> None:
+    """Build a fresh inspector tree from a recording at move_index."""
     folders = [_RECORDINGS_DIR, _RECORDINGS_DIR / "eval"]
     record = None
     for folder in folders:
@@ -848,15 +883,7 @@ def _inspector_load(game_id: str, move_index: int) -> None:
         )
 
     game = replay_to_move(record, move_index)
-
-    _inspector_tree = SearchTree(
-        policy_value_fn=_uniform_pv,
-        simulations=_INSPECTOR_BATCH,
-    )
-    _inspector_tree.reset(game)
-    _inspector_game_id = game_id
-    _inspector_move_index = move_index
-    _inspector_sim_count = 0
+    _inspector_init(game, game_id, move_index)
 
 
 def _inspector_run_batch() -> None:
@@ -920,25 +947,59 @@ def inspect_reset() -> dict:
     return {"cleared": True}
 
 
-@app.get("/inspect/{game_id}/{move_index}/stream")
-async def inspect_stream(game_id: str, move_index: int) -> EventSourceResponse:
-    """Stream inspector tree snapshots via SSE until the tree stabilises.
+@app.post("/inspect/live")
+def inspect_live(request: HypotheticalSnapshotRequest) -> dict:
+    """Root the inspector tree at an arbitrary game snapshot.
 
-    On connect:
-    - If the requested position differs from the active inspector tree,
-      a fresh tree is created.
-    - Snapshots are sent every _INSPECTOR_STREAM_INTERVAL seconds.
-    - The stream ends with a final snapshot carrying done=True once
-      is_stable() returns True.
-    - The client can disconnect at any time; the tree remains in server
-      state for /inspect/extend or /inspect/{game_id}/{move_index}/state.
+    Accepts the same HypotheticalSnapshotRequest schema used by the
+    hypothetical endpoints. Runs one batch before returning so the
+    first response always has a populated tree.
+
+    game_id is set to 'live'; move_index is 0.
     """
-    if (
-        _inspector_tree is None
-        or _inspector_game_id != game_id
-        or _inspector_move_index != move_index
-    ):
-        _inspector_load(game_id, move_index)
+    game = _game_from_snapshot(request)
+    _inspector_init(game, "live", 0)
+    _inspector_run_batch()
+    return _inspector_snapshot()
+
+
+@app.get("/inspect/live/state")
+def inspect_live_state() -> dict:
+    """Return the current inspector snapshot for a live tree.
+
+    Returns 404 if no live tree is active or the active tree is
+    recording-based (game_id != 'live').
+    """
+    if _inspector_tree is None or _inspector_game_id != "live":
+        raise HTTPException(
+            status_code=404,
+            detail="No active live inspector tree",
+        )
+    return _inspector_snapshot()
+
+
+@app.get("/inspect/live/stream")
+async def inspect_live_stream() -> EventSourceResponse:
+    """Stream inspector updates for the active live tree via SSE.
+
+    Returns 404 if no live tree is active. The client should call
+    POST /inspect/live first to root the tree, then connect here
+    to receive updates.
+    """
+    if _inspector_tree is None or _inspector_game_id != "live":
+        raise HTTPException(
+            status_code=404,
+            detail="No active live inspector tree — call POST /inspect/live first",
+        )
+    return _inspector_stream_response()
+
+
+def _inspector_stream_response() -> EventSourceResponse:
+    """Build the SSE EventSourceResponse for the active inspector tree.
+
+    Called by both inspect_stream and inspect_live_stream. Assumes an
+    active _inspector_tree exists — callers must check before calling.
+    """
 
     async def _generate():
         while True:
@@ -950,3 +1011,15 @@ async def inspect_stream(game_id: str, move_index: int) -> EventSourceResponse:
             await asyncio.sleep(_INSPECTOR_STREAM_INTERVAL)
 
     return EventSourceResponse(_generate())
+
+
+@app.get("/inspect/{game_id}/{move_index}/stream")
+async def inspect_stream(game_id: str, move_index: int) -> EventSourceResponse:
+    """Stream inspector tree snapshots via SSE until the tree stabilises."""
+    if (
+        _inspector_tree is None
+        or _inspector_game_id != game_id
+        or _inspector_move_index != move_index
+    ):
+        _inspector_load(game_id, move_index)
+    return _inspector_stream_response()

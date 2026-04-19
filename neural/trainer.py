@@ -17,7 +17,10 @@ from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
 logger = logging.getLogger(__name__)
 
 _SCORE_DIFF_DIVISOR = 20.0
-_TOTAL_SCORE_DIVISOR = 50.0
+_TOTAL_SCORE_DIVISOR = 80.0
+_AUX_WEIGHT_WIN = 0.1
+_AUX_WEIGHT_DIFF = 0.1
+_AUX_WEIGHT_ABS = 1.0
 
 
 def win_loss_value(scores: list[int], player_index: int) -> float:
@@ -64,8 +67,6 @@ def total_score_value(scores: list[int], player_index: int) -> float:
 
 # Auxiliary loss weights. value_win is the primary target and carries
 # weight 1.0; the auxiliary heads regularize without dominating.
-_AUX_WEIGHT_DIFF = 0.3
-_AUX_WEIGHT_ABS = 0.3
 
 
 def compute_loss(
@@ -83,7 +84,7 @@ def compute_loss(
     Returns a dict with:
         total:      policy_loss + combined_value_loss
         policy:     cross-entropy on MCTS visit distribution (0 if value_only)
-        value:      combined value loss (value_win + α·value_diff + β·value_abs)
+        value:      combined value loss (α·value_win + β·value_diff + value_abs)
         value_win:  MSE on win/loss target (primary)
         value_diff: MSE on score-differential target (auxiliary)
         value_abs:  MSE on absolute-score target (auxiliary)
@@ -98,7 +99,9 @@ def compute_loss(
     loss_diff = F.mse_loss(pred_diff, values_diff)
     loss_abs = F.mse_loss(pred_abs, values_abs)
     combined_value = (
-        loss_win + _AUX_WEIGHT_DIFF * loss_diff + _AUX_WEIGHT_ABS * loss_abs
+        _AUX_WEIGHT_WIN * loss_win
+        + _AUX_WEIGHT_DIFF * loss_diff
+        + _AUX_WEIGHT_ABS * loss_abs
     )
     return {
         "total": policy_loss + combined_value,

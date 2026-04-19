@@ -476,3 +476,37 @@ def test_batched_advance_root_has_no_parent():
     tree.advance(move)
     assert tree._root is not None
     assert tree._root.parent is None
+
+
+def test_policy_value_fn_uses_value_abs():
+    """make_policy_value_fn should return value_abs, not value_win."""
+    from unittest.mock import patch
+    import torch
+    from neural.search_tree import make_policy_value_fn
+    from neural.model import AzulNet
+    from engine.game import Game
+
+    net = AzulNet()
+    fn = make_policy_value_fn(net)
+    game = Game()
+    game.setup_round()
+    legal = game.legal_moves()
+
+    sentinel_abs = 0.777
+
+    def fake_forward(self, spatial, flat):
+        b = spatial.shape[0]
+        return (
+            torch.zeros(b, 1526),
+            torch.full((b, 1), 0.111),  # value_win
+            torch.full((b, 1), 0.333),  # value_diff
+            torch.full((b, 1), sentinel_abs),  # value_abs
+        )
+
+    with patch.object(AzulNet, "forward", fake_forward):
+        _, value = fn(game, legal)
+
+    assert abs(value - sentinel_abs) < 1e-5, (
+        f"Expected value_abs ({sentinel_abs}), got {value}. "
+        f"PUCT may still be using value_win."
+    )

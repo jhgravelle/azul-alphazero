@@ -25,20 +25,36 @@ def make_trainer() -> Trainer:
 
 def make_batch(
     batch_size: int = 16,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return a random (spatials, flats, policies, values) batch."""
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """Return a random (spatials, flats, policies, v_win, v_diff, v_abs) batch."""
     spatials = torch.rand(batch_size, *SPATIAL_SHAPE)
     flats = torch.rand(batch_size, FLAT_SIZE)
     raw = torch.rand(batch_size, MOVE_SPACE_SIZE)
     policies = raw / raw.sum(dim=-1, keepdim=True)
-    values = torch.rand(batch_size, 1) * 2 - 1
-    return spatials, flats, policies, values
+    values_win = torch.rand(batch_size, 1) * 2 - 1
+    values_diff = torch.rand(batch_size, 1) * 2 - 1
+    values_abs = torch.rand(batch_size, 1) * 2 - 1
+    return spatials, flats, policies, values_win, values_diff, values_abs
 
 
 def fill_buffer(buf: ReplayBuffer, n: int) -> None:
-    spatials, flats, policies, values = make_batch(n)
+    spatials, flats, policies, vw, vd, va = make_batch(n)
     for i in range(n):
-        buf.push(spatials[i], flats[i], policies[i], values[i, 0].item())
+        buf.push(
+            spatials[i],
+            flats[i],
+            policies[i],
+            vw[i, 0].item(),
+            vd[i, 0].item(),
+            va[i, 0].item(),
+        )
 
 
 # ── compute_loss ───────────────────────────────────────────────────────────
@@ -132,19 +148,37 @@ def test_collect_heuristic_games_fills_buffer():
     assert len(buf) > 0
 
 
-def test_collect_heuristic_games_policy_is_one_hot():
+def test_collect_heuristic_games_policy_is_distribution_not_one_hot():
+    """Policy targets should be multi-move distributions, not one-hot.
+    At least one example in the buffer should have multiple non-zero
+    entries in its policy vector."""
+    buf = ReplayBuffer(capacity=10_000)
+    collect_heuristic_games(buf, num_games=3)
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 50))
+    nonzero_counts = (policies > 0).sum(dim=1)
+    multi_move_rows = (nonzero_counts > 1).sum().item()
+    assert multi_move_rows > 0, (
+        f"Expected some examples with multi-move distributions, "
+        f"got {multi_move_rows} rows with >1 non-zero entry"
+    )
+
+
+def test_collect_heuristic_games_policy_sums_to_one():
+    """Every policy target should sum to exactly 1.0."""
     buf = ReplayBuffer(capacity=10_000)
     collect_heuristic_games(buf, num_games=2)
-    _, _, policies, _ = buf.sample(min(len(buf), 10))
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 30))
     sums = policies.sum(dim=1)
-    assert torch.allclose(sums, torch.ones_like(sums))
+    assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
 
-def test_collect_heuristic_games_filters_random_wins():
+def test_collect_heuristic_games_records_all_games():
+    """No games should be skipped — stats should show all games recorded."""
     buf = ReplayBuffer(capacity=100_000)
-    stats = collect_heuristic_games(buf, num_games=40)
-    assert stats["greedy_wins"] + stats["random_wins"] + stats["ties"] == 40
-    assert stats["games_recorded"] == stats["greedy_wins"] + stats["ties"]
+    stats = collect_heuristic_games(buf, num_games=20)
+    total_games = stats["greedy_wins"] + stats["cautious_wins"] + stats["ties"]
+    assert total_games == 20
+    assert stats["games_recorded"] == 20
 
 
 def test_collect_self_play_warmup_records_both_players():
@@ -412,21 +446,21 @@ def test_total_score_value_zero():
 
 
 def test_total_score_value_positive_boundary():
-    # score 50 / divisor 50 = +1.0
-    assert total_score_value([50, 30], 0) == pytest.approx(1.0)
+    # score 80 / divisor 80 = +1.0
+    assert total_score_value([80, 30], 0) == pytest.approx(1.0)
 
 
 def test_total_score_value_clips_positive():
-    assert total_score_value([60, 30], 0) == 1.0
+    assert total_score_value([90, 30], 0) == 1.0
 
 
 def test_total_score_value_clips_negative():
-    assert total_score_value([-60, 30], 0) == -1.0
+    assert total_score_value([-90, 30], 0) == -1.0
 
 
 def test_total_score_value_midrange():
-    # score 25 / 50 = +0.5
-    assert total_score_value([25, 30], 0) == pytest.approx(0.5)
+    # score 40 / 80 = +0.5
+    assert total_score_value([40, 30], 0) == pytest.approx(0.5)
 
 
 def test_total_score_value_only_depends_on_own_score():
@@ -434,3 +468,87 @@ def test_total_score_value_only_depends_on_own_score():
     v1 = total_score_value([40, 10], 0)
     v2 = total_score_value([40, 80], 0)
     assert v1 == v2
+
+
+# ── Multi-head value loss ──────────────────────────────────────────────────
+
+
+def test_compute_loss_returns_per_head_keys():
+    """compute_loss dict should include per-head breakdown."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    assert "value_win" in result
+    assert "value_diff" in result
+    assert "value_abs" in result
+
+
+def test_compute_loss_per_head_components_are_positive():
+    """Each head's MSE should be > 0 on a fresh net with random targets."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    assert result["value_win"].item() > 0.0
+    assert result["value_diff"].item() > 0.0
+    assert result["value_abs"].item() > 0.0
+
+
+def test_compute_loss_value_equals_weighted_sum():
+    """Combined value loss should equal 0.1·win + 0.1·diff + 1.0·abs."""
+    import torch
+
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    expected = (
+        0.1 * result["value_win"]
+        + 0.1 * result["value_diff"]
+        + 1.0 * result["value_abs"]
+    )
+    assert torch.isclose(result["value"], expected)
+
+
+def test_compute_loss_value_only_preserves_all_three_value_losses():
+    """value_only zeroes policy but all three value components remain."""
+    net = AzulNet()
+    result = compute_loss(net, *make_batch(), value_only=True)
+    assert result["value_win"].item() > 0.0
+    assert result["value_diff"].item() > 0.0
+    assert result["value_abs"].item() > 0.0
+
+
+def test_train_step_too_small_buffer_returns_all_value_keys():
+    """The empty-buffer early-return dict should include all value keys."""
+    trainer = make_trainer()
+    buf = ReplayBuffer(capacity=1000)
+    fill_buffer(buf, 10)
+    result = trainer.train_step(buf)
+    assert result["value_win"] == 0.0
+    assert result["value_diff"] == 0.0
+    assert result["value_abs"] == 0.0
+
+
+def test_value_abs_weight_is_primary():
+    """value_abs should have weight 1.0; win and diff should be lower."""
+    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
+
+    assert _AUX_WEIGHT_ABS == 1.0
+    assert _AUX_WEIGHT_WIN < _AUX_WEIGHT_ABS
+    assert _AUX_WEIGHT_DIFF < _AUX_WEIGHT_ABS
+
+
+def test_total_score_divisor_is_80():
+    from neural.trainer import _TOTAL_SCORE_DIVISOR
+
+    assert _TOTAL_SCORE_DIVISOR == 80.0
+
+
+def test_compute_loss_value_equals_weighted_sum_new_weights():
+    """Combined value loss = 0.1·win + 0.1·diff + 1.0·abs."""
+    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
+
+    net = AzulNet()
+    result = compute_loss(net, *make_batch())
+    expected = (
+        _AUX_WEIGHT_WIN * result["value_win"]
+        + _AUX_WEIGHT_DIFF * result["value_diff"]
+        + _AUX_WEIGHT_ABS * result["value_abs"]
+    )
+    assert torch.isclose(result["value"], expected)

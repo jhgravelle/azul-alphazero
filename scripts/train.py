@@ -24,7 +24,13 @@ import torch
 
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
-from neural.trainer import Trainer, collect_self_play, collect_heuristic_games
+from neural.trainer import (
+    Trainer,
+    collect_self_play,
+    collect_heuristic_games,
+    total_score_value,
+    win_loss_value,
+)
 from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
@@ -85,6 +91,33 @@ class IterResult:
     generation: int  # generation number if promoted, else 0
     az_avg: float  # rolling avg AZ score
     elapsed: float  # seconds
+
+
+# ── Loss accumulator helpers ──────────────────────────────────────────────────
+
+_LOSS_KEYS = ("total", "policy", "value", "value_win", "value_diff", "value_abs")
+
+
+def _init_loss_accumulator() -> dict[str, float]:
+    return {k: 0.0 for k in _LOSS_KEYS}
+
+
+def _accumulate_losses(accum: dict[str, float], step_losses: dict[str, float]) -> None:
+    for k in _LOSS_KEYS:
+        accum[k] += step_losses.get(k, 0.0)
+
+
+def _format_loss_line(accum: dict[str, float], n_steps: int) -> str:
+    """Format the per-head loss breakdown for logging."""
+    avg = {k: accum[k] / n_steps for k in _LOSS_KEYS}
+    return (
+        f"avg loss: {avg['total']:.4f} | "
+        f"policy: {avg['policy']:.4f} | "
+        f"value: {avg['value']:.4f} "
+        f"(win {avg['value_win']:.4f}, "
+        f"diff {avg['value_diff']:.4f}, "
+        f"abs {avg['value_abs']:.4f})"
+    )
 
 
 # ── Checkpoint helpers ────────────────────────────────────────────────────────
@@ -229,8 +262,10 @@ def evaluate(
         if buf is not None:
             scores = [p.score - p.clamped_points for p in game.state.players]
             for player_idx, spatial, flat, policy_vec in history:
-                value = score_differential_value(scores, player_idx)
-                buf.push(spatial, flat, policy_vec, value)
+                vw = win_loss_value(scores, player_idx)
+                vd = score_differential_value(scores, player_idx)
+                va = total_score_value(scores, player_idx)
+                buf.push(spatial, flat, policy_vec, vw, vd, va)
         else:
             scores = [p.score for p in game.state.players]
 
@@ -459,6 +494,12 @@ def main() -> None:
         default=0,
         help="skip evaluation for the first N iterations (default 0)",
     )
+    parser.add_argument(
+        "--clear-buffer-after-pretrain",
+        action="store_true",
+        help="clear the replay buffer after heuristic pretraining so self-play "
+        "starts with a clean buffer (default: keep pretrain data mixed in)",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -506,20 +547,21 @@ def main() -> None:
             "pretraining network for %d steps on heuristic buffer...",
             args.pretrain_steps,
         )
-        total_loss = 0.0
+        accum = _init_loss_accumulator()
         for step in range(1, args.pretrain_steps + 1):
-            total_loss += trainer.train_step(buf, value_only=True)["total"]
+            losses = trainer.train_step(buf, value_only=True)
+            _accumulate_losses(accum, losses)
             if step % 500 == 0:
                 logger.info(
-                    "  pretrain step %d/%d -- avg loss: %.4f",
+                    "  pretrain step %d/%d -- %s",
                     step,
                     args.pretrain_steps,
-                    total_loss / step,
+                    _format_loss_line(accum, step),
                 )
         logger.info(
-            "pretraining complete -- %d steps -- final avg loss: %.4f",
+            "pretraining complete -- %d steps -- %s",
             args.pretrain_steps,
-            total_loss / args.pretrain_steps,
+            _format_loss_line(accum, args.pretrain_steps),
         )
 
     if args.heuristic_iterations > 0:
@@ -536,18 +578,27 @@ def main() -> None:
                     "  heuristic iter %d -- buffer too small, skipping train", h_iter
                 )
                 continue
-            total_loss = 0.0
+            accum = _init_loss_accumulator()
             for _ in range(args.train_steps):
-                total_loss += trainer.train_step(buf, value_only=True)["total"]
-            avg_loss = total_loss / args.train_steps
+                losses = trainer.train_step(buf, value_only=True)
+                _accumulate_losses(accum, losses)
+            avg_loss = accum["total"] / args.train_steps
             logger.info(
-                "  heuristic iter %d/%d -- buffer size %d -- avg loss: %.4f",
+                "  heuristic iter %d/%d -- buffer size %d -- %s",
                 h_iter,
                 args.heuristic_iterations,
                 len(buf),
-                avg_loss,
+                _format_loss_line(accum, args.train_steps),
             )
         logger.info("heuristic iterations complete")
+
+    # ── Optionally clear the buffer before self-play ───────────────────────
+    if args.clear_buffer_after_pretrain and len(buf) > 0:
+        logger.info(
+            "clearing replay buffer (was %d examples) before self-play starts",
+            len(buf),
+        )
+        buf.clear()
 
     # ── Self-play loop ─────────────────────────────────────────────────────
     logger.info(
@@ -610,11 +661,12 @@ def main() -> None:
             logger.info("★ switching to full policy+value training")
 
         logger.info("running %d training steps...", args.train_steps)
-        total_loss = 0.0
+        accum = _init_loss_accumulator()
         for _ in range(args.train_steps):
-            total_loss += trainer.train_step(buf, value_only=value_only)["total"]
-        avg_loss = total_loss / args.train_steps
-        logger.info("avg loss: %.4f", avg_loss)
+            losses = trainer.train_step(buf, value_only=value_only)
+            _accumulate_losses(accum, losses)
+        avg_loss = accum["total"] / args.train_steps
+        logger.info(_format_loss_line(accum, args.train_steps))
 
         # ── 3. Evaluation ──────────────────────────────────────────────────
         if iteration <= args.skip_eval_iterations:

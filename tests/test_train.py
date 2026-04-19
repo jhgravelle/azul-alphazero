@@ -48,9 +48,10 @@ def test_evaluate_with_buf_values_in_range():
     net = AzulNet()
     buf = ReplayBuffer(capacity=10_000)
     evaluate(net, net, num_games=2, simulations=2, buf=buf)
-    _, _, _, values = buf.sample(min(len(buf), 32))
-    assert values.min() >= -1.0
-    assert values.max() <= 1.0
+    _, _, _, vw, vd, va = buf.sample(min(len(buf), 32))
+    for values in (vw, vd, va):
+        assert values.min() >= -1.0
+        assert values.max() <= 1.0
 
 
 @pytest.mark.slow
@@ -61,7 +62,7 @@ def test_evaluate_with_buf_policies_sum_to_one():
     net = AzulNet()
     buf = ReplayBuffer(capacity=10_000)
     evaluate(net, net, num_games=2, simulations=2, buf=buf)
-    _, _, policies, _ = buf.sample(min(len(buf), 32))
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 32))
     sums = policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
@@ -217,3 +218,31 @@ def test_skip_eval_iterations_skips_eval():
     )
     line = _summary_line(result)
     assert "skip" in line.lower() or "1" in line  # just checks it doesn't crash
+
+
+def test_format_loss_line_shows_all_heads():
+    """The formatted log line should include per-head value breakdown."""
+    from scripts.train import (
+        _init_loss_accumulator,
+        _accumulate_losses,
+        _format_loss_line,
+    )
+
+    accum = _init_loss_accumulator()
+    _accumulate_losses(
+        accum,
+        {
+            "total": 1.0,
+            "policy": 0.5,
+            "value": 0.5,
+            "value_win": 0.1,
+            "value_diff": 0.2,
+            "value_abs": 0.2,
+        },
+    )
+    line = _format_loss_line(accum, n_steps=1)
+    assert "avg loss: 1.0000" in line
+    assert "policy: 0.5000" in line
+    assert "win 0.1000" in line
+    assert "diff 0.2000" in line
+    assert "abs 0.2000" in line

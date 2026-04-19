@@ -241,7 +241,8 @@ class SearchTree:
         self.n_threads = n_threads
         self.batch_size = batch_size
         self.batch_policy_value_fn = batch_policy_value_fn
-
+        self._stable_batches: int = 0
+        self._last_top_k: list[int] = []
         self._root: AZNode | None = None
         # Transposition table: zobrist_hash → AZNode
         self._table: dict[int, AZNode] = {}
@@ -254,6 +255,8 @@ class SearchTree:
         """Start a fresh tree for a new round. Call at the start of each round."""
         self._table = {}
         self._root = self._make_node(game.clone(), parent=None, move=None, prior=0.0)
+        self._stable_batches = 0
+        self._last_top_k = []
 
     def choose_move(self, game: Game) -> Move:
         """Run simulations from the current root and return the best move."""
@@ -626,6 +629,44 @@ class SearchTree:
         return self._serialize_node(
             self._root, depth=0, max_depth=max_depth, top_k=top_k
         )
+
+    def is_stable(self, top_k: int = 5, required_stable_batches: int = 3) -> bool:
+        """Return True when the top-k move ranking has been unchanged for
+        required_stable_batches consecutive extend calls.
+
+        This is the practical stopping condition for the inspector stream:
+        further search is unlikely to change the recommendation.
+        """
+        return self._stable_batches >= required_stable_batches
+
+    def record_batch_stability(self, top_k: int = 5) -> None:
+        """Called after each batch. Updates the consecutive-stable-batch
+        counter by comparing the current top-k ranking to the previous one.
+        """
+        if self._root is None or not self._root.children:
+            self._stable_batches = 0
+            self._last_top_k: list[int] = []
+            return
+
+        visited = [c for c in self._root.children if c.visits > 0]
+        current = [
+            id(c) for c in sorted(visited, key=lambda c: c.visits, reverse=True)[:top_k]
+        ]
+
+        if current == getattr(self, "_last_top_k", []):
+            self._stable_batches += 1
+        else:
+            self._stable_batches = 0
+        self._last_top_k = current
+
+    def _is_subtree_explored(self, node: "AZNode") -> bool:
+        """Recursively check that node and all pre-boundary descendants are
+        fully expanded."""
+        if node.is_terminal or node.is_round_boundary:
+            return True
+        if not node.is_fully_expanded:
+            return False
+        return all(self._is_subtree_explored(c) for c in node.children)
 
     def _empty_node_dict(self) -> dict:
         return {

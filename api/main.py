@@ -35,6 +35,7 @@ from engine.constants import Tile
 from engine.game import Game, Move
 from engine.game_recorder import GameRecorder, GameRecord
 from engine.game_state import GameState
+from engine.replay import replay_to_move
 from engine.scoring import (
     pending_bonus_details,
     pending_placement_details,
@@ -79,6 +80,13 @@ _factory_cursor: int = 0
 _last_game_id: str | None = None
 _search_tree: SearchTree | None = None
 
+# Inspector state — one active tree at a time.
+_inspector_tree: SearchTree | None = None
+_inspector_game_id: str | None = None
+_inspector_move_index: int | None = None
+_inspector_sim_count: int = 0
+_INSPECTOR_BATCH = 200
+
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
     """Return an Agent instance for the given type, or None for human."""
@@ -97,6 +105,14 @@ def _make_agent(player_type: PlayerType) -> Agent | None:
         #     return AlphaZeroAgent(...)  # wire in once checkpoint exists
         case _:
             return None
+
+
+def _uniform_pv(game: Game, legal: list[Move]) -> tuple[list[float], float]:
+    """Uniform policy, zero value. Used by the inspector when no checkpoint
+    is loaded. MCTS still produces meaningful score-differential values via
+    _terminal_value and backpropagation."""
+    n = len(legal)
+    return ([1.0 / n] * n if n else []), 0.0
 
 
 def _tile_to_str(tile: Tile) -> str:
@@ -775,3 +791,127 @@ def get_recording(game_id: str) -> dict:
                     detail=f"Failed to reconstruct recording {game_id!r}",
                 )
     raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")
+
+
+# ── Inspector endpoints ────────────────────────────────────────────────────
+
+
+def _inspector_snapshot() -> dict:
+    """Serialize current inspector state to a JSON-compatible dict."""
+    assert _inspector_tree is not None
+    return {
+        "game_id": _inspector_game_id,
+        "move_index": _inspector_move_index,
+        "sim_count": _inspector_sim_count,
+        "done": _inspector_tree.is_stable(),
+        "tree": _inspector_tree.serialize(),
+        "checkpoint": "uniform",
+    }
+
+
+def _inspector_load(game_id: str, move_index: int) -> None:
+    """Build a fresh inspector tree rooted at the given position."""
+    global _inspector_tree, _inspector_game_id
+    global _inspector_move_index, _inspector_sim_count
+
+    # Find the recording.
+    folders = [_RECORDINGS_DIR, _RECORDINGS_DIR / "eval"]
+    record = None
+    for folder in folders:
+        if not folder.exists():
+            continue
+        for path in folder.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data.get("game_id") == game_id:
+                    record = GameRecord.from_dict(data)
+                    break
+            except Exception:
+                continue
+        if record is not None:
+            break
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Recording {game_id!r} not found",
+        )
+
+    total_moves = sum(len(r.moves) for r in record.rounds)
+    if move_index < 0 or move_index > total_moves:
+        raise HTTPException(
+            status_code=422,
+            detail=f"move_index {move_index} out of range [0, {total_moves}]",
+        )
+
+    game = replay_to_move(record, move_index)
+
+    _inspector_tree = SearchTree(
+        policy_value_fn=_uniform_pv,
+        simulations=_INSPECTOR_BATCH,
+    )
+    _inspector_tree.reset(game)
+    _inspector_game_id = game_id
+    _inspector_move_index = move_index
+    _inspector_sim_count = 0
+
+
+def _inspector_run_batch() -> None:
+    global _inspector_sim_count
+    assert _inspector_tree is not None
+    if _inspector_tree.is_stable():
+        return
+    _inspector_tree._run_simulations()
+    _inspector_tree.record_batch_stability()
+    _inspector_sim_count += _INSPECTOR_BATCH
+
+
+@app.get("/inspect/{game_id}/{move_index}/state")
+def inspect_state(game_id: str, move_index: int) -> dict:
+    """Return the current inspector tree snapshot.
+
+    If the requested position differs from the active inspector tree,
+    a fresh tree is created and one batch of simulations is run before
+    returning. If the same position is requested again, the existing tree
+    is returned as-is.
+    """
+    global _inspector_tree
+
+    if (
+        _inspector_tree is None
+        or _inspector_game_id != game_id
+        or _inspector_move_index != move_index
+    ):
+        _inspector_load(game_id, move_index)
+        _inspector_run_batch()
+
+    return _inspector_snapshot()
+
+
+@app.post("/inspect/extend")
+def inspect_extend() -> dict:
+    """Run another batch of simulations on the active inspector tree.
+
+    Returns 404 if no inspector tree is active.
+    """
+    if _inspector_tree is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No active inspector tree — call "
+            "/inspect/{game_id}/{move_index}/state first",
+        )
+    _inspector_run_batch()
+    return _inspector_snapshot()
+
+
+@app.post("/inspect/reset")
+def inspect_reset() -> dict:
+    """Clear the active inspector tree. Used in testing and UI navigation."""
+    global _inspector_tree, _inspector_game_id
+    global _inspector_move_index, _inspector_sim_count
+
+    _inspector_tree = None
+    _inspector_game_id = None
+    _inspector_move_index = None
+    _inspector_sim_count = 0
+    return {"cleared": True}

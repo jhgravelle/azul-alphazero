@@ -590,6 +590,17 @@ function renderInspectorPanel(snapshot, {
   status.appendChild(extendBtn);
   panel.appendChild(status);
 
+  const copyBtn = createElement("button", "inspector-extend-btn", "Copy");
+  copyBtn.disabled = !snapshot;
+  copyBtn.addEventListener("click", () => {
+    const text = _inspectorTreeText(snapshot.tree, 0);
+    navigator.clipboard.writeText(text).then(() => {
+      copyBtn.textContent = "Copied!";
+      setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+    });
+  });
+  status.appendChild(copyBtn);
+
   if (!snapshot) return panel;
 
   // ── Tree ──
@@ -681,12 +692,25 @@ function _renderInspectorNode(container, node, {
   row.appendChild(barWrap);
 
   // ── Value label ──
-  const valueSign = v > 0 ? "+" : "";
+  const displayValue = v * 20;
+  const mm = (node.minimax_value ?? v) * 20;
+  const valueSign = displayValue >= 0 ? "+" : "";
+  const mmSign = mm >= 0 ? "+" : "";
+
   const valueEl = createElement("span", "inspector-value",
-    `${valueSign}${v.toFixed(2)}`);
-  if (v > 0.1) valueEl.classList.add("inspector-value-pos");
-  else if (v < -0.1) valueEl.classList.add("inspector-value-neg");
+    `${valueSign}${displayValue.toFixed(1)}`);
+  if (displayValue > 1.0) valueEl.classList.add("inspector-value-pos");
+  else if (displayValue < -1.0) valueEl.classList.add("inspector-value-neg");
   row.appendChild(valueEl);
+
+  // Minimax — only show if meaningfully different from avg
+
+  const mmEl = createElement("span", "inspector-minimax",
+    `(${mmSign}${mm.toFixed(1)})`);
+  if (mm >= 1.0) mmEl.classList.add("inspector-value-pos");
+  else if (mm <= -1.0) mmEl.classList.add("inspector-value-neg");
+  row.appendChild(mmEl);
+  
 
   // ── Visit count ──
   row.appendChild(createElement("span", "inspector-visits",
@@ -720,3 +744,26 @@ function _renderInspectorNode(container, node, {
     }
   }
 }
+
+function _inspectorTreeText(node, depth) {
+  if (!node) return "";
+  const indent = "  ".repeat(depth);
+  const move = node.move ?? "root";
+  const avg = (node.value_diff * 20).toFixed(1);
+  const mm = ((node.minimax_value ?? node.value_diff) * 20).toFixed(1);
+  const avgSign = node.value_diff >= 0 ? "+" : "";
+  const mmSign = (node.minimax_value ?? node.value_diff) >= 0 ? "+" : "";
+  const visits = node.visits.toLocaleString();
+  const boundary = node.is_round_boundary ? " [end]" : "";
+  const showMm = Math.abs(
+    ((node.minimax_value ?? node.value_diff) - node.value_diff) * 20
+  ) > 0.5;
+  const mmStr = showMm ? `  mm${mmSign}${mm}pts` : "";
+  const line = `${indent}${move}  avg${avgSign}${avg}pts${mmStr}  ${visits}v${boundary}`;
+
+  const children = (node.children ?? [])
+    .map(c => _inspectorTreeText(c, depth + 1))
+    .join("\n");
+
+  return children ? `${line}\n${children}` : line;
+}  

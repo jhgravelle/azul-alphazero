@@ -609,15 +609,49 @@ class SearchTree:
         diff = (scores[idx] - scores[1 - idx]) / 20.0
         return max(-1.0, min(1.0, diff))
 
-    def serialize(
-        self,
-        max_depth: int = 4,
-        top_k: int = 200,
-    ) -> dict:
+    def _minimax_value(
+        self, node: "AZNode", depth: int = 0, root_player: int | None = None
+    ) -> float:
+        if root_player is None:
+            root_player = node.game.state.current_player
+
+        if not node.children or node.is_round_boundary or node.is_terminal:
+            # _terminal_value returns from current_player's perspective.
+            # Convert to root_player's perspective.
+            leaf_val = (
+                node.q_value if node.visits > 0 else self._terminal_value(node.game)
+            )
+            leaf_player = node.game.state.current_player
+            if leaf_player == root_player:
+                return leaf_val
+            else:
+                return -leaf_val
+
+        visited = [c for c in node.children if c.visits > 0]
+        if not visited:
+            leaf_player = node.game.state.current_player
+            if leaf_player == root_player:
+                return node.q_value
+            else:
+                return -node.q_value
+
+        if node.game.state.current_player == root_player:
+            # Root player's turn — maximise
+            return max(self._minimax_value(c, depth + 1, root_player) for c in visited)
+        else:
+            # Opponent's turn — minimise root player's value
+            return min(self._minimax_value(c, depth + 1, root_player) for c in visited)
+
+    def serialize(self, max_depth: int = 4, top_k: int = 200) -> dict:
         if self._root is None:
             return self._empty_node_dict()
+        root_player = self._root.game.state.current_player
         return self._serialize_node(
-            self._root, depth=0, max_depth=max_depth, top_k=top_k
+            self._root,
+            depth=0,
+            max_depth=max_depth,
+            top_k=top_k,
+            root_player=root_player,
         )
 
     def is_stable(self, top_k: int = 5, required_stable_batches: int = 3) -> bool:
@@ -670,25 +704,33 @@ class SearchTree:
             "children": [],
         }
 
-    def _serialize_node(
-        self,
-        node: "AZNode",
-        depth: int,
-        max_depth: int,
-        top_k: int,
-    ) -> dict:
+    def _serialize_node(self, node, depth, max_depth, top_k, root_player=None):
+        if root_player is None:
+            root_player = node.game.state.current_player
         children: list[dict] = []
         if depth < max_depth and node.children:
             visited_children = [c for c in node.children if c.visits > 0]
             top = sorted(visited_children, key=lambda c: c.visits, reverse=True)[:top_k]
+            seen_keys: set[int] = set()
+            deduped = []
+            for c in top:
+                if c.zobrist_hash not in seen_keys:
+                    seen_keys.add(c.zobrist_hash)
+                    deduped.append(c)
             children = [
-                self._serialize_node(c, depth + 1, max_depth, top_k) for c in top
+                self._serialize_node(c, depth + 1, max_depth, top_k, root_player)
+                for c in deduped
             ]
         return {
             "key": hex(node.zobrist_hash),
             "move": _move_str(node.move) if node.move is not None else None,
             "visits": node.visits,
-            "value_diff": float(node.q_value),
+            "value_diff": float(
+                node.q_value
+                if node.game.state.current_player == root_player
+                else -node.q_value
+            ),
+            "minimax_value": float(self._minimax_value(node, depth, root_player)),
             "prior": float(node.prior),
             "is_round_boundary": bool(node.is_round_boundary),
             "depth": depth,

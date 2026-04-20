@@ -891,3 +891,14 @@ h1 { margin-bottom: 8px; }
   text-align: right;
   flex-shrink: 0;
 }
+
+.inspector-minimax {
+  font-size: 0.72rem;
+  color: #888;
+  width: 48px;
+  text-align: left;
+  flex-shrink: 0;
+  font-family: "Courier New", Courier, monospace;
+}
+.inspector-minimax.inspector-value-pos { color: #2e7d32; }
+.inspector-minimax.inspector-value-neg { color: #c0392b; }

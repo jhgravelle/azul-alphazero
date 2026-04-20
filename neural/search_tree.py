@@ -103,6 +103,7 @@ class AZNode:
     # None = not yet expanded; [] = fully expanded
     _untried_moves: list[Move] | None = None
     _untried_priors: list[float] | None = None
+    _explored: bool = False
 
     @property
     def q_value(self) -> float:
@@ -128,6 +129,28 @@ class AZNode:
     @property
     def is_fully_expanded(self) -> bool:
         return self._untried_moves is not None and len(self._untried_moves) == 0
+
+    @property
+    def _fully_explored(self) -> bool:
+        if self.is_terminal or self.is_round_boundary:
+            return True
+        return self._explored
+
+    def _check_and_mark_explored(self) -> bool:
+        if self._explored:
+            return True
+        if self.is_terminal or self.is_round_boundary:
+            return True
+        if not self.is_fully_expanded:
+            return False
+        if not self.children:
+            # Fully expanded but no children — treat as leaf
+            self._explored = True
+            return True
+        if all(c._fully_explored for c in self.children):
+            self._explored = True
+            return True
+        return False
 
     def puct_score(self, parent_visits: int) -> float:
         # Virtual loss: add pessimistic -1 per virtual visit to discourage
@@ -324,12 +347,15 @@ class SearchTree:
     # ── Simulation dispatch ────────────────────────────────────────────────
 
     def _run_simulations(self) -> None:
-        """Run all simulations, dispatching to batched or single-threaded mode."""
+        if self._root is not None and self._root._fully_explored:
+            return
         if self.batch_policy_value_fn is not None:
             self._run_batched_simulations()
         else:
             assert self._root is not None
             for _ in range(self.simulations):
+                if self._root._fully_explored:
+                    break
                 node = self._select(self._root)
                 value = self._evaluate(node)
                 self._backpropagate(node, value)
@@ -501,12 +527,13 @@ class SearchTree:
         return value
 
     def _backpropagate(self, node: AZNode, value: float) -> None:
-        """Walk back to root, flipping sign at each player boundary."""
         current: AZNode | None = node
         while current is not None:
             current.visits += 1
             current.total_value += value
             value = -value
+            c = current  # narrowed to AZNode
+            c._check_and_mark_explored()
             current = current.parent
 
     # ── Helpers ────────────────────────────────────────────────────────────
@@ -655,12 +682,8 @@ class SearchTree:
         )
 
     def is_stable(self, top_k: int = 5, required_stable_batches: int = 3) -> bool:
-        """Return True when the top-k move ranking has been unchanged for
-        required_stable_batches consecutive extend calls.
-
-        This is the practical stopping condition for the inspector stream:
-        further search is unlikely to change the recommendation.
-        """
+        if self._root is not None and self._root._fully_explored:
+            return True
         return self._stable_batches >= required_stable_batches
 
     def record_batch_stability(self, top_k: int = 5) -> None:

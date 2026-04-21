@@ -911,3 +911,126 @@ def test_is_round_over_false_when_center_has_color_tile():
 
 
 # endregion
+# region _take_from_source -------------------------------------------------
+
+
+def test_take_from_source_returns_chosen_tiles():
+    game = Game()
+    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    chosen = game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert chosen.count(Tile.BLUE) == 2
+
+
+def test_take_from_source_removes_chosen_from_factory():
+    game = Game()
+    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert Tile.BLUE not in game.state.factories[0]
+
+
+def test_take_from_source_sends_leftovers_to_center():
+    game = Game()
+    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert Tile.RED in game.state.center
+    assert Tile.YELLOW in game.state.center
+
+
+def test_take_from_source_clears_factory():
+    game = Game()
+    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert game.state.factories[0] == []
+
+
+def test_take_from_source_from_center_leaves_no_leftover():
+    game = Game()
+    game.state.center = [Tile.BLUE, Tile.BLUE, Tile.RED]
+    game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
+    assert Tile.BLUE not in game.state.center
+    assert Tile.RED in game.state.center
+
+
+def test_take_from_source_includes_first_player_when_present():
+    game = Game()
+    game.state.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE]
+    chosen = game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
+    assert Tile.FIRST_PLAYER in chosen
+
+
+def test_take_from_source_removes_first_player_from_center():
+    game = Game()
+    game.state.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE]
+    game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
+    assert Tile.FIRST_PLAYER not in game.state.center
+
+
+def test_take_from_source_does_not_send_first_player_to_center():
+    game = Game()
+    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game.state.center = [Tile.FIRST_PLAYER]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert game.state.center.count(Tile.FIRST_PLAYER) == 1
+
+
+# endregion
+
+
+# region _place_tiles -------------------------------------------------------
+
+
+def test_place_tiles_puts_chosen_on_pattern_line():
+    game = Game()
+    player = game.state.players[0]
+    game._place_tiles(
+        player, Move(source=0, tile=Tile.BLUE, destination=1), [Tile.BLUE, Tile.BLUE]
+    )
+    assert player.pattern_lines[1].count(Tile.BLUE) == 2
+
+
+def test_place_tiles_overflow_goes_to_floor():
+    game = Game()
+    player = game.state.players[0]
+    # Row 0 holds max 1 tile — 2 blues means 1 overflows
+    game._place_tiles(
+        player, Move(source=0, tile=Tile.BLUE, destination=0), [Tile.BLUE, Tile.BLUE]
+    )
+    assert player.pattern_lines[0] == [Tile.BLUE]
+    assert player.floor_line.count(Tile.BLUE) == 1
+
+
+def test_place_tiles_to_floor_destination_puts_all_on_floor():
+    game = Game()
+    player = game.state.players[0]
+    game._place_tiles(
+        player,
+        Move(source=0, tile=Tile.BLUE, destination=FLOOR),
+        [Tile.BLUE, Tile.BLUE],
+    )
+    assert player.floor_line.count(Tile.BLUE) == 2
+    assert player.pattern_lines[0] == []
+
+
+def test_place_tiles_puts_first_player_on_floor():
+    game = Game()
+    player = game.state.players[0]
+    game._place_tiles(
+        player,
+        Move(source=CENTER, tile=Tile.BLUE, destination=1),
+        [Tile.BLUE, Tile.BLUE, Tile.FIRST_PLAYER],
+    )
+    assert Tile.FIRST_PLAYER in player.floor_line
+
+
+def test_place_tiles_first_player_does_not_go_on_pattern_line():
+    game = Game()
+    player = game.state.players[0]
+    game._place_tiles(
+        player,
+        Move(source=CENTER, tile=Tile.BLUE, destination=1),
+        [Tile.BLUE, Tile.BLUE, Tile.FIRST_PLAYER],
+    )
+    assert Tile.FIRST_PLAYER not in player.pattern_lines[1]
+
+
+# endregion

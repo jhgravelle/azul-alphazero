@@ -3,7 +3,6 @@
 """Core game controller for Azul."""
 
 from dataclasses import dataclass
-from typing import Callable
 from engine.board import Board
 from engine.constants import (
     Tile,
@@ -170,21 +169,19 @@ class Game:
     # Turn execution
     # ------------------------------------------------------------------
 
-    def _take_from_source(self, player: Board, move: Move) -> list[Tile]:
-        """Remove tiles from the source, send leftovers to center.
+    def _take_from_source(self, move: Move) -> list[Tile]:
+        """Remove chosen color tiles and FIRST_PLAYER from the source.
 
-        Returns the chosen tiles. Moves the first-player marker to the
-        player's floor line if it is in the source.
+        Sends non-chosen color tiles to the center. Returns the chosen
+        color tiles plus FIRST_PLAYER if it was present in the source.
         """
         source = (
             self.state.center
             if move.source == CENTER
             else self.state.factories[move.source]
         )
-        chosen = [t for t in source if t == move.tile]
-        leftover = [t for t in source if t != move.tile and t != Tile.FIRST_PLAYER]
-        if Tile.FIRST_PLAYER in source:
-            player.floor_line.append(Tile.FIRST_PLAYER)
+        chosen = [t for t in source if t == move.tile or t == Tile.FIRST_PLAYER]
+        leftover = [t for t in source if t in COLOR_TILES and t != move.tile]
         source.clear()
         self.state.center.extend(leftover)
         return chosen
@@ -192,16 +189,20 @@ class Game:
     def _place_tiles(self, player: Board, move: Move, chosen: list[Tile]) -> None:
         """Place chosen tiles on the destination pattern line or floor.
 
-        Overflow tiles beyond the line's capacity go to the floor.
+        FIRST_PLAYER tiles go directly to the floor. color tiles fill the
+        pattern line up to capacity; overflow goes to the floor.
         """
+        color_tiles = [t for t in chosen if t != Tile.FIRST_PLAYER]
+        if Tile.FIRST_PLAYER in chosen:
+            player.floor_line.append(Tile.FIRST_PLAYER)
         if move.destination == FLOOR:
-            player.floor_line.extend(chosen)
+            player.floor_line.extend(color_tiles)
         else:
             line = player.pattern_lines[move.destination]
             capacity = move.destination + 1
             space = capacity - len(line)
-            line.extend(chosen[:space])
-            player.floor_line.extend(chosen[space:])
+            line.extend(color_tiles[:space])
+            player.floor_line.extend(color_tiles[space:])
 
     def next_player(self) -> None:
         """Advance current_player to the next player in turn order."""
@@ -212,7 +213,7 @@ class Game:
     def make_move(self, move: Move) -> None:
         """Apply a move to the current game state."""
         player = self.state.players[self.state.current_player]
-        chosen = self._take_from_source(player, move)
+        chosen = self._take_from_source(move)
         self._place_tiles(player, move, chosen)
 
     # ------------------------------------------------------------------

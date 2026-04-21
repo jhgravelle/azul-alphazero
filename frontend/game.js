@@ -64,35 +64,54 @@ let _inspectorEnabled   = false;
 let _inspectorSnapshot  = null;
 let _inspectorSSE       = null;   // EventSource | null
 let _inspectorExpanded  = new Set();
+let _inspectorRunning = false;
+let _inspectorUserPaused = false;
+let _inspectorInterval = null;
 let _showPerspective    = false;  // hook: set to true to show perspective label
 
 async function _inspectorToggle() {
   _inspectorEnabled = !_inspectorEnabled;
   if (!_inspectorEnabled) {
+    _inspectorRunning = false;
+    clearTimeout(_inspectorInterval);
     _inspectorCloseSSE();
     _renderInspector();
     return;
   }
-  // For live games, POST first to get initial snapshot, then stream
   if (!replayRecord && gameState) {
     await _inspectorPostLive();
-    if (!_inspectorEnabled) return; // user toggled off while waiting
-    _inspectorCloseSSE();
-    const sse = new EventSource(`${API}/inspect/live/stream`);
-    _inspectorSSE = sse;
-    sse.addEventListener("update", e => {
-      _inspectorSnapshot = JSON.parse(e.data);
-      _renderInspector();
-      if (_inspectorSnapshot.done) {
-        sse.close();
-        _inspectorSSE = null;
-      }
-    });
-    sse.onerror = () => { sse.close(); _inspectorSSE = null; };
+  }
+  _inspectorRunning = !(_inspectorSnapshot?.done);
+  if (_inspectorRunning) _inspectorRunLoop();
+  _renderInspector();
+}
+
+function _inspectorStartStop() {
+  _inspectorRunning = !_inspectorRunning;
+  _inspectorUserPaused = !_inspectorRunning;
+  if (_inspectorRunning) {
+    _inspectorRunLoop();
   } else {
-    _inspectorConnect();
+    clearTimeout(_inspectorInterval);
+    _inspectorInterval = null;
   }
   _renderInspector();
+}
+
+async function _inspectorRunLoop() {
+  if (!_inspectorRunning || !_inspectorEnabled) return;
+  const res = await fetch(`${API}/inspect/extend`, { method: "POST" });
+  if (!res.ok) { _inspectorRunning = false; _renderInspector(); return; }
+  _inspectorSnapshot = await res.json();
+  _renderInspector();
+  if (_inspectorSnapshot.done) {
+    _inspectorRunning = false;
+    _renderInspector();
+    return;
+  }
+  if (_inspectorRunning) {
+    _inspectorInterval = setTimeout(_inspectorRunLoop, 0);
+  }
 }
 
 function _inspectorCloseSSE() {
@@ -181,8 +200,6 @@ function _inspectorNodeToggle(key) {
 }
 
 function _renderInspector() {
-  // Re-render only the inspector panel in place.
-  // Find or create the inspector mount point.
   const app = document.getElementById("app");
   let mount = document.getElementById("inspector-mount");
   if (!mount) {
@@ -193,21 +210,24 @@ function _renderInspector() {
   mount.innerHTML = "";
   mount.appendChild(renderInspectorPanel(_inspectorSnapshot, {
     enabled: _inspectorEnabled,
+    running: _inspectorRunning,
     showPerspective: _showPerspective,
     onToggle: _inspectorToggle,
-    onExtend: _inspectorExtend,
+    onStartStop: _inspectorStartStop,
     onNodeToggle: _inspectorNodeToggle,
     expandedKeys: _inspectorExpanded,
   }));
 }
 
 function _inspectorReset() {
+  _inspectorRunning = false;
+  _inspectorUserPaused = false;
+  clearTimeout(_inspectorInterval);
+  _inspectorInterval = null;
   _inspectorCloseSSE();
   _inspectorSnapshot = null;
   _inspectorExpanded = new Set();
-  // Don't reset _inspectorEnabled — keep panel open across navigation
 }
-
 // ── Menu ───────────────────────────────────────────────────────────────────
 
 function _makeMenuButton(cssClass = "header-btn secondary") {
@@ -326,6 +346,16 @@ function _applyNewState(newState) {
   maybeRunBot();
   if (gameState.is_game_over && gameState.last_game_id) {
     setTimeout(() => loadReplay(gameState.last_game_id), 1500);
+  }
+  if (_inspectorEnabled && !gameState.is_game_over) {
+    setTimeout(() => {
+      _inspectorPostLive().then(() => {
+        if (!_inspectorUserPaused) {
+          _inspectorRunning = true;
+          _inspectorRunLoop();
+        }
+      });
+    }, 0);
   }
 }
 

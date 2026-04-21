@@ -42,8 +42,6 @@ from engine.scoring import (
 )
 from neural.search_tree import SearchTree, make_policy_value_fn
 from agents.alphazero import AlphaZeroAgent
-import asyncio
-from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +85,7 @@ _inspector_tree: SearchTree | None = None
 _inspector_game_id: str | None = None
 _inspector_move_index: int | None = None
 _inspector_sim_count: int = 0
-_INSPECTOR_BATCH = 1000
-_INSPECTOR_STREAM_INTERVAL: float = 0.75  # seconds between SSE updates
+_INSPECTOR_BATCH = 100
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -815,14 +812,14 @@ def get_recording(game_id: str) -> dict:
 
 
 def _inspector_snapshot() -> dict:
-    """Serialize current inspector state to a JSON-compatible dict."""
     assert _inspector_tree is not None
     root = _inspector_tree._root
     perspective = f"P{root.game.state.current_player + 1}" if root is not None else "P1"
+    sim_count = root.visits if root is not None else 0
     return {
         "game_id": _inspector_game_id,
         "move_index": _inspector_move_index,
-        "sim_count": _inspector_sim_count,
+        "sim_count": sim_count,
         "done": _inspector_tree.is_stable(),
         "tree": _inspector_tree.serialize(),
         "checkpoint": "uniform",
@@ -888,7 +885,6 @@ def _inspector_run_batch() -> None:
         return
     _inspector_tree._run_simulations()
     _inspector_tree.record_batch_stability()
-    _inspector_sim_count += _INSPECTOR_BATCH
 
 
 @app.get("/inspect/{game_id}/{move_index}/state")
@@ -971,50 +967,3 @@ def inspect_live_state() -> dict:
             detail="No active live inspector tree",
         )
     return _inspector_snapshot()
-
-
-@app.get("/inspect/live/stream")
-async def inspect_live_stream() -> EventSourceResponse:
-    """Stream inspector updates for the active live tree via SSE.
-
-    Returns 404 if no live tree is active. The client should call
-    POST /inspect/live first to root the tree, then connect here
-    to receive updates.
-    """
-    if _inspector_tree is None or _inspector_game_id != "live":
-        raise HTTPException(
-            status_code=404,
-            detail="No active live inspector tree — call POST /inspect/live first",
-        )
-    return _inspector_stream_response()
-
-
-def _inspector_stream_response() -> EventSourceResponse:
-    """Build the SSE EventSourceResponse for the active inspector tree.
-
-    Called by both inspect_stream and inspect_live_stream. Assumes an
-    active _inspector_tree exists — callers must check before calling.
-    """
-
-    async def _generate():
-        while True:
-            _inspector_run_batch()
-            snapshot = _inspector_snapshot()
-            yield {"event": "update", "data": json.dumps(snapshot)}
-            if snapshot["done"]:
-                break
-            await asyncio.sleep(_INSPECTOR_STREAM_INTERVAL)
-
-    return EventSourceResponse(_generate())
-
-
-@app.get("/inspect/{game_id}/{move_index}/stream")
-async def inspect_stream(game_id: str, move_index: int) -> EventSourceResponse:
-    """Stream inspector tree snapshots via SSE until the tree stabilises."""
-    if (
-        _inspector_tree is None
-        or _inspector_game_id != game_id
-        or _inspector_move_index != move_index
-    ):
-        _inspector_load(game_id, move_index)
-    return _inspector_stream_response()

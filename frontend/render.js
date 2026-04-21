@@ -542,9 +542,10 @@ function renderBoard(board, index, label, isActive, opts = {}) {
  */
 function renderInspectorPanel(snapshot, {
   enabled = false,
+  running = false,
   showPerspective = false,
   onToggle = null,
-  onExtend = null,
+  onStartStop = null,
   onNodeToggle = null,
   expandedKeys = new Set(),
 } = {}) {
@@ -577,6 +578,9 @@ function renderInspectorPanel(snapshot, {
   } else if (snapshot.done) {
     status.appendChild(createElement("span", "inspector-status-text inspector-status-done",
       `Stable · ${snapshot.sim_count.toLocaleString()} sims`));
+  } else if (!running) {
+    status.appendChild(createElement("span", "inspector-status-text",
+      `Paused · ${snapshot.sim_count.toLocaleString()} sims`));
   } else {
     const pulse = createElement("span", "inspector-pulse");
     status.appendChild(pulse);
@@ -584,10 +588,11 @@ function renderInspectorPanel(snapshot, {
       `Searching · ${snapshot.sim_count.toLocaleString()} sims`));
   }
 
-  const extendBtn = createElement("button", "inspector-extend-btn", "Extend");
-  extendBtn.disabled = !snapshot;
-  extendBtn.addEventListener("click", onExtend);
-  status.appendChild(extendBtn);
+  const runBtn = createElement("button", "inspector-extend-btn",
+    snapshot?.done ? "Done" : (running ? "Pause" : "Start"));
+  runBtn.disabled = snapshot?.done ?? false;
+  runBtn.addEventListener("click", onStartStop);
+  status.appendChild(runBtn);
   panel.appendChild(status);
 
   const copyBtn = createElement("button", "inspector-extend-btn", "Copy Tree");

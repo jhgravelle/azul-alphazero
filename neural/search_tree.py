@@ -140,11 +140,11 @@ class AZNode:
         if self._explored:
             return True
         if self.is_terminal or self.is_round_boundary:
+            self._explored = True
             return True
         if not self.is_fully_expanded:
             return False
         if not self.children:
-            # Fully expanded but no children — treat as leaf
             self._explored = True
             return True
         if all(c._fully_explored for c in self.children):
@@ -153,8 +153,8 @@ class AZNode:
         return False
 
     def puct_score(self, parent_visits: int) -> float:
-        # Virtual loss: add pessimistic -1 per virtual visit to discourage
-        # other threads from selecting the same path before real backprop.
+        if self._fully_explored:
+            return float("-inf")
         adj_visits = self.visits + self.virtual_loss
         if adj_visits == 0:
             q = 0.0
@@ -457,9 +457,14 @@ class SearchTree:
                 node.virtual_loss += 1
                 child.virtual_loss += 1
                 return child
-            # Fully expanded — pick best PUCT child (scores include VL)
+            # Fully expanded — pick best PUCT child
+            eligible = [c for c in node.children if not c._fully_explored]
+            if not eligible:
+                node._explored = True
+                node.virtual_loss += 1
+                return node
             node.virtual_loss += 1
-            node = max(node.children, key=lambda c: c.puct_score(node.visits))
+            node = max(eligible, key=lambda c: c.puct_score(node.visits))
         node.virtual_loss += 1
         return node
 
@@ -495,7 +500,11 @@ class SearchTree:
                 node.children.append(child)
                 return child
             # Fully expanded — pick best PUCT child
-            node = max(node.children, key=lambda c: c.puct_score(node.visits))
+            eligible = [c for c in node.children if not c._fully_explored]
+            if not eligible:
+                node._explored = True
+                return node
+            node = max(eligible, key=lambda c: c.puct_score(node.visits))
         return node
 
     def _ensure_expanded(self, node: AZNode) -> None:
@@ -547,15 +556,7 @@ class SearchTree:
         move: Move | None,
         prior: float,
     ) -> AZNode:
-        """Create a node, register it in the transposition table."""
         h = _ZOBRIST.hash_state(game)
-        # Check transposition table — reuse existing node if available
-        if h in self._table:
-            existing = self._table[h]
-            # Update parent link to the closer ancestor (shallower path wins)
-            if parent is not None and existing.parent is not None:
-                existing.parent = parent
-            return existing
         node = AZNode(
             game=game,
             zobrist_hash=h,

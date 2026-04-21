@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 import torch
 from engine.game import Game, Move, CENTER
+from engine.scoring import earned_score, earned_score_unclamped
 from neural.model import AzulNet
 from neural.zobrist import ZobristTable
 
@@ -632,8 +633,6 @@ class SearchTree:
         return chosen
 
     def _terminal_value(self, game: Game) -> float:
-        from engine.scoring import earned_score
-
         scores = [earned_score(p) - p.clamped_points for p in game.state.players]
         idx = game.state.current_player
         diff = (scores[idx] - scores[1 - idx]) / 20.0
@@ -739,9 +738,22 @@ class SearchTree:
             "children": [],
         }
 
-    def _serialize_node(self, node, depth, max_depth, top_k, root_player=None):
+    def _serialize_node(
+        self, node, depth, max_depth, top_k, root_player=None, parent_game=None
+    ):
         if root_player is None:
             root_player = node.game.state.current_player
+        if parent_game is None:
+            parent_game = node.game
+
+        immediate = None
+        if node.move is not None:
+            moving_player = parent_game.state.current_player
+            before = earned_score_unclamped(parent_game.state.players[moving_player])
+            after = earned_score_unclamped(node.game.state.players[moving_player])
+            delta = after - before
+            immediate = delta if moving_player == root_player else -delta
+
         children: list[dict] = []
         if depth < max_depth and node.children:
             visited_children = [c for c in node.children if c.visits > 0]
@@ -753,13 +765,48 @@ class SearchTree:
                     seen_keys.add(c.zobrist_hash)
                     deduped.append(c)
             children = [
-                self._serialize_node(c, depth + 1, max_depth, top_k, root_player)
+                self._serialize_node(
+                    c, depth + 1, max_depth, top_k, root_player, node.game
+                )
                 for c in deduped
             ]
+            children.sort(
+                key=lambda c: (
+                    c["cumulative_immediate"]
+                    if c["cumulative_immediate"] is not None
+                    else float("-inf")
+                ),
+                reverse=(depth % 2 == 0),
+            )
+
+        if immediate is None:
+            cumulative_immediate = None
+        elif not children:
+            cumulative_immediate = immediate
+        else:
+            valid_children = [
+                c for c in children if c["cumulative_immediate"] is not None
+            ]
+            if not valid_children:
+                cumulative_immediate = immediate
+            else:
+                # After this move, it's the other player's turn.
+                # node.game.state.current_player is who moves next.
+                next_player = node.game.state.current_player
+                if next_player == root_player:
+                    # Root player moves next — maximize
+                    best = max(c["cumulative_immediate"] for c in valid_children)
+                else:
+                    # Opponent moves next — minimize
+                    best = min(c["cumulative_immediate"] for c in valid_children)
+                cumulative_immediate = immediate + best
+
         return {
             "key": hex(node.zobrist_hash),
             "move": _move_str(node.move) if node.move is not None else None,
             "visits": node.visits,
+            "immediate": immediate,
+            "cumulative_immediate": cumulative_immediate,
             "value_diff": float(
                 node.q_value
                 if node.game.state.current_player == root_player

@@ -188,3 +188,13 @@ def earned_score(board: Board) -> int:
         + score_wall_bonus(temp_wall)
     )
     return max(0, total)
+
+
+def earned_score_unclamped(board: Board) -> int:
+    details, temp_wall = pending_placement_details(board)
+    return (
+        board.score
+        + sum(d.placement_points for d in details)
+        + score_floor_penalty(board.floor_line)
+        + score_wall_bonus(temp_wall)
+    )

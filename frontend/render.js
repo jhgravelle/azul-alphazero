@@ -677,7 +677,7 @@ function _renderInspectorNode(container, node, {
   const barRight = createElement("div", "inspector-bar-right");
 
   const v = node.value_diff ?? 0;
-  const pct = Math.min(1, Math.abs(v) / scale) * 50; // max 50% of total width
+  const pct = Math.min(1, Math.abs(v) / scale) * 50;
 
   if (v >= 0) {
     barLeft.style.flex = "1";
@@ -708,14 +708,37 @@ function _renderInspectorNode(container, node, {
   else if (displayValue < -1.0) valueEl.classList.add("inspector-value-neg");
   row.appendChild(valueEl);
 
-  // Minimax — only show if meaningfully different from avg
-
   const mmEl = createElement("span", "inspector-minimax",
     `(${mmSign}${mm.toFixed(1)})`);
   if (mm >= 1.0) mmEl.classList.add("inspector-value-pos");
   else if (mm <= -1.0) mmEl.classList.add("inspector-value-neg");
   row.appendChild(mmEl);
-  
+
+// ── Immediate and cumulative ──
+  if (!isRoot && node.immediate !== null && node.immediate !== undefined) {
+    const immSign = node.immediate >= 0 ? "+" : "";
+    const immEl = createElement("span", "inspector-immediate",
+      `${immSign}${node.immediate}`);
+    if (node.immediate > 0) immEl.classList.add("inspector-value-pos");
+    else if (node.immediate < 0) immEl.classList.add("inspector-value-neg");
+    row.appendChild(immEl);
+
+    const ci = node.cumulative_immediate;
+    const hasChildren = node.children && node.children.length > 0;
+    if (ci !== null && ci !== undefined && hasChildren) {
+      const ciSign = ci >= 0 ? "+" : "";
+      const ciEl = createElement("span", "inspector-cumulative",
+        `(${ciSign}${ci})`);
+      if (ci > 0) ciEl.classList.add("inspector-value-pos");
+      else if (ci < 0) ciEl.classList.add("inspector-value-neg");
+      row.appendChild(ciEl);
+    } else {
+      row.appendChild(createElement("span", "inspector-cumulative", ""));
+    }
+  } else {
+    row.appendChild(createElement("span", "inspector-immediate", ""));
+    row.appendChild(createElement("span", "inspector-cumulative", ""));
+  }
 
   // ── Visit count ──
   row.appendChild(createElement("span", "inspector-visits",
@@ -736,7 +759,6 @@ function _renderInspectorNode(container, node, {
     }
   }
 
-  // Root children always shown
   if (isRoot && hasChildren) {
     for (const child of node.children) {
       _renderInspectorNode(container, child, {
@@ -764,11 +786,20 @@ function _inspectorTreeText(node, depth) {
     ((node.minimax_value ?? node.value_diff) - node.value_diff) * 20
   ) > 0.5;
   const mmStr = showMm ? `  mm${mmSign}${mm}pts` : "";
-  const line = `${indent}${move}  avg${avgSign}${avg}pts${mmStr}  ${visits}v${boundary}`;
+  const imm = node.immediate;
+  const ci = node.cumulative_immediate;
+  const hasChildren = node.children && node.children.length > 0;
+  const immStr = (imm !== null && imm !== undefined && node.move !== null)
+    ? ` imm${imm >= 0 ? "+" : ""}${imm}pts`
+    : "";
+  const ciStr = (ci !== null && ci !== undefined && hasChildren && node.move !== null)
+    ? ` cum${ci >= 0 ? "+" : ""}${ci}pts`
+    : "";
+  const line = `${indent}${move}  avg${avgSign}${avg}pts${mmStr}${immStr}${ciStr}  ${visits}v${boundary}`;
 
   const children = (node.children ?? [])
     .map(c => _inspectorTreeText(c, depth + 1))
     .join("\n");
 
   return children ? `${line}\n${children}` : line;
-}  
+}

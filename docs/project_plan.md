@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-04-18 (evening)
-> Status: Phase 8c in progress. Multi-head value network shipped. Distributional policy targets working. Eval two-tree dynamics identified as the current bottleneck for checkpoint promotion.
+> Last updated: 2026-04-20
+> Status: Phase 8c in progress. Engine refactor complete. Multi-head value network shipped. Distributional policy targets working. Eval two-tree dynamics identified as the current bottleneck for checkpoint promotion.
 
 ---
 
@@ -22,6 +22,9 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 | CI/CD | GitHub Actions | Free for public repos, integrates natively with GitHub |
 | ML framework | PyTorch | Best for custom AlphaZero-style training loops |
 | IDE | VS Code + Claude Code | Installed, good Python + git support |
+| OS | Windows 11 25H2 64-bit | What I have
+| GPU | nVidia RTX 5070 | What I have
+| CPU | Ryzen 7 7800X3d 8-Core
 
 **Compute split**: MCTS inference runs on CPU (faster for small batch sizes and this model), training runs on GPU. This means GPU sits near-idle during self-play and eval; CPU is the actual bottleneck.
 
@@ -31,22 +34,31 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 
 ```
 azul-alphazero/
-├── engine/
-│   ├── constants.py       # Tile enum, WALL_PATTERN, FLOOR_PENALTIES, all constants
-│   ├── board.py           # Board dataclass
-│   ├── game_state.py      # GameState dataclass
-│   ├── game.py            # Game controller: make_move, legal_moves, score_round, etc.
-│   ├── scoring.py         # Pure scoring functions
-│   └── game_recorder.py   # GameRecorder, GameRecord, RoundRecord, MoveRecord
 ├── agents/
+│   ├── alphazero.py       # Thin wrapper — delegates to SearchTree
 │   ├── base.py            # Agent base class + default policy_distribution (uniform)
-│   ├── random.py          # Inherits uniform distribution
 │   ├── cautious.py        # Uniform over non-floor moves
 │   ├── efficient.py       # Uniform over partial-line moves (fallback to all)
 │   ├── greedy.py          # Color-conditional distribution
 │   ├── mcts.py
 │   ├── move_filters.py    # non_floor_moves shared helper
-│   └── alphazero.py       # Thin wrapper — delegates to SearchTree
+│   └── random.py          # Inherits uniform distribution
+├── api/
+│   ├── main.py
+│   └── schemas.py
+├── engine/
+│   ├── board.py           # Board dataclass + clone()
+│   ├── constants.py       # Tile enum, WALL_PATTERN, FLOOR_PENALTIES, all constants
+│   ├── game_recorder.py   # GameRecorder, GameRecord, RoundRecord, MoveRecord
+│   ├── game_state.py      # GameState dataclass + clone()
+│   ├── game.py            # Game controller: make_move, advance, legal_moves, score_round, etc.
+│   ├── replay.py          # replay_to_move
+│   └── scoring.py         # Pure scoring functions
+├── frontend/
+│   ├── game.js            # 
+│   ├── index.html         # 
+│   ├── render.js          # 
+│   └── style.css          # 
 ├── neural/
 │   ├── encoder.py         # (12,5,6) spatial + (47,) flat encoding
 │   ├── model.py           # Conv+MLP trunk with 3 value heads (win/diff/abs)
@@ -54,19 +66,20 @@ azul-alphazero/
 │   ├── search_tree.py     # SearchTree: MCTS, transposition table, subtree reuse
 │   ├── trainer.py         # compute_loss, Trainer, target functions, data collection
 │   └── replay.py          # Circular buffer, three value targets per example
-├── api/
-│   ├── main.py
-│   └── schemas.py
-├── frontend/
 ├── scripts/
+│   ├── bench_score_placement.py
+│   ├── benchmark_mcts.py
+│   ├── migrate_recordings.py
+│   ├── parse_log.py
 │   ├── self_play.py
-│   ├── train.py
-│   └── migrate_recordings.py
-├── tests/                 # pytest suite (~540 tests; timing-sensitive ones marked slow)
-├── recordings/            # gitignored
+│   └── train.py
+├── tests/                 # pytest suite (~665 tests; timing-sensitive ones marked slow)
 ├── checkpoints/           # gitignored
+├── cli/                   # just enough to debug
+├── htmlcov/               # gitignored
+├── recordings/            # gitignored
 └── docs/
-└── PROJECT_PLAN.md
+    └── PROJECT_PLAN.md
 ```
 
 ---
@@ -110,6 +123,36 @@ Virtual loss, parallel leaf collection, single batched forward pass per batch.
 6. **Eval at low simulation counts (100-200) is nearly useless.** With two separate trees (one per agent), search quality is so thin that eval games hit the move cap constantly and win rates are ~50% + noise. Needs either much deeper search (1500+ sims) or a shared-state tree design.
 
 7. **GPU utilization is ~1%. CPU is the bottleneck.** The model is small and runs on CPU for MCTS inference. Parallelism via multiprocessing (not threads, because GIL) should give near-linear speedup up to core count.
+
+8. **`make_move` doing too much caused cascading bugs.** The original design had `make_move` trigger round scoring, game scoring, and round setup internally. This caused a Zobrist collision bug, broke `is_round_boundary`, and made simulation loops fragile. The fix was to decouple entirely — see engine design notes below.
+
+**Engine design: make_move / advance separation (2026-04-20)**
+
+`make_move` now only moves tiles. All phase transitions are the caller's responsibility via `advance()`.
+
+```
+make_move(move)           — take tiles from source, place on pattern line/floor
+advance(skip_setup=False) — next_player(), score_round() if round over,
+                            score_game() if game over, setup_round() unless
+                            skip_setup=True. Returns True if round boundary crossed.
+is_round_over() → bool    — True when no color tiles remain in any source
+next_player()             — rotate current_player (public, used by search tree)
+score_round()             — wall scoring, floor penalties, set next first player
+is_game_over() → bool     — True if any player has a completed wall row
+score_game()              — end-of-game bonuses
+setup_round()             — fill factories, add FIRST_PLAYER to center
+```
+
+Callers use `make_move` + `advance()` in sequence. The API passes `skip_setup=True` and handles setup itself (to support manual factory mode). Simulation loops pass no arguments and get automatic `setup_round()`. The search tree calls `next_player()` directly after `make_move` to rotate perspective without scoring, since round boundaries are treated as leaf nodes.
+
+`advance()` returns `True` when a round boundary was crossed, enabling clean loop patterns:
+
+```python
+round_ended = game.advance(skip_setup=True)
+if round_ended and not game.is_game_over():
+    game.setup_round()
+    recorder.start_round(game)
+```
 
 **Multi-head value network**
 
@@ -209,3 +252,4 @@ First run with all fixes in place:
 | 2026-04-18 | Multi-head value network shipped (value_win / value_diff / value_abs with weighted loss). `--clear-buffer-after-pretrain` flag added. |
 | 2026-04-18 | Distributional policy targets shipped — `policy_distribution()` on all agents, heuristic pretrain switched to Greedy vs Cautious. First training run with observable self-play improvement. |
 | 2026-04-18 | Eval two-tree problem identified as main blocker for checkpoint promotion. GPU at 1% — CPU is the bottleneck; parallelism deferred pending stable training loop. |
+| 2026-04-20 | Engine refactor: make_move decoupled from round/game transitions. advance() owns phase loop with skip_setup flag and bool return. is_round_over() and next_player() added as public methods. advance_round_if_needed() deleted. _take_from_source and _place_tiles properly separated; FIRST_PLAYER flows through chosen list. GameState.clone() extracted from Game.clone(). 665 tests passing. |

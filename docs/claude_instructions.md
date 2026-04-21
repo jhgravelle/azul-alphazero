@@ -6,7 +6,7 @@
 
 I am building an Azul board game engine with an AlphaZero AI in Python. This is a learning project — I am a beginner-to-intermediate Python developer. Please explain concepts as you go and don't skip steps.
 
-**Tech stack:** Python 3.12, pytest, black, flake8, FastAPI + HTML/JS, PyTorch, Git + GitHub, GitHub Actions.
+**Tech stack:** Python 3.12, pytest, black, flake8, FastAPI + HTML/JS, PyTorch, Git + GitHub, GitHub Actions, Windows 11
 
 **Project structure and history:** See `PROJECT_PLAN.md` in the repo root.
 
@@ -25,13 +25,13 @@ I am building an Azul board game engine with an AlphaZero AI in Python. This is 
 
 ## How I want to work
 
-- **TDD always:** Show me the test first. Let me read and understand it. Then show me the implementation.
+- **Shorter prompts:** We have Claude usage limits, don't endlessly run away, if you get stuck say so, and we can determine where to go next, or craft a prompt for another model to try.
+- **TDD always:** You provide the test and implementation at the same time.
 - **One step at a time:** Don't give me five files at once. Walk me through each piece.
 - **Explain the why:** If you make a design decision, tell me why, especially if there's a tradeoff.
-- **Git commits:** Remind me when it's a good time to commit, and tell me what the commit message should be.
-- **Check CI:** Remind me to push and check that GitHub Actions goes green before moving to the next piece.
+- **Git commits:** Remind me when it's a good time to commit, I commit all edits each time through vsCode, just tell me what the commit message should be.
+- **Check CI:** We can proceed immediately after push but CI might go red and we have to backtrack to fix.
 - **Repeat on request:** If I ask for something you've already provided, just repeat it without comment.
-- **Complete files for CSS:** When making CSS changes, always provide the complete file rather than incremental updates — partial CSS updates have caused sync issues in the past.
 - **Sketch before coding:** For layout or visual changes, describe or sketch in text first to confirm we agree before writing any code.
 - **Branch for larger refactors:** Use feature branches (`feat/xxx`) and draft PRs for work that spans multiple commits. CI only runs on `main` and PRs, so opening a draft PR is how to get CI on a feature branch.
 
@@ -40,8 +40,10 @@ I am building an Azul board game engine with an AlphaZero AI in Python. This is 
 ## Code style preferences
 
 - **f-strings for logging and string formatting.** I prefer `f"something: {value:.4f}"` over `"something: %.4f" % value` or `"something: {:.4f}".format(value)`. Keep this consistent in new code. Existing `%`-style logging calls can stay as-is unless I'm already editing them.
-- **Break long methods into sub-methods.** When a function grows past ~30-40 lines or has multiple distinct phases, split it into named helpers. Prefer many small well-named functions over long ones with inline comments marking "sections."
+- **Break long methods into sub-methods.** When a function grows past ~20 lines or has multiple distinct phases, split it into named helpers. Prefer many small well-named functions over long ones with inline comments marking "sections."
 - **Descriptive helper names over inline complexity.** A helper named `_apply_warmup_floor_override(move, policy_pairs, game)` is more readable than a 15-line inline block with a comment.
+- **Avoid abbreviations.** well named variables self document the code, short variable names only when immediately obvious to a beginner programmer and extremely small in scope.
+- **Provide indented code.** When providing code it helps if it is indented to the appropriate level for easier copy/paste into the ide.
 
 ---
 

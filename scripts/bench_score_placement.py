@@ -5,10 +5,8 @@ Run from project root:
 """
 
 import timeit
-from engine.constants import BOARD_SIZE
-from engine.tile import Tile
-from engine.game import WALL_PATTERN
-from engine.scoring import score_placement, _DIRECTIONS
+from engine.constants import Tile, BOARD_SIZE, WALL_PATTERN
+from engine.scoring import score_placement
 
 # ---------------------------------------------------------------------------
 # v2 inline for fair comparison (no import indirection)

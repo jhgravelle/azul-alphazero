@@ -16,6 +16,7 @@ from agents.cautious import CautiousAgent
 from agents.efficient import EfficientAgent
 from agents.greedy import GreedyAgent
 from agents.mcts import MCTSAgent
+from agents.minimax import MinimaxAgent
 from agents.random import RandomAgent
 from api.schemas import (
     BoardResponse,
@@ -101,6 +102,8 @@ def _make_agent(player_type: PlayerType) -> Agent | None:
             return GreedyAgent()
         case "mcts":
             return MCTSAgent()
+        case "minimax":
+            return MinimaxAgent()
         # case "alphazero":
         #     return AlphaZeroAgent(...)  # wire in once checkpoint exists
         case _:

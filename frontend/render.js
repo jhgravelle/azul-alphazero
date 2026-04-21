@@ -36,6 +36,7 @@ const PLAYER_OPTIONS = [
   { value: "efficient", label: "Efficient Bot" },
   { value: "greedy",    label: "Greedy Bot" },
   { value: "mcts",      label: "MCTS Bot" },
+  { value: "minimax", label: "Minimax Bot" },
 ];
 
 const CENTER_SORT_ORDER = ["FIRST_PLAYER", "BLUE", "YELLOW", "RED", "BLACK", "WHITE"];

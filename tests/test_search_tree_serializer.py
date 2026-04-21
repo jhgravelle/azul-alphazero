@@ -134,10 +134,12 @@ def test_serialize_top_k_children_sorted_by_visits():
 
 def test_serialize_top_k_one_returns_best_child():
     tree = _make_tree(simulations=200)
-    children_full = tree.serialize(top_k=20)["children"]
-    best = max(children_full, key=lambda c: c["visits"])
+    # Find the highest-visit child from the root node directly
+    assert tree._root
+    visited = [c for c in tree._root.children if c.visits > 0]
+    best_node = max(visited, key=lambda c: c.visits)
     children_one = tree.serialize(top_k=1)["children"]
-    assert children_one[0]["key"] == best["key"]
+    assert children_one[0]["key"] == hex(best_node.zobrist_hash)
 
 
 # ── max_depth ─────────────────────────────────────────────────────────────────

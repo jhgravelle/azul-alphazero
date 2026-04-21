@@ -314,7 +314,7 @@ class SearchTree:
         if new_root is None:
             new_game = self._root.game.clone()
             new_game.make_move(move)
-            new_game.advance_round_if_needed()
+            new_game.advance()
             # Remove any stale transposition entry before making a new node
             old_hash = _ZOBRIST.hash_state(new_game)
             self._table.pop(old_hash, None)
@@ -451,6 +451,7 @@ class SearchTree:
                 prior = node._untried_priors.pop()  # type: ignore[union-attr]
                 child_game = node.game.clone()
                 child_game.make_move(move)
+                child_game.next_player()
                 child = self._make_node(child_game, parent=node, move=move, prior=prior)
                 node.children.append(child)
                 node.virtual_loss += 1
@@ -487,7 +488,8 @@ class SearchTree:
 
                 child_game = node.game.clone()
                 child_game.make_move(move)
-                # Do NOT advance round — round boundary = leaf node
+                child_game.next_player()
+                # Do NOT score round — round boundary = leaf node
 
                 child = self._make_node(child_game, parent=node, move=move, prior=prior)
                 node.children.append(child)

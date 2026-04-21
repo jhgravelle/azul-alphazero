@@ -77,13 +77,11 @@ def replay_to_move(record: GameRecord, move_index: int) -> Game:
             if moves_replayed == move_index:
                 # If this move ended the round, set up the next round so the
                 # returned game is always in a playable state.
-                sources_empty = (
-                    all(len(f) == 0 for f in game.state.factories)
-                    and len(game.state.center) == 0
-                )
-                if sources_empty and not game.is_game_over():
-                    _setup_next_round(record, game, moves_replayed, total_moves)
+                game.advance(skip_setup=True)
+                _setup_next_round(record, game, moves_replayed, total_moves)
                 return game
+
+            game.advance()
 
     # move_index == total_moves: all moves replayed, game not yet scored.
     return game

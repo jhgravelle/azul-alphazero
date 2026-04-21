@@ -3,6 +3,7 @@
 """Core game controller for Azul."""
 
 from dataclasses import dataclass
+from typing import Callable
 from engine.board import Board
 from engine.constants import (
     Tile,
@@ -99,21 +100,32 @@ class Game:
                         return
                     factory.append(self.state.bag.pop())
 
-    def advance_round_if_needed(self) -> None:
-        """Call setup_round if the round just ended and the game is not over.
+    def is_round_over(self) -> bool:
+        """Return True when no color tiles remain in any factory or the center."""
+        factories_empty = all(len(f) == 0 for f in self.state.factories)
+        center_empty = not any(t in COLOR_TILES for t in self.state.center)
+        return factories_empty and center_empty
 
-        Simulation loops must call this after every make_move to keep the game
-        state valid. The API calls this too, but may substitute factory setup
-        mode instead.
+    def advance(self, *, skip_setup: bool = False) -> bool:
+        """Advance past the current move: rotate player, then handle phase
+        transitions if the round or game just ended.
+
+        skip_setup: if True, setup_round() is skipped after scoring. The
+        caller is responsible for setting up the next round (e.g. manual
+        factory setup or replaying recorded factories). Default False.
+
+        Returns True if a round boundary was crossed (round was scored),
+        False otherwise.
         """
-        if self.is_game_over():
-            return
-        sources_empty = (
-            all(len(f) == 0 for f in self.state.factories)
-            and len(self.state.center) == 0
-        )
-        if sources_empty:
-            self.setup_round()
+        self.next_player()
+        if self.is_round_over():
+            self.score_round()
+            if self.is_game_over():
+                self.score_game()
+            elif not skip_setup:
+                self.setup_round()
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Move generation
@@ -191,26 +203,17 @@ class Game:
             line.extend(chosen[:space])
             player.floor_line.extend(chosen[space:])
 
-    def _end_turn(self) -> None:
-        """Advance to the next player and trigger end-of-round scoring if all
-        sources are empty. Round setup is left to the caller."""
+    def next_player(self) -> None:
+        """Advance current_player to the next player in turn order."""
         self.state.current_player = (self.state.current_player + 1) % len(
             self.state.players
         )
-        if (
-            all(len(f) == 0 for f in self.state.factories)
-            and len(self.state.center) == 0
-        ):
-            self.score_round()
-            if self.is_game_over():
-                self.score_game()
 
     def make_move(self, move: Move) -> None:
         """Apply a move to the current game state."""
         player = self.state.players[self.state.current_player]
         chosen = self._take_from_source(player, move)
         self._place_tiles(player, move, chosen)
-        self._end_turn()
 
     # ------------------------------------------------------------------
     # End-of-round scoring

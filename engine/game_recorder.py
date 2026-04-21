@@ -174,6 +174,7 @@ class GameRecord:
                     destination=move_record.destination,
                 )
                 game.make_move(move)
+                game.advance(skip_setup=True)
 
                 grand_totals = [earned_score(p) for p in game.state.players]
                 computed_turns.append(
@@ -196,7 +197,8 @@ class GameRecord:
                     }
                 )
 
-        game.score_game()
+        if game.is_game_over():
+            game.score_game()
         final_boards = [_board_to_dict(p) for p in game.state.players]
         return computed_turns, final_boards
 

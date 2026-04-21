@@ -56,7 +56,7 @@ These have caused bugs before — always keep them in mind:
 - Empty `legal_moves()` mid-round is always a bug, never a valid game state
 - `score_placement` precondition: tile must already be placed in the wall before calling
 - **The API owns round transitions** — `_end_turn` scores the round but does not call `setup_round`; call `_handle_round_end()` after every `make_move` in the API
-- **Simulation loops** (MCTS, AlphaZero, trainer) must call `game.advance_round_if_needed()` after every `make_move`
+- **Simulation loops** (MCTS, AlphaZero, trainer) must call `game.advance()` after every `make_move`
 - **Recordings:** when adding fields to `GameRecord` or `RoundRecord`/`MoveRecord`, also update `scripts/migrate_recordings.py`
 - **Windows:** use `python -m module.path` to run scripts, set `$env:PYTHONPATH = "."` if needed. Use `findstr` not `grep`. No Unicode in log strings.
 - **Test file name is `test_agent.py` (singular).** Not `test_agents.py`.

@@ -321,23 +321,15 @@ def _enter_factory_setup() -> None:
 
 
 def _handle_round_end() -> None:
-    """Called after every make_move. If the round just ended, either enter
-    factory setup mode or auto-setup the next round."""
-    if _game.is_game_over():
+    if not _game.is_round_over():
         return
-    sources_empty = (
-        all(len(f) == 0 for f in _game.state.factories) and len(_game.state.center) == 0
-    )
-    if not sources_empty:
-        return
+    _game.advance(skip_setup=_manual_factories)
     if _manual_factories:
         _enter_factory_setup()
-    else:
-        _game.setup_round()
-        if _search_tree is not None:
-            _search_tree.reset(_game)
-        if _recorder is not None:
-            _recorder.start_round(_game)
+    if _search_tree is not None:
+        _search_tree.reset(_game)
+    if _recorder is not None:
+        _recorder.start_round(_game)
 
 
 def _total_slots() -> int:

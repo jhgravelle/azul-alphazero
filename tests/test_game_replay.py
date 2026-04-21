@@ -26,17 +26,11 @@ def _record_full_game() -> GameRecord:
         move = agents[game.state.current_player].choose_move(game)
         recorder.record_move(move, player_index=game.state.current_player)
         game.make_move(move)
-
-        # Mirror _handle_round_end logic exactly
-        sources_empty = (
-            all(len(f) == 0 for f in game.state.factories)
-            and len(game.state.center) == 0
-        )
-        if sources_empty and not game.is_game_over():
+        round_ended = game.advance(skip_setup=True)
+        if round_ended and not game.is_game_over():
             game.setup_round()
             recorder.start_round(game)
 
-    game.score_game()
     recorder.finalize(game)
     return recorder.record
 
@@ -120,7 +114,6 @@ def test_replay_to_move_final_matches_final_scores():
     total = _total_moves(record)
 
     game = replay_to_move(record, total)
-    game.score_game()
 
     for i, player in enumerate(game.state.players):
         assert (

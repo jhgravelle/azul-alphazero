@@ -32,7 +32,7 @@ def _play_full_game(recorder: GameRecorder | None = None) -> Game:
         if recorder:
             recorder.record_move(move, player_index=game.state.current_player)
         game.make_move(move)
-        game.advance_round_if_needed()
+        game.advance()
         if recorder and not game.is_game_over() and game.state.round != last_round:
             recorder.start_round(game)
             last_round = game.state.round
@@ -212,7 +212,7 @@ def test_finalize_sets_final_scores():
         move = moves[0]
         recorder.record_move(move, player_index=game.state.current_player)
         game.make_move(move)
-        game.advance_round_if_needed()
+        game.advance()
         if (
             game.state.round > recorder.record.rounds[-1].round
             and not game.is_game_over()
@@ -236,7 +236,7 @@ def test_finalize_winner_has_highest_score():
         move = moves[0]
         recorder.record_move(move, player_index=game.state.current_player)
         game.make_move(move)
-        game.advance_round_if_needed()
+        game.advance()
         if (
             game.state.round > recorder.record.rounds[-1].round
             and not game.is_game_over()
@@ -338,7 +338,7 @@ def test_reconstruct_returns_one_state_per_move():
         move = moves[0]
         recorder.record_move(move, player_index=game.state.current_player)
         game.make_move(move)
-        game.advance_round_if_needed()
+        game.advance()
         if game.state.round != last_round and not game.is_game_over():
             recorder.start_round(game)
             last_round = game.state.round
@@ -361,7 +361,7 @@ def test_reconstruct_final_boards_reflect_scoring():
         move = moves[0]
         recorder.record_move(move, player_index=game.state.current_player)
         game.make_move(move)
-        game.advance_round_if_needed()
+        game.advance()
         if (
             game.state.round > recorder.record.rounds[-1].round
             and not game.is_game_over()

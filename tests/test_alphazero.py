@@ -177,6 +177,6 @@ def test_alphazero_choose_move_returns_legal_move_after_advance():
         move = agent.choose_move(game)
         assert move in legal_before, f"Move {move} not in legal moves"
         game.make_move(move)
-        game.advance_round_if_needed()
+        game.advance()
         # Advance the agent's internal tree
         agent.advance(move)

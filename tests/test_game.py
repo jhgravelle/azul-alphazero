@@ -271,13 +271,6 @@ def test_make_move_to_floor_puts_all_tiles_on_floor():
     assert player.pattern_lines[0] == []
 
 
-def test_make_move_advances_current_player():
-    game = _mid_round_game()
-    game.state.factories[1] = [Tile.RED] * TILES_PER_FACTORY  # ensure round continues
-    game.make_move(Move(source=0, tile=Tile.BLUE, destination=1))
-    assert game.state.current_player == 1
-
-
 # endregion
 
 
@@ -515,6 +508,7 @@ def test_score_game_bonuses_applied_on_game_over():
 
     # Make the move — takes BLUE into pattern line 0 (capacity 1, so it's full).
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
+    game.advance()
 
     # score_round fires (sources empty), places BLUE on wall, then
     # is_game_over returns True (row 0 complete), then score_game fires.
@@ -637,23 +631,111 @@ def test_clone_make_move_does_not_affect_original():
     assert game.state.factories == game.clone().state.factories
 
 
-def test_end_of_round_does_not_auto_setup_next_round():
-    """After all sources are emptied, the engine must NOT auto-fill factories.
-    Round setup is the API's responsibility."""
+# region advance -----------------------------------------------------------
+
+
+def test_advance_sets_up_next_round_when_round_ends():
+    """advance() must refill factories after the round ends (game not over)."""
     game = Game()
     game.setup_round()
 
-    # Play moves until round ends.
-    for _ in range(500):
-        moves = game.legal_moves()
-        if not moves:
-            break
-        game.make_move(moves[0])
+    while not game.is_round_over():
+        game.make_move(game.legal_moves()[0])
 
-    # Factories and center must be empty -- no auto-setup.
+    game.advance()
+
+    total_tiles = sum(len(f) for f in game.state.factories)
+    assert total_tiles > 0
+
+
+def test_advance_rotates_player():
+    game = _mid_round_game()
+    game.state.factories[1] = [Tile.RED] * TILES_PER_FACTORY
+    game.make_move(Move(source=0, tile=Tile.BLUE, destination=1))
+    game.advance()
+    assert game.state.current_player == 1
+
+
+def test_advance_scores_round_when_round_ends():
+    game = Game()
+    game.setup_round()
+    player = game.state.players[0]
+    player.pattern_lines[0] = [Tile.BLUE]
     for factory in game.state.factories:
-        assert factory == []
-    assert game.state.center == []
+        factory.clear()
+    game.state.center.clear()
+    game.advance()
+    assert player.wall[0][0] == Tile.BLUE
+
+
+def test_advance_skips_setup_when_skip_setup_true():
+    game = Game()
+    game.setup_round()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+
+    assert game.advance(skip_setup=True) is True
+    total = sum(len(f) for f in game.state.factories)
+    assert total == 0
+
+
+def test_advance_calls_setup_round_when_skip_setup_false():
+    game = Game()
+    game.setup_round()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+
+    assert game.advance(skip_setup=False) is True
+    total = sum(len(f) for f in game.state.factories)
+    assert total > 0
+
+
+def test_advance_does_not_call_on_round_setup_when_game_ends():
+    game = Game()
+    game.setup_round()
+    player = game.state.players[0]
+    for column in range(1, BOARD_SIZE):
+        player.wall[0][column] = WALL_PATTERN[0][column]
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+    game.state.factories[0] = [Tile.BLUE]
+    game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
+
+    # skip_setup=True should have no effect when game is over
+    assert game.advance(skip_setup=True) is True
+    assert game.is_game_over()
+
+
+def test_advance_scores_game_when_game_ends():
+    game = Game()
+    game.setup_round()
+    player = game.state.players[0]
+    for column in range(1, BOARD_SIZE):
+        player.wall[0][column] = WALL_PATTERN[0][column]
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+    game.state.factories[0] = [Tile.BLUE]
+    game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
+    game.advance()
+    assert game.is_game_over()
+    assert player.score >= BONUS_ROW
+
+
+def test_advance_does_nothing_mid_round():
+    game = _mid_round_game()
+    game.state.factories[1] = [Tile.RED] * TILES_PER_FACTORY
+    game.make_move(Move(source=0, tile=Tile.BLUE, destination=1))
+    round_before = game.state.round
+    result = game.advance()
+    assert result is False
+    assert game.state.round == round_before
+
+
+# endregion
 
 
 def test_setup_round_with_explicit_factories():
@@ -786,6 +868,46 @@ def test_clone_clamped_points_is_independent():
     clone = game.clone()
     clone.state.players[0].clamped_points = 99
     assert game.state.players[0].clamped_points == 7
+
+
+# endregion
+# region is_round_over -----------------------------------------------------
+
+
+def test_is_round_over_false_when_factories_have_tiles():
+    game = Game()
+    game.setup_round()
+    assert game.is_round_over() is False
+
+
+def test_is_round_over_true_when_all_sources_empty():
+    game = Game()
+    game.setup_round()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+    assert game.is_round_over() is True
+
+
+def test_is_round_over_true_when_center_has_only_first_player():
+    game = Game()
+    game.setup_round()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+    game.state.center.append(Tile.FIRST_PLAYER)
+    assert game.is_round_over() is True
+
+
+def test_is_round_over_false_when_center_has_color_tile():
+    game = Game()
+    game.setup_round()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+    game.state.center.append(Tile.FIRST_PLAYER)
+    game.state.center.append(Tile.BLUE)
+    assert game.is_round_over() is False
 
 
 # endregion

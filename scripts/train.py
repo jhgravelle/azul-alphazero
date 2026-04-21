@@ -228,7 +228,7 @@ def evaluate(
 
             prev_round = game.state.round
             game.make_move(move)
-            game.advance_round_if_needed()
+            game.advance()
 
             if game.state.round != prev_round:
                 for agent in agents:
@@ -332,7 +332,7 @@ def evaluate_vs_random(
             else:
                 move = rng_agent.choose_move(game)
             game.make_move(move)
-            game.advance_round_if_needed()
+            game.advance()
             moves += 1
         scores = [p.score for p in game.state.players]
         if scores[0] == scores[1]:

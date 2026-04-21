@@ -261,7 +261,7 @@ def collect_self_play(
 
             prev_round = game.state.round
             game.make_move(move)
-            game.advance_round_if_needed()
+            game.advance()
 
             if game.state.round != prev_round:
                 # assert game.legal_moves(), (
@@ -414,6 +414,6 @@ def _play_heuristic_game(
 
         history.append((current_player, spatial, flat, policy_vec))
         game.make_move(move)
-        game.advance_round_if_needed()
+        game.advance()
 
     return history

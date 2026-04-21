@@ -69,19 +69,18 @@ def test_low_sim_tree_is_not_stable():
 
 
 def test_stability_requires_consecutive_batches():
-    """Stability counter only increments when top-k ranking is unchanged."""
+    """is_stable() returns True only when the tree is fully explored."""
     game = Game()
     game.setup_round()
     tree = SearchTree(policy_value_fn=_uniform_pv, simulations=50)
     tree.reset(game)
-    # Run several batches and record stability each time
     for _ in range(10):
         tree._run_simulations()
         tree.record_batch_stability()
-    # After 10 batches the counter is somewhere between 0 and 10 —
-    # just verify it's a non-negative int and is_stable() agrees with it
     assert tree._stable_batches >= 0
-    assert tree.is_stable() == (tree._stable_batches >= 3)
+    assert tree.is_stable() == (
+        tree._root._fully_explored if tree._root is not None else True
+    )
 
 
 def test_stability_resets_on_ranking_change():

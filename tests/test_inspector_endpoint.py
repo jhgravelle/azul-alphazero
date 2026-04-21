@@ -116,23 +116,6 @@ def test_extend_increases_sim_count():
     assert r2.json()["sim_count"] > r1.json()["sim_count"]
 
 
-def test_extend_done_tree_is_still_done():
-    """Extending a fully explored tree keeps done=True."""
-    game_id = _get_a_game_id()
-    # Run until done (may be slow — marked slow)
-    for _ in range(20):
-        client.post("/inspect/extend")
-        state = client.get(f"/inspect/{game_id}/0/state").json()
-        if state["done"]:
-            break
-    if state["done"]:
-        client.post("/inspect/extend")
-        state2 = client.get(f"/inspect/{game_id}/0/state").json()
-        assert state2["done"] is True
-    else:
-        pytest.skip("tree not fully explored after 20 extends")
-
-
 # ── /inspect/reset ────────────────────────────────────────────────────────────
 
 

@@ -321,15 +321,14 @@ def _enter_factory_setup() -> None:
 
 
 def _handle_round_end() -> None:
-    if not _game.is_round_over():
-        return
-    _game.advance(skip_setup=_manual_factories)
-    if _manual_factories:
-        _enter_factory_setup()
-    if _search_tree is not None:
-        _search_tree.reset(_game)
-    if _recorder is not None:
-        _recorder.start_round(_game)
+    round_ended = _game.advance(skip_setup=_manual_factories)
+    if round_ended:
+        if _manual_factories:
+            _enter_factory_setup()
+        if _search_tree is not None:
+            _search_tree.reset(_game)
+        if _recorder is not None:
+            _recorder.start_round(_game)
 
 
 def _total_slots() -> int:
@@ -403,8 +402,9 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
 
     if _search_tree is not None:
         _search_tree.advance(move)
+
     if _hyp_marker is not None:
-        pass
+        _game.advance()
     else:
         _handle_round_end()
         if _game.is_game_over() and _recorder is not None:
@@ -483,10 +483,9 @@ def agent_move() -> GameStateResponse:
     _game.make_move(move)
     if _search_tree is not None:
         _search_tree.advance(move)
-    _handle_round_end()
 
     if _hyp_marker is not None:
-        pass
+        _game.advance()
     else:
         _handle_round_end()
         if _game.is_game_over() and _recorder is not None:

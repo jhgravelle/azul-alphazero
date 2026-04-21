@@ -46,3 +46,20 @@ class GameState:
             self.bag = [color for color in COLOR_TILES] * TILES_PER_COLOR
             logger.debug(f"Created bag with {len(self.bag)} tiles")
             random.shuffle(self.bag)  # Shuffle the bag at the start of the game
+
+    def clone(self) -> "GameState":
+        """Return a fast independent copy of this game state.
+
+        Bypasses __post_init__ entirely — no fresh bag shuffle, no empty
+        board construction. All mutable state is copied with direct list
+        operations.
+        """
+        s = object.__new__(GameState)
+        s.current_player = self.current_player
+        s.round = self.round
+        s.players = [p.clone() for p in self.players]
+        s.factories = [f[:] for f in self.factories]
+        s.center = self.center[:]
+        s.bag = self.bag[:]
+        s.discard = self.discard[:]
+        return s

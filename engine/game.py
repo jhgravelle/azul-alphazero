@@ -41,24 +41,9 @@ class Game:
         self.state = GameState()
 
     def clone(self) -> "Game":
-        """Return a fast independent copy of this game.
-
-        Bypasses __init__ and GameState.__post_init__ entirely — no fresh
-        bag shuffle, no empty board construction. All mutable state is
-        copied with direct list operations.
-        """
+        """Return a fast independent copy of this game."""
         g = object.__new__(Game)
-        s = object.__new__(GameState)
-
-        s.current_player = self.state.current_player
-        s.round = self.state.round
-        s.players = [p.clone() for p in self.state.players]
-        s.factories = [f[:] for f in self.state.factories]
-        s.center = self.state.center[:]
-        s.bag = self.state.bag[:]
-        s.discard = self.state.discard[:]
-
-        g.state = s
+        g.state = self.state.clone()
         return g
 
     # ------------------------------------------------------------------

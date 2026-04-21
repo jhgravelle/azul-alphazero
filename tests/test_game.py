@@ -1034,3 +1034,65 @@ def test_place_tiles_first_player_does_not_go_on_pattern_line():
 
 
 # endregion
+# region GameState.clone ---------------------------------------------------
+
+
+def test_game_state_clone_returns_different_object():
+    game = Game()
+    game.setup_round()
+    assert game.state.clone() is not game.state
+
+
+def test_game_state_clone_scalar_fields_match():
+    game = Game()
+    game.setup_round()
+    game.state.current_player = 1
+    game.state.round = 3
+    clone = game.state.clone()
+    assert clone.current_player == 1
+    assert clone.round == 3
+
+
+def test_game_state_clone_factories_equal_but_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.state.clone()
+    assert clone.factories == game.state.factories
+    clone.factories[0].clear()
+    assert game.state.factories[0] != clone.factories[0]
+
+
+def test_game_state_clone_center_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.state.clone()
+    clone.center.append(Tile.BLUE)
+    assert Tile.BLUE not in game.state.center
+
+
+def test_game_state_clone_bag_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.state.clone()
+    original_len = len(game.state.bag)
+    clone.bag.pop()
+    assert len(game.state.bag) == original_len
+
+
+def test_game_state_clone_discard_independent():
+    game = Game()
+    game.state.discard = [Tile.RED, Tile.BLUE]
+    clone = game.state.clone()
+    clone.discard.append(Tile.BLACK)
+    assert len(game.state.discard) == 2
+
+
+def test_game_state_clone_players_independent():
+    game = Game()
+    game.setup_round()
+    clone = game.state.clone()
+    clone.players[0].score = 99
+    assert game.state.players[0].score != 99
+
+
+# endregion

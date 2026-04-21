@@ -40,6 +40,7 @@ I am building an Azul board game engine with an AlphaZero AI in Python. This is 
 ## Code style preferences
 
 - **f-strings for logging and string formatting.** I prefer `f"something: {value:.4f}"` over `"something: %.4f" % value` or `"something: {:.4f}".format(value)`. Keep this consistent in new code. Existing `%`-style logging calls can stay as-is unless I'm already editing them.
+- **Always provide full methods:** when editing a method always provdie the new complete method.
 - **Break long methods into sub-methods.** When a function grows past ~20 lines or has multiple distinct phases, split it into named helpers. Prefer many small well-named functions over long ones with inline comments marking "sections."
 - **Descriptive helper names over inline complexity.** A helper named `_apply_warmup_floor_override(move, policy_pairs, game)` is more readable than a 15-line inline block with a comment.
 - **Avoid abbreviations.** well named variables self document the code, short variable names only when immediately obvious to a beginner programmer and extremely small in scope.

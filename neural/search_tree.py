@@ -683,15 +683,18 @@ class SearchTree:
             root_player=root_player,
         )
 
-    def is_stable(self, top_k: int = 5, required_stable_batches: int = 3) -> bool:
-        if self._root is not None and self._root._fully_explored:
+    def is_stable(self) -> bool:
+        if self._root is None:
             return True
-        return self._stable_batches >= required_stable_batches
+        return self._root._fully_explored
 
     def record_batch_stability(self, top_k: int = 5) -> None:
         """Called after each batch. Updates the consecutive-stable-batch
         counter by comparing the current top-k ranking to the previous one.
         """
+        if self._root is not None:
+            self._is_subtree_explored(self._root)
+
         if self._root is None or not self._root.children:
             self._stable_batches = 0
             self._last_top_k: list[int] = []
@@ -709,13 +712,19 @@ class SearchTree:
         self._last_top_k = current
 
     def _is_subtree_explored(self, node: "AZNode") -> bool:
-        """Recursively check that node and all pre-boundary descendants are
-        fully expanded."""
+        if node._explored:
+            return True
         if node.is_terminal or node.is_round_boundary:
             return True
         if not node.is_fully_expanded:
             return False
-        return all(self._is_subtree_explored(c) for c in node.children)
+        if not node.children:
+            node._explored = True
+            return True
+        if all(self._is_subtree_explored(c) for c in node.children):
+            node._explored = True
+            return True
+        return False
 
     def _empty_node_dict(self) -> dict:
         return {

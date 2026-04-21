@@ -757,6 +757,10 @@ function renderLive() {
     whatIfBtn.disabled = isBotVsBot || state.is_game_over;
     whatIfBtn.addEventListener("click", enterHypothetical);
     header.appendChild(whatIfBtn);
+
+    const copyBtn = createElement("button", "header-btn secondary", "Copy state");
+    copyBtn.addEventListener("click", _copyStateText);
+    header.appendChild(copyBtn);
   }
 
   header.appendChild(_makeMenuButton());
@@ -935,6 +939,10 @@ function renderReplay() {
   whatIfBtn.addEventListener("click", enterHypotheticalFromReplay);
   controls.appendChild(whatIfBtn);
 
+  const copyBtn = createElement("button", "replay-btn", "Copy state");
+  copyBtn.addEventListener("click", _copyStateText);
+  controls.appendChild(copyBtn);
+
   controls.appendChild(_makeMenuButton("replay-btn"));
 
   app.appendChild(controls);
@@ -1003,3 +1011,102 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+function _copyStateText() {
+    const state = replayRecord ? _replayCurrentState() : gameState;
+    if (!state) return;
+
+    const TILE_LETTERS = { BLUE: "B", YELLOW: "Y", RED: "R", BLACK: "K", WHITE: "W", FIRST_PLAYER: "F" };
+    const tl = t => TILE_LETTERS[t] ?? "?";
+
+    const lines = [];
+
+    // Header
+    const moverName = replayRecord
+        ? replayRecord.player_names[_replayCurrentPlayer()]
+        : (PLAYER_OPTIONS.find(o => o.value === state.player_types[state.current_player])?.label ?? state.player_types[state.current_player]);
+    lines.push(`Round ${state.round} | Move ${replayRecord ? replayTurnIndex : "?"} | ${moverName} to play`);
+    lines.push("");
+
+    // Factories
+    lines.push("Factories:");
+    state.factories.forEach((f, i) => {
+        const content = f.length === 0 ? "(empty)" : f.map(tl).join(" ");
+        lines.push(`  F${i + 1}: ${content}`);
+    });
+    const centerTiles = state.center.map(tl).join(" ");
+    lines.push(`Center: ${centerTiles || "(empty)"}`);
+    lines.push("");
+
+    // Boards
+    state.boards.forEach((board, index) => {
+        const playerType = replayRecord
+            ? (replayRecord.player_types ?? [])[index]
+            : state.player_types[index];
+        const agentLabel = PLAYER_OPTIONS.find(o => o.value === playerType)?.label ?? playerType;
+        const isCurrent = index === state.current_player;
+        lines.push(`P${index + 1} ${agentLabel} ${board.score}pts${isCurrent ? " [current]" : ""}`);
+
+        // Pattern lines
+        lines.push("  Pattern:");
+        board.pattern_lines.forEach((row, rowIndex) => {
+            const capacity = rowIndex + 1;
+            const slots = [];
+            for (let s = 0; s < 5; s++) {
+                const posInRow = s - (5 - capacity);
+                if (posInRow < 0) {
+                    slots.push(" "); // left padding
+                } else if (posInRow < row.length) {
+                    slots.push(tl(row[posInRow]));
+                } else {
+                    slots.push(".");
+                }
+            }
+            lines.push(`    row${rowIndex + 1}: ${slots.join(" ")}`);
+        });
+
+        // Wall
+        lines.push("  Wall:");
+        board.wall.forEach((row, rowIndex) => {
+            const cells = row.map(t => t ? tl(t) : ".").join(" ");
+            lines.push(`    row${rowIndex + 1}: ${cells}`);
+        });
+
+        // Floor
+        const floorTiles = board.floor_line.map(tl).join(" ");
+        const floorTotal = floorPenalty(board.floor_line);
+        lines.push(`  Floor: ${floorTiles || "(empty)"} [${floorTotal}pts]`);
+        lines.push("");
+    });
+
+    navigator.clipboard.writeText(lines.join("\n"));
+}
+
+function _replayCurrentState() {
+    const turns = replayRecord.computed_turns ?? [];
+    const isAfterLastMove = replayTurnIndex >= turns.length;
+    if (isAfterLastMove) {
+        return {
+            round: "final",
+            current_player: 0,
+            factories: [],
+            center: [],
+            boards: replayRecord.final_boards ?? [],
+            player_types: replayRecord.player_types ?? [],
+        };
+    }
+    const turn = turns[replayTurnIndex];
+    return {
+        round: turn.round,
+        current_player: turn.player_index,
+        factories: turn.factories,
+        center: turn.center,
+        boards: turn.boards,
+        player_types: replayRecord.player_types ?? [],
+    };
+}
+
+function _replayCurrentPlayer() {
+    const turns = replayRecord.computed_turns ?? [];
+    if (replayTurnIndex >= turns.length) return 0;
+    return turns[replayTurnIndex].player_index;
+}

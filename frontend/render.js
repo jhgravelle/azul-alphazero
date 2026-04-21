@@ -590,7 +590,7 @@ function renderInspectorPanel(snapshot, {
   status.appendChild(extendBtn);
   panel.appendChild(status);
 
-  const copyBtn = createElement("button", "inspector-extend-btn", "Copy");
+  const copyBtn = createElement("button", "inspector-extend-btn", "Copy Tree");
   copyBtn.disabled = !snapshot;
   copyBtn.addEventListener("click", () => {
     const text = _inspectorTreeText(snapshot.tree, 0);

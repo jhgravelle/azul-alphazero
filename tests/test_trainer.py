@@ -172,11 +172,12 @@ def test_collect_heuristic_games_policy_sums_to_one():
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
 
+@pytest.mark.slow
 def test_collect_heuristic_games_records_all_games():
     """No games should be skipped — stats should show all games recorded."""
     buf = ReplayBuffer(capacity=100_000)
     stats = collect_heuristic_games(buf, num_games=20)
-    total_games = stats["greedy_wins"] + stats["cautious_wins"] + stats["ties"]
+    total_games = stats["easy_wins"] + stats["medium_wins"] + stats["ties"]
     assert total_games == 20
     assert stats["games_recorded"] == 20
 
@@ -424,21 +425,21 @@ def test_score_differential_value_equal():
 
 
 def test_score_differential_value_positive_boundary():
-    # +20 diff / 20 divisor = +1.0 exactly
-    assert score_differential_value([50, 30], 0) == pytest.approx(1.0)
+    # +50 diff / 50 divisor = +1.0 exactly
+    assert score_differential_value([80, 30], 0) == pytest.approx(1.0)
 
 
 def test_score_differential_value_clips_positive():
-    assert score_differential_value([60, 30], 0) == 1.0
+    assert score_differential_value([80, 20], 0) == 1.0
 
 
 def test_score_differential_value_clips_negative():
-    assert score_differential_value([30, 60], 0) == -1.0
+    assert score_differential_value([20, 80], 0) == -1.0
 
 
 def test_score_differential_value_midrange():
-    # +10 diff / 20 = +0.5
-    assert score_differential_value([45, 35], 0) == pytest.approx(0.5)
+    # +25 diff / 50 = +0.5
+    assert score_differential_value([60, 35], 0) == pytest.approx(0.5)
 
 
 def test_total_score_value_zero():

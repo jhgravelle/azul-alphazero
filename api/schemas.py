@@ -15,6 +15,7 @@ PlayerType = Literal[
     "alphabeta_easy",
     "alphabeta_medium",
     "alphabeta_hard",
+    "alphabeta_extreme",
 ]
 
 

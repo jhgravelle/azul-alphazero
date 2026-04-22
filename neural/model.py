@@ -5,8 +5,8 @@ Architecture
 ------------
 Two input branches that merge before the policy and value heads.
 
-Spatial branch — processes the (12, 5, 6) wall+pattern tensor:
-    Conv2d(12 → 64, kernel=3, padding=1) → LayerNorm → ReLU
+Spatial branch — processes the (14, 5, 6) wall+pattern tensor:
+    Conv2d(14 → 64, kernel=3, padding=1) → LayerNorm → ReLU
     Conv2d(64 → 128, kernel=3, padding=1) → LayerNorm → ReLU
     Flatten → Linear(128*5*6 → hidden_dim) → LayerNorm → ReLU
 
@@ -89,7 +89,7 @@ class AzulNet(nn.Module):
         self.num_blocks = num_blocks
 
         # ── Spatial branch ────────────────────────────────────────────────
-        # Input: (batch, 12, 5, 6)
+        # Input: (batch, 14, 5, 6)
         # Two conv layers preserve spatial dimensions (padding=1, kernel=3).
         # LayerNorm applied over the channel dimension after each conv.
         self.conv1 = nn.Conv2d(NUM_CHANNELS, _CONV_MID, kernel_size=3, padding=1)
@@ -144,7 +144,7 @@ class AzulNet(nn.Module):
 
     def forward(
         self,
-        spatial: torch.Tensor,  # (batch, 12, 5, 6)
+        spatial: torch.Tensor,  # (batch, 14, 5, 6)
         flat: torch.Tensor,  # (batch, FLAT_SIZE)
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run a forward pass.

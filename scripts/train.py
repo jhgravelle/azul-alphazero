@@ -1,6 +1,4 @@
-#!/usr/bin/env python
 # scripts/train.py
-
 """AlphaZero self-play training loop for Azul.
 
 Usage:
@@ -30,11 +28,13 @@ from neural.trainer import (
     collect_heuristic_games,
     total_score_value,
     win_loss_value,
+    score_differential_value,
 )
+from agents.alphabeta import AlphaBetaAgent
 from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
-from engine.scoring import earned_score
+from engine.scoring import earned_score_unclamped
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
@@ -132,9 +132,36 @@ def save_checkpoint(net: AzulNet, generation: int) -> Path:
     return path
 
 
+def save_latest_checkpoint(net: AzulNet, args: argparse.Namespace) -> None:
+    """Overwrite checkpoints/latest.pt and latest_params.json after every
+    iteration so a killed run can be resumed with --load checkpoints/latest.pt.
+    """
+    import json
+
+    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    torch.save(net.state_dict(), CHECKPOINT_DIR / "latest.pt")
+    params_path = CHECKPOINT_DIR / "latest_params.json"
+    params_path.write_text(json.dumps(vars(args), indent=2))
+
+
 def load_checkpoint(net: AzulNet, path: str) -> None:
     net.load_state_dict(torch.load(path, map_location=DEVICE))
     logger.info("loaded checkpoint <- %s", path)
+
+
+# ── Scoring helper ────────────────────────────────────────────────────────────
+
+
+def _compute_game_scores(game: Game) -> list[int]:
+    """Return earned_score_unclamped minus clamped_points for each player.
+
+    Unclamped so floor penalties below zero carry meaning. Minus
+    clamped_points so score-clamping artifacts don't inflate the target.
+    """
+    return [
+        earned_score_unclamped(player) - player.clamped_points
+        for player in game.state.players
+    ]
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -152,18 +179,17 @@ def evaluate(
     generation: int = 0,
 ) -> float:
     from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
-    from neural.trainer import score_differential_value
-    from engine.game_recorder import GameRecorder
     from neural.model import AzulNet as _AzulNet
     from agents.alphazero import AlphaZeroAgent
+    from engine.game_recorder import GameRecorder
 
     # MCTS inference is faster on CPU — use CPU copies of nets for tree search.
-    def _to_cpu(n: AzulNet) -> AzulNet:
-        if next(n.parameters()).device.type == "cpu":
-            return n
-        n_cpu = _AzulNet()
-        n_cpu.load_state_dict(n.state_dict())
-        return n_cpu
+    def _to_cpu(net: AzulNet) -> AzulNet:
+        if next(net.parameters()).device.type == "cpu":
+            return net
+        net_cpu = _AzulNet()
+        net_cpu.load_state_dict(net.state_dict())
+        return net_cpu
 
     new_net_cpu = _to_cpu(new_net)
     old_net_cpu = _to_cpu(old_net)
@@ -180,7 +206,6 @@ def evaluate(
         game.setup_round()
         new_is_p0 = i % 2 == 0
 
-        # Two agents, each with their own tree, using their own net.
         nets_cpu = (
             [new_net_cpu, old_net_cpu] if new_is_p0 else [old_net_cpu, new_net_cpu]
         )
@@ -195,7 +220,6 @@ def evaluate(
         history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
         prev_round = game.state.round
 
-        # Set up recorder for first game only
         recorder: GameRecorder | None = None
         if record and i == 0:
             recorder = GameRecorder(
@@ -261,7 +285,7 @@ def evaluate(
             logger.info(f"saved eval recording -> {filename}")
 
         if buf is not None:
-            scores = [earned_score(p) - p.clamped_points for p in game.state.players]
+            scores = _compute_game_scores(game)
             for player_idx, spatial, flat, policy_vec in history:
                 vw = win_loss_value(scores, player_idx)
                 vd = score_differential_value(scores, player_idx)
@@ -276,10 +300,10 @@ def evaluate(
             result = "tie"
             new_wins += 0.5
         elif (scores[0] > scores[1]) == new_is_p0:
-            result = "new ✓"
+            result = "new +"
             new_wins += 1.0
         else:
-            result = "old ✗"
+            result = "old -"
             losses += 1
 
         logger.info(
@@ -346,7 +370,7 @@ def evaluate_vs_random(
 
 
 def _summary_line(r: IterResult) -> str:
-    promoted = f"✓ gen{r.generation:04d}" if r.promoted else "✗      "
+    promoted = f"+ gen{r.generation:04d}" if r.promoted else "-      "
     return (
         f"iter {r.iteration:3d} | loss {r.avg_loss:.4f} | "
         f"win {r.win_rate * 100:5.1f}% {promoted} | "
@@ -421,7 +445,7 @@ def main() -> None:
         "--buffer-size",
         type=int,
         default=100_000,
-        help="replay buffer capacity (default 50000)",
+        help="replay buffer capacity (default 100000)",
     )
     parser.add_argument(
         "--batch-size", type=int, default=256, help="training batch size (default 256)"
@@ -461,8 +485,8 @@ def main() -> None:
         "--warmup-threshold",
         type=float,
         default=20.0,
-        help="avg AlphaZero score required to switch from warmup to self-play (default "
-        "20)",
+        help="avg AlphaZero score required to switch from warmup to self-play "
+        "(default 20)",
     )
     parser.add_argument(
         "--warmup-window",
@@ -501,6 +525,13 @@ def main() -> None:
         help="clear the replay buffer after heuristic pretraining so self-play "
         "starts with a clean buffer (default: keep pretrain data mixed in)",
     )
+    parser.add_argument(
+        "--heuristic-games-per-iter",
+        type=int,
+        default=0,
+        help="AlphaBeta-vs-candidate games to inject each iteration alongside "
+        "self-play, keeping high-quality data fresh in the buffer (default 0)",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -524,6 +555,7 @@ def main() -> None:
 
     warmup_mode = args.greedy_warmup
     greedy_opponent = GreedyAgent()
+    alphabeta_opponent = AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
     recent_az_scores: list[float] = []
     iter_results: list[IterResult] = []
 
@@ -538,7 +570,8 @@ def main() -> None:
     # ── Heuristic pretraining ──────────────────────────────────────────────
     if args.pretrain_games > 0:
         logger.info(
-            "pretraining buffer with %d heuristic games...", args.pretrain_games
+            "pretraining buffer with %d heuristic games (AlphaBeta easy vs medium)...",
+            args.pretrain_games,
         )
         collect_heuristic_games(buf, num_games=args.pretrain_games)
         logger.info("pretraining complete -- buffer size: %d", len(buf))
@@ -549,16 +582,21 @@ def main() -> None:
             args.pretrain_steps,
         )
         accum = _init_loss_accumulator()
+        interval_accum = _init_loss_accumulator()
         for step in range(1, args.pretrain_steps + 1):
-            losses = trainer.train_step(buf, value_only=True)
+            # Always train policy+value — value-only pretraining is a
+            # divergence trap (see lessons learned in PROJECT_PLAN.md).
+            losses = trainer.train_step(buf, value_only=False)
             _accumulate_losses(accum, losses)
+            _accumulate_losses(interval_accum, losses)
             if step % 500 == 0:
                 logger.info(
                     "  pretrain step %d/%d -- %s",
                     step,
                     args.pretrain_steps,
-                    _format_loss_line(accum, step),
+                    _format_loss_line(interval_accum, 500),
                 )
+                interval_accum = _init_loss_accumulator()
         logger.info(
             "pretraining complete -- %d steps -- %s",
             args.pretrain_steps,
@@ -581,9 +619,8 @@ def main() -> None:
                 continue
             accum = _init_loss_accumulator()
             for _ in range(args.train_steps):
-                losses = trainer.train_step(buf, value_only=True)
+                losses = trainer.train_step(buf, value_only=False)
                 _accumulate_losses(accum, losses)
-            avg_loss = accum["total"] / args.train_steps
             logger.info(
                 "  heuristic iter %d/%d -- buffer size %d -- %s",
                 h_iter,
@@ -630,10 +667,33 @@ def main() -> None:
         )
         logger.info("replay buffer size: %d", len(buf))
 
+        # ── 1b. AlphaBeta-vs-candidate injection ───────────────────────────
+        # Keeps high-quality search data fresh in the buffer each iteration.
+        # AlphaBeta uses its scored policy distribution; candidate uses MCTS
+        # visit counts. Both sides produce soft policy targets.
+        if args.heuristic_games_per_iter > 0:
+            logger.info(
+                "generating %d AlphaBeta-vs-candidate games...",
+                args.heuristic_games_per_iter,
+            )
+            injection_az_scores = collect_self_play(
+                buf,
+                net=net,
+                num_games=args.heuristic_games_per_iter,
+                simulations=args.simulations,
+                temperature=args.temperature,
+                opponent=alphabeta_opponent,
+                device=DEVICE,
+            )
+            az_scores.extend(injection_az_scores)
+            logger.info("replay buffer size after injection: %d", len(buf))
+
         # ── Rolling average and auto-switch ────────────────────────────────
         recent_az_scores.extend(az_scores)
         recent_az_scores = recent_az_scores[-args.warmup_window :]
-        rolling_avg = sum(recent_az_scores) / len(recent_az_scores)
+        rolling_avg = (
+            sum(recent_az_scores) / len(recent_az_scores) if recent_az_scores else 0.0
+        )
         logger.info(
             "AlphaZero rolling avg score (last %d games): %.1f",
             len(recent_az_scores),
@@ -642,7 +702,7 @@ def main() -> None:
         if warmup_mode and rolling_avg >= args.warmup_threshold:
             warmup_mode = False
             logger.info(
-                "★ rolling avg %.1f >= %.0f -- switching to self-play mode",
+                "rolling avg %.1f >= %.0f -- switching to self-play mode",
                 rolling_avg,
                 args.warmup_threshold,
             )
@@ -659,15 +719,29 @@ def main() -> None:
                 args.value_only_iterations,
             )
         if not value_only and iteration == args.value_only_iterations + 1:
-            logger.info("★ switching to full policy+value training")
+            logger.info("switching to full policy+value training")
 
         logger.info("running %d training steps...", args.train_steps)
-        accum = _init_loss_accumulator()
-        for _ in range(args.train_steps):
+        total_accum = _init_loss_accumulator()
+        interval_accum = _init_loss_accumulator()
+        log_interval = 500
+        for step in range(1, args.train_steps + 1):
             losses = trainer.train_step(buf, value_only=value_only)
-            _accumulate_losses(accum, losses)
-        avg_loss = accum["total"] / args.train_steps
-        logger.info(_format_loss_line(accum, args.train_steps))
+            _accumulate_losses(total_accum, losses)
+            _accumulate_losses(interval_accum, losses)
+            if step % log_interval == 0:
+                logger.info(
+                    "  step %d/%d -- %s",
+                    step,
+                    args.train_steps,
+                    _format_loss_line(interval_accum, log_interval),
+                )
+                interval_accum = _init_loss_accumulator()
+        avg_loss = total_accum["total"] / args.train_steps
+        logger.info(
+            "training complete -- %s",
+            _format_loss_line(total_accum, args.train_steps),
+        )
 
         # ── 3. Evaluation ──────────────────────────────────────────────────
         if iteration <= args.skip_eval_iterations:
@@ -707,7 +781,6 @@ def main() -> None:
                 logger.info(f"new net win rate vs random: {rng_wr * 100:.1f}%")
 
         # ── 4. Keep if better ──────────────────────────────────────────────
-        # ── 4. Keep if better ──────────────────────────────────────────────
         promoted = (iteration > args.skip_eval_iterations) and (
             win_rate >= args.win_threshold
         )
@@ -715,10 +788,10 @@ def main() -> None:
             generation += 1
             best_net = copy.deepcopy(net)
             save_checkpoint(net, generation)
-            logger.info("✓ new best model -- generation %d", generation)
+            logger.info("new best model -- generation %d", generation)
         else:
             logger.info(
-                "✗ new model did not beat threshold (%.0f%% < %.0f%%) -- keeping old "
+                "new model did not beat threshold (%.0f%% < %.0f%%) -- keeping old "
                 "best",
                 win_rate * 100,
                 args.win_threshold * 100,
@@ -741,6 +814,7 @@ def main() -> None:
         )
         iter_results.append(result)
         logger.info(_summary_line(result))
+        save_latest_checkpoint(net, args)
 
     # ── Final summary ──────────────────────────────────────────────────────
     print_summary(iter_results, generation)

@@ -177,7 +177,7 @@ def test_collect_heuristic_games_records_all_games():
     """No games should be skipped — stats should show all games recorded."""
     buf = ReplayBuffer(capacity=100_000)
     stats = collect_heuristic_games(buf, num_games=20)
-    total_games = stats["easy_wins"] + stats["medium_wins"] + stats["ties"]
+    total_games = stats["wins_by_p0"] + stats["wins_by_p1"] + stats["ties"]
     assert total_games == 20
     assert stats["games_recorded"] == 20
 

@@ -6,7 +6,8 @@ from __future__ import annotations
 import logging
 import torch
 import torch.nn.functional as F
-
+from typing import Callable
+import random
 from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
 from engine.game import Game, FLOOR
@@ -296,62 +297,109 @@ def collect_self_play(
 
 # ── Heuristic data collection ─────────────────────────────────────────────────
 
+# Type alias for a matchup: two agent factories and a relative weight.
+# The weight controls how often this matchup is sampled relative to others.
+# Example:
+#   MATCHUPS_DEFAULT = [
+#       (make_easy, make_easy,   0.3),
+#       (make_easy, make_medium, 0.4),
+#       (make_medium, make_medium, 0.3),
+#   ]
+
+MatchupSpec = tuple[Callable, Callable, float]
+
+
+def _default_matchups() -> list[MatchupSpec]:
+    """Default weighted matchup list for heuristic pretraining.
+
+    easy vs easy:     30% — high volume, lower quality ceiling
+    easy vs medium:   40% — most useful, covers both skill levels
+    medium vs medium: 30% — fewer games, higher quality ceiling
+    """
+    from agents.alphabeta import AlphaBetaAgent
+
+    def make_easy() -> AlphaBetaAgent:
+        return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
+
+    def make_medium() -> AlphaBetaAgent:
+        return AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10))
+
+    return [
+        (make_easy, make_easy, 0.3),
+        (make_easy, make_medium, 0.4),
+        (make_medium, make_medium, 0.3),
+    ]
+
+
+def _sample_matchup(
+    matchups: list[MatchupSpec],
+    rng: "random.Random",
+) -> tuple[Agent, Agent]:
+    """Sample one matchup according to weights, return two fresh agent instances."""
+    weights = [w for _, _, w in matchups]
+    total = sum(weights)
+    threshold = rng.random() * total
+    cumulative = 0.0
+    for factory_a, factory_b, weight in matchups:
+        cumulative += weight
+        if threshold <= cumulative:
+            return factory_a(), factory_b()
+    # Fallback to last matchup (handles floating point edge cases)
+    factory_a, factory_b, _ = matchups[-1]
+    return factory_a(), factory_b()
+
 
 def collect_heuristic_games(
     buf: ReplayBuffer,
     num_games: int = 200,
+    matchups: list[MatchupSpec] | None = None,
 ) -> dict[str, int]:
-    """Pretrain the buffer with AlphaBeta easy vs AlphaBeta medium games.
+    """Fill the buffer with AlphaBeta vs AlphaBeta games.
 
-    AlphaBeta agents play genuine wall-building Azul, producing coherent
-    games with meaningful score variance. Policy targets are uniform
-    distributions (AlphaBeta inherits uniform policy_distribution from
-    Agent base class) — soft over dozens of legal moves, not one-hot.
+    Matchups are sampled according to the weighted matchup list. Each game
+    alternates which agent plays p0/p1 for symmetric training data. Both
+    agents' perspectives are recorded every game.
 
-    Games alternate which agent plays as p0/p1 for symmetric training data.
-    Both agents' perspectives are recorded every game.
+    Policy targets come from each agent's policy_distribution — for
+    AlphaBeta this is a softmax over root move scores, not one-hot.
+
+    Args:
+        buf:      Replay buffer to push examples into.
+        num_games: Number of games to play.
+        matchups:  Weighted matchup specs. Defaults to easy/medium variety.
     """
-    from agents.alphabeta import AlphaBetaAgent
+    import random as random_module
 
-    def make_easy_agent() -> AlphaBetaAgent:
-        return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
+    if matchups is None:
+        matchups = _default_matchups()
 
-    def make_medium_agent() -> AlphaBetaAgent:
-        return AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10))
-
-    easy_wins = 0
-    medium_wins = 0
+    rng = random_module.Random()
+    wins_by_p0 = 0
+    wins_by_p1 = 0
     ties = 0
-    easy_scores: list[float] = []
-    medium_scores: list[float] = []
+    all_scores: list[int] = []
 
     for game_num in range(num_games):
         game = Game()
         game.setup_round()
 
-        easy = make_easy_agent()
-        medium = make_medium_agent()
+        agent_a, agent_b = _sample_matchup(matchups, rng)
 
-        # Alternate which agent plays p0 for symmetric data.
+        # Alternate who plays p0 for symmetric data.
         if game_num % 2 == 0:
-            agents: list[Agent] = [easy, medium]
-            easy_is_p0 = True
+            agents: list[Agent] = [agent_a, agent_b]
         else:
-            agents = [medium, easy]
-            easy_is_p0 = False
+            agents = [agent_b, agent_a]
 
         history = _play_heuristic_game(game, agents)
 
         scores = _compute_game_scores(game)
-        easy_score = scores[0] if easy_is_p0 else scores[1]
-        medium_score = scores[1] if easy_is_p0 else scores[0]
-        easy_scores.append(easy_score)
-        medium_scores.append(medium_score)
+        all_scores.extend(scores)
 
-        if easy_score > medium_score:
-            easy_wins += 1
-        elif medium_score > easy_score:
-            medium_wins += 1
+        if scores[0] > scores[1]:
+            wins_by_p0 += 1
+        elif scores[1] > scores[0]:
+            wins_by_p1 += 1
         else:
             ties += 1
 
@@ -363,22 +411,21 @@ def collect_heuristic_games(
 
         logger.debug(
             f"heuristic game {game_num + 1}/{num_games} -- "
-            f"alphabeta_easy vs alphabeta_medium -- scores {scores} -- "
-            f"buffer size {len(buf)}"
+            f"{type(agents[0]).__name__} vs {type(agents[1]).__name__} -- "
+            f"scores {scores} -- buffer size {len(buf)}"
         )
 
-    avg_easy = sum(easy_scores) / len(easy_scores)
-    avg_medium = sum(medium_scores) / len(medium_scores)
+    avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
     logger.info(
-        f"heuristic pretrain complete -- "
-        f"easy: {easy_wins}W/{medium_wins}L/{ties}T -- "
-        f"avg scores: easy={avg_easy:.1f} medium={avg_medium:.1f} -- "
+        f"heuristic games complete -- "
+        f"p0: {wins_by_p0}W / p1: {wins_by_p1}W / {ties}T -- "
+        f"avg score: {avg_score:.1f} -- "
         f"{num_games} games recorded"
     )
 
     return {
-        "easy_wins": easy_wins,
-        "medium_wins": medium_wins,
+        "wins_by_p0": wins_by_p0,
+        "wins_by_p1": wins_by_p1,
         "ties": ties,
         "games_recorded": num_games,
     }
@@ -404,15 +451,13 @@ def _play_heuristic_game(
         spatial, flat = encode_state(game)
 
         agent = agents[current_player]
+        # choose_move must come first — for AlphaBeta it populates the
+        # internal score cache that policy_distribution reads from.
+        move = agent.choose_move(game)
         policy_pairs = agent.policy_distribution(game)
         policy_vec = torch.zeros(MOVE_SPACE_SIZE)
         for m, prob in policy_pairs:
             policy_vec[encode_move(m, game)] = prob
-
-        # Use the agent's choose_move to keep its internal logic authoritative.
-        # For AlphaBeta this runs the actual search; policy_distribution is
-        # recorded separately for the training target.
-        move = agent.choose_move(game)
 
         history.append((current_player, spatial, flat, policy_vec))
         game.make_move(move)

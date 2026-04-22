@@ -4,8 +4,9 @@
 from typing import Literal
 from pydantic import BaseModel, field_validator
 
+
 PlayerType = Literal[
-    "human", "random", "cautious", "efficient", "greedy", "mcts", "minimax"
+    "human", "random", "cautious", "efficient", "greedy", "mcts", "minimax", "alphabeta"
 ]
 
 

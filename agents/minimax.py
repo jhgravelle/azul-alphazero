@@ -12,16 +12,33 @@ class MinimaxAgent(Agent):
     next round's random factory setup.
     """
 
-    def __init__(self, depth: int = 3) -> None:
-        self.depth = depth
+    def __init__(
+        self,
+        depths: tuple[int, int, int] = (2, 3, 4),
+        thresholds: tuple[int, int] = (10, 7),
+    ) -> None:
+        self.depths = depths  # (high_branching, mid, low)
+        self.thresholds = (
+            thresholds  # (above this → depth[0], above this → depth[1], else depth[2])
+        )
+
+    def _effective_depth(self, game: Game) -> int:
+        legal_count = len(game.legal_moves())
+        if legal_count > self.thresholds[0]:
+            return self.depths[0]
+        elif legal_count > self.thresholds[1]:
+            return self.depths[1]
+        else:
+            return self.depths[2]
 
     def choose_move(self, game: Game) -> Move:
         legal = game.legal_moves()
         root_player = game.state.current_player
+        depth = self._effective_depth(game)
         best_move = legal[0]
         best_score = float("-inf")
         for move in legal:
-            score = self._minimax(game, move, self.depth, root_player)
+            score = self._minimax(game, move, depth, root_player)
             if score > best_score:
                 best_score = score
                 best_move = move
@@ -33,13 +50,14 @@ class MinimaxAgent(Agent):
 
         child = game.clone()
         child.make_move(move)
-        child.advance()
 
         after = earned_score_unclamped(child.state.players[moving_player])
         delta = after - before
         immediate = delta if moving_player == root_player else -delta
 
-        if child.is_game_over() or child.is_round_over() or depth <= 1:
+        round_ended = child.advance(skip_setup=True)
+
+        if child.is_game_over() or round_ended or depth <= 1:
             return immediate
 
         legal = child.legal_moves()

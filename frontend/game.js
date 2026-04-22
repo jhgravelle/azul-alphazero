@@ -248,16 +248,17 @@ function closeMenu() {
 }
 
 function initMenu() {
-  ["player1-select", "player2-select"].forEach((id, i) => {
-    const select = document.getElementById(id);
-    PLAYER_OPTIONS.forEach(opt => {
-      const option = document.createElement("option");
-      option.value = opt.value;
-      option.textContent = opt.label;
-      select.appendChild(option);
+  const agentOptions = await fetchAgentOptions();
+    ["player1-select", "player2-select"].forEach((id, i) => {
+        const select = document.getElementById(id);
+        agentOptions.forEach(opt => {
+            const option = document.createElement("option");
+            option.value = opt.value;
+            option.textContent = opt.label;
+            select.appendChild(option);
+        });
+        select.value = i === 0 ? "human" : "greedy";
     });
-    select.value = i === 0 ? "human" : "greedy";
-  });
 
   fetchRecordingList().then(summaries => {
     const replaySelect = document.getElementById("replay-select");
@@ -1139,4 +1140,10 @@ function _replayCurrentPlayer() {
     const turns = replayRecord.computed_turns ?? [];
     if (replayTurnIndex >= turns.length) return 0;
     return turns[replayTurnIndex].player_index;
+}
+
+async function fetchAgentOptions() {
+    const res = await fetch(`${API}/agents`);
+    const bots = await res.json();
+    return [{ value: "human", label: "Human" }, ...bots];
 }

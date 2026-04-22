@@ -12,12 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.base import Agent
-from agents.cautious import CautiousAgent
-from agents.efficient import EfficientAgent
-from agents.greedy import GreedyAgent
-from agents.mcts import MCTSAgent
-from agents.minimax import MinimaxAgent
-from agents.random import RandomAgent
+from agents.registry import make_agent, AGENT_REGISTRY
 from api.schemas import (
     BoardResponse,
     GameStateResponse,
@@ -90,24 +85,7 @@ _INSPECTOR_BATCH = 100
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
-    """Return an Agent instance for the given type, or None for human."""
-    match player_type:
-        case "random":
-            return RandomAgent()
-        case "cautious":
-            return CautiousAgent()
-        case "efficient":
-            return EfficientAgent()
-        case "greedy":
-            return GreedyAgent()
-        case "mcts":
-            return MCTSAgent()
-        case "minimax":
-            return MinimaxAgent()
-        # case "alphazero":
-        #     return AlphaZeroAgent(...)  # wire in once checkpoint exists
-        case _:
-            return None
+    return make_agent(player_type)
 
 
 def _game_from_snapshot(request: HypotheticalSnapshotRequest) -> Game:
@@ -374,6 +352,15 @@ def _next_cursor() -> int:
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
+
+
+@app.get("/agents")
+def list_agents() -> list[dict]:
+    return [
+        {"value": name, "label": label}
+        for name, label, _ in AGENT_REGISTRY
+        if name != "human"  # human is added separately in UI
+    ]
 
 
 @app.get("/state", response_model=GameStateResponse)

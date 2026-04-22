@@ -358,8 +358,8 @@ def _next_cursor() -> int:
 def list_agents() -> list[dict]:
     return [
         {"value": name, "label": label}
-        for name, label, _ in AGENT_REGISTRY
-        if name != "human"  # human is added separately in UI
+        for name, label, _, hidden in AGENT_REGISTRY
+        if name != "human" and not hidden
     ]
 
 

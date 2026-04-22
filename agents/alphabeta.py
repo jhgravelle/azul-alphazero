@@ -18,6 +18,7 @@ class AlphaBetaAgent(Agent):
     ) -> None:
         self.depths = depths
         self.thresholds = thresholds
+        self._nodes: int = 0
 
     def _effective_depth(self, game: Game) -> int:
         legal_count = len(game.legal_moves())
@@ -29,6 +30,7 @@ class AlphaBetaAgent(Agent):
             return self.depths[2]
 
     def choose_move(self, game: Game) -> Move:
+        self._nodes = 0
         legal = game.legal_moves()
         root_player = game.state.current_player
         depth = self._effective_depth(game)
@@ -51,6 +53,17 @@ class AlphaBetaAgent(Agent):
         delta = after - before
         return delta if moving_player == root_player else -delta
 
+    def _move_order_key(self, move: Move, game: Game, root_player: int) -> float:
+        moving_player = game.state.current_player
+        if move.destination == -2:
+            return -10.0 if moving_player == root_player else 10.0
+        capacity = move.destination + 1
+        line = game.state.players[moving_player].pattern_lines[move.destination]
+        fills_line = len(line) + 1 >= capacity
+        if fills_line:
+            return 5.0 if moving_player == root_player else -5.0
+        return 0.0
+
     def _alphabeta(
         self,
         game: Game,
@@ -60,6 +73,7 @@ class AlphaBetaAgent(Agent):
         alpha: float,
         beta: float,
     ) -> float:
+        self._nodes += 1
         moving_player = game.state.current_player
         before = earned_score_unclamped(game.state.players[moving_player])
 
@@ -81,9 +95,15 @@ class AlphaBetaAgent(Agent):
         next_player = child.state.current_player
         maximizing = next_player == root_player
 
+        # ordered = legal
+        # ordered = sorted(
+        #     legal,
+        #     key=lambda m: self._immediate_score(child, m, root_player),
+        #     reverse=maximizing,
+        # )
         ordered = sorted(
             legal,
-            key=lambda m: self._immediate_score(child, m, root_player),
+            key=lambda m: self._move_order_key(m, child, root_player),
             reverse=maximizing,
         )
 

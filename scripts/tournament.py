@@ -21,21 +21,38 @@ from agents.registry import make_agent
 from engine.game import Game
 
 
-def _make_agent(name: str) -> Agent:
-    agent = make_agent(name)
+def _make_agent(name: str, depths=None, thresholds=None) -> Agent:
+    kwargs = {}
+    if depths is not None:
+        kwargs["depths"] = tuple(depths)
+    if thresholds is not None:
+        kwargs["thresholds"] = tuple(thresholds)
+    agent = make_agent(name, **kwargs)
     if agent is None:
-        raise ValueError(
-            f"Agent {name!r} is not a bot and cannot be used in tournament"
-        )
+        raise ValueError(f"Agent {name!r} cannot be used in tournament")
     return agent
 
 
-def _play_one_game(name0: str, name1: str, game_index: int) -> dict:
+def _play_one_game(
+    name0: str,
+    name1: str,
+    game_index: int,
+    depths0=None,
+    thresholds0=None,
+    depths1=None,
+    thresholds1=None,
+) -> dict:
     if game_index % 2 == 0:
-        agents: list[Agent] = [_make_agent(name0), _make_agent(name1)]
+        agents = [
+            _make_agent(name0, depths0, thresholds0),
+            _make_agent(name1, depths1, thresholds1),
+        ]
         player_names = [name0, name1]
     else:
-        agents = [_make_agent(name1), _make_agent(name0)]
+        agents = [
+            _make_agent(name1, depths1, thresholds1),
+            _make_agent(name0, depths0, thresholds0),
+        ]
         player_names = [name1, name0]
 
     game = Game()
@@ -79,6 +96,10 @@ def run_matchup(
     name1: str,
     games: int,
     workers: int,
+    depths0=None,
+    thresholds0=None,
+    depths1=None,
+    thresholds1=None,
 ) -> dict:
     wins = {name0: 0, name1: 0}
     ties = 0
@@ -88,7 +109,16 @@ def run_matchup(
 
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = [
-            executor.submit(_play_one_game, name0, name1, game_index)
+            executor.submit(
+                _play_one_game,
+                name0,
+                name1,
+                game_index,
+                depths0,
+                thresholds0,
+                depths1,
+                thresholds1,
+            )
             for game_index in range(games)
         ]
         try:
@@ -127,17 +157,40 @@ def run_matchup(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agent tournament")
-    parser.add_argument(
-        "--agents",
-        nargs="+",
-        default=["greedy", "minimax"],
-    )
+    parser.add_argument("--agents", nargs="+", default=["greedy", "minimax"])
     parser.add_argument("--games", type=int, default=20)
+    parser.add_argument("--workers", type=int, default=None)
     parser.add_argument(
-        "--workers",
+        "--depths0",
         type=int,
+        nargs=3,
         default=None,
-        help="Number of parallel workers (default: CPU count)",
+        metavar=("HIGH", "MID", "LOW"),
+        help="depths tuple for first agent (e.g. --depths0 2 3 5)",
+    )
+    parser.add_argument(
+        "--thresholds0",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("T1", "T2"),
+        help="thresholds tuple for first agent (e.g. --thresholds0 10 7)",
+    )
+    parser.add_argument(
+        "--depths1",
+        type=int,
+        nargs=3,
+        default=None,
+        metavar=("HIGH", "MID", "LOW"),
+        help="depths tuple for second agent (e.g. --depths1 2 3 6)",
+    )
+    parser.add_argument(
+        "--thresholds1",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("T1", "T2"),
+        help="thresholds tuple for second agent (e.g. --thresholds1 10 7)",
     )
     args = parser.parse_args()
 
@@ -148,15 +201,44 @@ def main() -> None:
         f"workers={args.workers or 'auto'}"
     )
     print(f"Agents: {', '.join(args.agents)}")
+    if args.depths0:
+        print(f"  {args.agents[0]} depths={args.depths0} thresholds={args.thresholds0}")
+    if args.depths1:
+        print(
+            f"  {args.agents[1] if len(args.agents) > 1 else ''} depths={args.depths1} "
+            f"thresholds={args.thresholds1}"
+        )
     print("=" * 60)
 
     overall_wins: dict[str, int] = defaultdict(int)
     overall_games: dict[str, int] = defaultdict(int)
 
     try:
-        for name0, name1 in matchups:
+        for i, (name0, name1) in enumerate(matchups):
+            # Apply overrides only to the specific agent positions
+            d0 = (
+                args.depths0
+                if name0 == args.agents[0]
+                else args.depths1 if name0 == args.agents[1] else None
+            )
+            t0 = (
+                args.thresholds0
+                if name0 == args.agents[0]
+                else args.thresholds1 if name0 == args.agents[1] else None
+            )
+            d1 = (
+                args.depths0
+                if name1 == args.agents[0]
+                else args.depths1 if name1 == args.agents[1] else None
+            )
+            t1 = (
+                args.thresholds0
+                if name1 == args.agents[0]
+                else args.thresholds1 if name1 == args.agents[1] else None
+            )
+
             print(f"\n{name0} vs {name1} ({args.games} games)...", flush=True)
-            result = run_matchup(name0, name1, args.games, args.workers)
+            result = run_matchup(name0, name1, args.games, args.workers, d0, t0, d1, t1)
 
             win_rate_0 = result["wins_0"] / args.games * 100
             win_rate_1 = result["wins_1"] / args.games * 100

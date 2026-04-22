@@ -2,6 +2,7 @@
 from engine.game import Game
 from agents.alphabeta import AlphaBetaAgent
 from agents.minimax import MinimaxAgent
+import pytest
 
 
 def _make_game():
@@ -69,3 +70,21 @@ def test_alphabeta_policy_distribution_is_uniform():
     assert len(dist) == len(legal)
     probs = [p for _, p in dist]
     assert abs(sum(probs) - 1.0) < 1e-6
+
+
+@pytest.mark.slow
+def test_alphabeta_agrees_with_minimax_depth3():
+    """At depth 3, alpha-beta and minimax should choose the same move."""
+    game = _make_game()
+    ab = AlphaBetaAgent(depths=(3, 3, 3), thresholds=(0, 0))
+    mm = MinimaxAgent(depths=(3, 3, 3), thresholds=(0, 0))
+    for _ in range(10):
+        if game.is_game_over():
+            break
+        move_ab = ab.choose_move(game)
+        move_mm = mm.choose_move(game)
+        assert (
+            move_ab == move_mm
+        ), f"AlphaBeta chose {move_ab} but Minimax chose {move_mm}"
+        game.make_move(move_ab)
+        game.advance()

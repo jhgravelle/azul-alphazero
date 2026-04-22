@@ -11,21 +11,39 @@ from agents.minimax import MinimaxAgent
 from agents.random import RandomAgent
 from typing import Callable
 
-# (name, label, factory)
-AGENT_REGISTRY: list[tuple[str, str, Callable]] = [
-    ("human", "Human", lambda **_: None),
-    ("random", "Random Bot", lambda **_: RandomAgent()),
-    ("cautious", "Cautious Bot", lambda **_: CautiousAgent()),
-    ("efficient", "Efficient Bot", lambda **_: EfficientAgent()),
-    ("greedy", "Greedy Bot", lambda **_: GreedyAgent()),
-    ("mcts", "MCTS Bot", lambda **_: MCTSAgent()),
-    ("minimax", "Minimax Bot", lambda **_: MinimaxAgent()),
-    ("alphabeta", "AlphaBeta Bot", lambda **_: AlphaBetaAgent()),
+# (name, label, factory, hidden)
+AGENT_REGISTRY: list[tuple[str, str, Callable, bool]] = [
+    ("human", "Human", lambda **_: None, False),
+    ("random", "Random Bot", lambda **_: RandomAgent(), False),
+    ("cautious", "Cautious Bot", lambda **_: CautiousAgent(), False),
+    ("efficient", "Efficient Bot", lambda **_: EfficientAgent(), False),
+    ("greedy", "Greedy Bot", lambda **_: GreedyAgent(), False),
+    ("mcts", "MCTS Bot", lambda **_: MCTSAgent(), False),
+    ("minimax", "Minimax Bot", lambda **kwargs: MinimaxAgent(**kwargs), False),
+    ("alphabeta", "AlphaBeta Bot", lambda **kwargs: AlphaBetaAgent(**kwargs), True),
+    (
+        "alphabeta_easy",
+        "Easy Bot",
+        lambda **_: AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10)),
+        False,
+    ),
+    (
+        "alphabeta_medium",
+        "Medium Bot",
+        lambda **_: AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10)),
+        False,
+    ),
+    (
+        "alphabeta_hard",
+        "Hard Bot",
+        lambda **_: AlphaBetaAgent(depths=(4, 6, 8), thresholds=(20, 10)),
+        False,
+    ),
 ]
 
-AGENT_NAMES = [name for name, _, _ in AGENT_REGISTRY]
-AGENT_LABELS = {name: label for name, label, _ in AGENT_REGISTRY}
-_FACTORIES = {name: factory for name, _, factory in AGENT_REGISTRY}
+AGENT_NAMES = [name for name, _, _, _ in AGENT_REGISTRY]
+AGENT_LABELS = {name: label for name, label, _, _ in AGENT_REGISTRY}
+_FACTORIES = {name: factory for name, _, factory, _ in AGENT_REGISTRY}
 
 
 def make_agent(name: str, **kwargs) -> Agent | None:

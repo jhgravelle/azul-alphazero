@@ -247,7 +247,7 @@ function closeMenu() {
   document.getElementById("menu-overlay").classList.add("hidden");
 }
 
-function initMenu() {
+async function initMenu() {
   const agentOptions = await fetchAgentOptions();
     ["player1-select", "player2-select"].forEach((id, i) => {
         const select = document.getElementById(id);

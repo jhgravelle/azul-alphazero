@@ -124,12 +124,16 @@ def test_serialize_top_k_limits_children():
     assert len(result["children"]) <= 3
 
 
-def test_serialize_top_k_children_sorted_by_visits():
-    """Children should be sorted descending by visit count."""
+def test_serialize_children_sorted_by_cumulative_immediate():
+    """Children should be sorted by cumulative_immediate descending."""
     tree = _make_tree(simulations=200)
     children = tree.serialize(top_k=5)["children"]
-    visits = [c["visits"] for c in children]
-    assert visits == sorted(visits, reverse=True)
+    cumulatives = [
+        c["cumulative_immediate"]
+        for c in children
+        if c["cumulative_immediate"] is not None
+    ]
+    assert cumulatives == sorted(cumulatives, reverse=True)
 
 
 def test_serialize_top_k_one_returns_best_child():

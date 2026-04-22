@@ -150,6 +150,32 @@ class Game:
                         )
         return moves
 
+    def count_distinct_source_color_pairs(self) -> int:
+        """Return the number of distinct (source, color) pairs with tiles available.
+
+        Each unique combination of a source (factory index or center) and a
+        color that has at least one tile there counts as one pair. The
+        FIRST_PLAYER token is excluded — it is not a color tile.
+
+        This is the maximum number of turns remaining in the current round:
+        each pair represents one move that could be taken. The minimum
+        remaining turns may be lower if tiles from different sources combine
+        in the center after being taken.
+
+        Useful for:
+          - Encoder flat feature: round countdown signal
+          - AlphaBeta / Minimax depth selection (prefer over legal move count)
+        """
+        pair_count = 0
+        for factory in self.state.factories:
+            colors_in_factory = {tile for tile in factory if tile != Tile.FIRST_PLAYER}
+            pair_count += len(colors_in_factory)
+        colors_in_center = {
+            tile for tile in self.state.center if tile != Tile.FIRST_PLAYER
+        }
+        pair_count += len(colors_in_center)
+        return pair_count
+
     # ------------------------------------------------------------------
     # Turn execution
     # ------------------------------------------------------------------

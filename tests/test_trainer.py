@@ -539,3 +539,88 @@ def test_compute_loss_value_equals_weighted_sum_new_weights():
         + _AUX_WEIGHT_ABS * result["value_abs"]
     )
     assert torch.isclose(result["value"], expected)
+
+
+# ── collect_mirror_heuristic_games ─────────────────────────────────────────
+
+
+def test_collect_mirror_games_fills_buffer():
+    from neural.trainer import collect_mirror_heuristic_games
+
+    buf = ReplayBuffer(capacity=10_000)
+    collect_mirror_heuristic_games(buf, num_pairs=2)
+    assert len(buf) > 0
+
+
+def test_collect_mirror_games_records_double_the_pairs():
+    """Each pair produces 2 games — buffer should have examples from both."""
+    from neural.trainer import collect_mirror_heuristic_games
+
+    buf_single = ReplayBuffer(capacity=10_000)
+    collect_mirror_heuristic_games(buf_single, num_pairs=1)
+
+    buf_double = ReplayBuffer(capacity=10_000)
+    collect_mirror_heuristic_games(buf_double, num_pairs=2)
+
+    # Two pairs should produce roughly twice the examples of one pair
+    assert len(buf_double) > len(buf_single)
+
+
+def test_collect_mirror_games_returns_correct_game_count():
+    from neural.trainer import collect_mirror_heuristic_games
+
+    buf = ReplayBuffer(capacity=10_000)
+    stats = collect_mirror_heuristic_games(buf, num_pairs=3)
+    assert stats["games_recorded"] == 6
+
+
+def test_collect_mirror_games_policy_sums_to_one():
+    """Every policy target from mirror games should sum to 1.0."""
+    from neural.trainer import collect_mirror_heuristic_games
+
+    buf = ReplayBuffer(capacity=10_000)
+    collect_mirror_heuristic_games(buf, num_pairs=2)
+    _, _, policies, _, _, _ = buf.sample(min(len(buf), 30))
+    sums = policies.sum(dim=1)
+    assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
+
+
+def test_mirror_games_same_seed_same_factories():
+    """Two Game instances with the same seed see identical factory draws."""
+    from engine.game import Game
+
+    game_a = Game(seed=42)
+    game_a.setup_round()
+    factories_a = [list(f) for f in game_a.state.factories]
+
+    game_b = Game(seed=42)
+    game_b.setup_round()
+    factories_b = [list(f) for f in game_b.state.factories]
+
+    assert factories_a == factories_b
+
+
+def test_mirror_games_different_seeds_different_factories():
+    """Different seeds very likely produce different factory draws."""
+    from engine.game import Game
+
+    game_a = Game(seed=1)
+    game_a.setup_round()
+    factories_a = [list(f) for f in game_a.state.factories]
+
+    game_b = Game(seed=2)
+    game_b.setup_round()
+    factories_b = [list(f) for f in game_b.state.factories]
+
+    assert factories_a != factories_b
+
+
+def test_mirror_games_both_sides_represented():
+    """Mirror pairs should produce wins from both p0 and p1 across enough pairs."""
+    from neural.trainer import collect_mirror_heuristic_games
+
+    buf = ReplayBuffer(capacity=50_000)
+    stats = collect_mirror_heuristic_games(buf, num_pairs=10)
+    # With sides swapped each pair, both p0 and p1 should win some games
+    assert stats["wins_by_p0"] > 0
+    assert stats["wins_by_p1"] > 0

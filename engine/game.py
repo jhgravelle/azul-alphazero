@@ -36,8 +36,18 @@ class Game:
     take actions. Mutation lives here; pure scoring logic lives in scoring.py.
     """
 
-    def __init__(self):
-        """Initialize a new game with a fresh GameState."""
+    def __init__(self, seed: int | None = None) -> None:
+        """Initialize a new game with a fresh GameState.
+
+        Args:
+            seed: Optional integer seed for the random number generator.
+                  When provided, the bag shuffle and any bag refills use
+                  this seed, making the game fully reproducible. Useful
+                  for mirror training games and human replay.
+                  When None, uses Python's global RNG state (default behavior).
+        """
+        if seed is not None:
+            random.seed(seed)
         self.state = GameState()
 
     def clone(self) -> "Game":

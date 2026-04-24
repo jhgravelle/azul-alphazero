@@ -30,8 +30,10 @@ from neural.trainer import (
     total_score_value,
     win_loss_value,
     score_differential_value,
+    collect_mirror_heuristic_games,
 )
-from agents.alphabeta import AlphaBetaAgent
+
+# from agents.alphabeta import AlphaBetaAgent
 from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
@@ -568,6 +570,14 @@ def main() -> None:
         help="number of parallel worker processes for heuristic game generation "
         "(default 1 = sequential). Set to CPU core count for near-linear speedup.",
     )
+    parser.add_argument(
+        "--mirror-games-per-iter",
+        type=int,
+        default=0,
+        help="mirror game pairs to inject each iteration — each pair plays "
+        "identical factory sequences with sides swapped, forcing the value "
+        "head to ignore factory fingerprints (default 0)",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -593,7 +603,7 @@ def main() -> None:
 
     warmup_mode = args.greedy_warmup
     greedy_opponent = GreedyAgent()
-    alphabeta_opponent = AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
+    # alphabeta_opponent = AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
     recent_az_scores: list[float] = []
     iter_results: list[IterResult] = []
 
@@ -724,26 +734,20 @@ def main() -> None:
             )
             logger.info("replay buffer size after AlphaBeta injection: %d", len(buf))
 
-        # ── 1c. AlphaBeta-vs-candidate injection ───────────────────────────
-        # Candidate plays against strong opposition — both sides produce soft
-        # policy targets (AlphaBeta scored softmax, candidate MCTS visits).
-        # Primary data source for Phase 2 once candidate plays reasonably.
-        if args.candidate_games_per_iter > 0:
+        # ── 1c. Mirror game injection ──────────────────────────────────────
+        # Each pair plays identical factory sequences with sides swapped.
+        # Forces value head to learn outcomes from board state, not factory draws.
+        if args.mirror_games_per_iter > 0:
             logger.info(
-                "generating %d AlphaBeta-vs-candidate games...",
-                args.candidate_games_per_iter,
+                "generating %d mirror game pairs (%d games)...",
+                args.mirror_games_per_iter,
+                args.mirror_games_per_iter * 2,
             )
-            injection_az_scores = collect_self_play(
+            collect_mirror_heuristic_games(
                 buf,
-                net=net,
-                num_games=args.candidate_games_per_iter,
-                simulations=args.simulations,
-                temperature=args.temperature,
-                opponent=alphabeta_opponent,
-                device=DEVICE,
+                num_pairs=args.mirror_games_per_iter,
             )
-            az_scores.extend(injection_az_scores)
-            logger.info("replay buffer size after candidate injection: %d", len(buf))
+            logger.info("replay buffer size after mirror injection: %d", len(buf))
 
         # ── Rolling average and auto-switch ────────────────────────────────
         recent_az_scores.extend(az_scores)
@@ -855,7 +859,8 @@ def main() -> None:
         elif eval_ran:
             # Eval ran but net didn't beat threshold — reset to best known net
             logger.info(
-                "new model did not beat threshold (%.0f%% < %.0f%%) -- keeping old best",
+                "new model did not beat threshold (%.0f%% < %.0f%%) -- keeping old "
+                "best",
                 win_rate * 100,
                 args.win_threshold * 100,
             )

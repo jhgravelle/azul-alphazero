@@ -289,11 +289,23 @@ def _exit_hypothetical(*, keep_state: bool) -> None:
 
 
 def _enter_factory_setup() -> None:
-    """Clear all factories and enter setup mode. Does not touch the bag."""
+    """Clear all factories and enter setup mode.
+
+    Refills the bag from the discard pile if the bag is empty. This
+    mirrors real-game behavior: when the bag runs out, tiles from the
+    box (discard) are reshuffled back in. In 2-player play this
+    naturally happens at the start of round 6.
+    """
     global _in_factory_setup, _factory_cursor
     for factory in _game.state.factories:
         factory.clear()
     _game.state.center = [Tile.FIRST_PLAYER]
+
+    if not _game.state.bag and _game.state.discard:
+        _game.state.bag.extend(_game.state.discard)
+        _game.state.discard.clear()
+        random.shuffle(_game.state.bag)
+
     _in_factory_setup = True
     _factory_cursor = 0
 

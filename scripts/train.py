@@ -26,6 +26,7 @@ from neural.trainer import (
     Trainer,
     collect_self_play,
     collect_heuristic_games,
+    collect_heuristic_games_parallel,
     total_score_value,
     win_loss_value,
     score_differential_value,
@@ -454,7 +455,20 @@ def main() -> None:
         "--lr", type=float, default=1e-3, help="Adam learning rate (default 0.001)"
     )
     parser.add_argument(
-        "--load", type=str, default=None, help="path to a checkpoint to resume from"
+        "--load",
+        type=str,
+        default="checkpoints/latest.pt",
+        help="path to a checkpoint to resume from "
+        "(default: checkpoints/latest.pt, skipped if file does not exist)",
+    )
+    parser.add_argument(
+        "--initial-generation",
+        type=int,
+        default=0,
+        help="generation number to start from when loading a checkpoint "
+        "(default 0). Set to match the checkpoint being loaded so promotion "
+        "numbering continues correctly, e.g. --initial-generation 1 when "
+        "loading a Phase 1 checkpoint manually promoted to gen_0001.",
     )
     parser.add_argument(
         "--pretrain-games",
@@ -514,6 +528,13 @@ def main() -> None:
         "training (default 0)",
     )
     parser.add_argument(
+        "--diff-only",
+        action="store_true",
+        help="train score differential head only — zeros policy, value_win, and "
+        "value_abs loss. Use during Phase 1 to give the trunk a dense continuous "
+        "training signal before win/loss targets are meaningful (default off)",
+    )
+    parser.add_argument(
         "--skip-eval-iterations",
         type=int,
         default=0,
@@ -526,11 +547,26 @@ def main() -> None:
         "starts with a clean buffer (default: keep pretrain data mixed in)",
     )
     parser.add_argument(
-        "--heuristic-games-per-iter",
+        "--alphabeta-games-per-iter",
         type=int,
         default=0,
-        help="AlphaBeta-vs-candidate games to inject each iteration alongside "
-        "self-play, keeping high-quality data fresh in the buffer (default 0)",
+        help="pure AlphaBeta-vs-AlphaBeta games to inject each iteration "
+        "(variety matchups: easy/easy, easy/medium, medium/medium). "
+        "Use for Phase 1 imitation training (default 0)",
+    )
+    parser.add_argument(
+        "--candidate-games-per-iter",
+        type=int,
+        default=0,
+        help="AlphaBeta-vs-candidate games to inject each iteration. "
+        "Use for Phase 2 once candidate plays reasonably (default 0)",
+    )
+    parser.add_argument(
+        "--heuristic-workers",
+        type=int,
+        default=1,
+        help="number of parallel worker processes for heuristic game generation "
+        "(default 1 = sequential). Set to CPU core count for near-linear speedup.",
     )
     args = parser.parse_args()
 
@@ -544,11 +580,13 @@ def main() -> None:
 
     # ── Setup ──────────────────────────────────────────────────────────────
     net = AzulNet().to(DEVICE)
-    if args.load:
+    if args.load and Path(args.load).exists():
         load_checkpoint(net, args.load)
+    elif args.load and not Path(args.load).exists():
+        logger.info("checkpoint not found at %s -- starting fresh", args.load)
 
     best_net = copy.deepcopy(net)
-    generation = 0
+    generation = args.initial_generation
 
     buf = ReplayBuffer(capacity=args.buffer_size)
     trainer = Trainer(net, lr=args.lr, batch_size=args.batch_size, device=DEVICE)
@@ -586,7 +624,7 @@ def main() -> None:
         for step in range(1, args.pretrain_steps + 1):
             # Always train policy+value — value-only pretraining is a
             # divergence trap (see lessons learned in PROJECT_PLAN.md).
-            losses = trainer.train_step(buf, value_only=False)
+            losses = trainer.train_step(buf, value_only=False, diff_only=args.diff_only)
             _accumulate_losses(accum, losses)
             _accumulate_losses(interval_accum, losses)
             if step % 500 == 0:
@@ -619,7 +657,9 @@ def main() -> None:
                 continue
             accum = _init_loss_accumulator()
             for _ in range(args.train_steps):
-                losses = trainer.train_step(buf, value_only=False)
+                losses = trainer.train_step(
+                    buf, value_only=False, diff_only=args.diff_only
+                )
                 _accumulate_losses(accum, losses)
             logger.info(
                 "  heuristic iter %d/%d -- buffer size %d -- %s",
@@ -667,26 +707,43 @@ def main() -> None:
         )
         logger.info("replay buffer size: %d", len(buf))
 
-        # ── 1b. AlphaBeta-vs-candidate injection ───────────────────────────
-        # Keeps high-quality search data fresh in the buffer each iteration.
-        # AlphaBeta uses its scored policy distribution; candidate uses MCTS
-        # visit counts. Both sides produce soft policy targets.
-        if args.heuristic_games_per_iter > 0:
+        # ── 1b. AlphaBeta-vs-AlphaBeta injection ──────────────────────────
+        # Pure imitation data — no candidate involvement.
+        # Uses weighted matchup variety (random/cautious/greedy/easy/medium).
+        # Primary data source for Phase 1 imitation training.
+        if args.alphabeta_games_per_iter > 0:
+            logger.info(
+                "generating %d AlphaBeta-vs-AlphaBeta games (%d workers)...",
+                args.alphabeta_games_per_iter,
+                args.heuristic_workers,
+            )
+            collect_heuristic_games_parallel(
+                buf,
+                num_games=args.alphabeta_games_per_iter,
+                num_workers=args.heuristic_workers,
+            )
+            logger.info("replay buffer size after AlphaBeta injection: %d", len(buf))
+
+        # ── 1c. AlphaBeta-vs-candidate injection ───────────────────────────
+        # Candidate plays against strong opposition — both sides produce soft
+        # policy targets (AlphaBeta scored softmax, candidate MCTS visits).
+        # Primary data source for Phase 2 once candidate plays reasonably.
+        if args.candidate_games_per_iter > 0:
             logger.info(
                 "generating %d AlphaBeta-vs-candidate games...",
-                args.heuristic_games_per_iter,
+                args.candidate_games_per_iter,
             )
             injection_az_scores = collect_self_play(
                 buf,
                 net=net,
-                num_games=args.heuristic_games_per_iter,
+                num_games=args.candidate_games_per_iter,
                 simulations=args.simulations,
                 temperature=args.temperature,
                 opponent=alphabeta_opponent,
                 device=DEVICE,
             )
             az_scores.extend(injection_az_scores)
-            logger.info("replay buffer size after injection: %d", len(buf))
+            logger.info("replay buffer size after candidate injection: %d", len(buf))
 
         # ── Rolling average and auto-switch ────────────────────────────────
         recent_az_scores.extend(az_scores)
@@ -720,13 +777,19 @@ def main() -> None:
             )
         if not value_only and iteration == args.value_only_iterations + 1:
             logger.info("switching to full policy+value training")
+        if args.diff_only and iteration == 1:
+            logger.info("diff-only mode -- training score differential head only")
 
         logger.info("running %d training steps...", args.train_steps)
         total_accum = _init_loss_accumulator()
         interval_accum = _init_loss_accumulator()
         log_interval = 500
         for step in range(1, args.train_steps + 1):
-            losses = trainer.train_step(buf, value_only=value_only)
+            losses = trainer.train_step(
+                buf,
+                value_only=value_only,
+                diff_only=args.diff_only,
+            )
             _accumulate_losses(total_accum, losses)
             _accumulate_losses(interval_accum, losses)
             if step % log_interval == 0:
@@ -781,23 +844,26 @@ def main() -> None:
                 logger.info(f"new net win rate vs random: {rng_wr * 100:.1f}%")
 
         # ── 4. Keep if better ──────────────────────────────────────────────
-        promoted = (iteration > args.skip_eval_iterations) and (
-            win_rate >= args.win_threshold
-        )
+        eval_ran = iteration > args.skip_eval_iterations
+        promoted = eval_ran and (win_rate >= args.win_threshold)
         if promoted:
             generation += 1
             best_net = copy.deepcopy(net)
             save_checkpoint(net, generation)
+            save_latest_checkpoint(net, args)
             logger.info("new best model -- generation %d", generation)
-        else:
+        elif eval_ran:
+            # Eval ran but net didn't beat threshold — reset to best known net
             logger.info(
-                "new model did not beat threshold (%.0f%% < %.0f%%) -- keeping old "
-                "best",
+                "new model did not beat threshold (%.0f%% < %.0f%%) -- keeping old best",
                 win_rate * 100,
                 args.win_threshold * 100,
             )
             net.load_state_dict(copy.deepcopy(best_net.state_dict()))
             trainer.optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
+        else:
+            # Eval was skipped — keep current weights, they represent real training
+            logger.info("eval skipped -- keeping current net weights")
 
         elapsed = time.time() - t0
         logger.info("iteration time: %.1fs", elapsed)

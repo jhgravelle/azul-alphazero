@@ -6,8 +6,7 @@ from __future__ import annotations
 import logging
 import torch
 import torch.nn.functional as F
-from typing import Callable
-import random
+
 from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
 from engine.game import Game, FLOOR
@@ -76,31 +75,50 @@ def compute_loss(
     values_diff: torch.Tensor,  # (B, 1)
     values_abs: torch.Tensor,  # (B, 1)
     value_only: bool = False,
+    diff_only: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Combined policy + multi-head value loss.
 
+    Args:
+        value_only: Zero out policy loss — trunk learns from value signal only.
+        diff_only:  Zero out value_win and value_abs — trunk learns from score
+                    differential only. Use during Phase 1 to give the value head
+                    a dense continuous signal before win/loss targets are meaningful.
+                    Implies value_only=True (policy is also zeroed).
+
     Returns a dict with:
-        total:      policy_loss + combined_value_loss
+        total:      combined loss
         policy:     cross-entropy on MCTS visit distribution (0 if value_only)
         value:      combined value loss
-        value_win:  MSE on win/loss target (primary)
-        value_diff: MSE on score-differential target (auxiliary)
-        value_abs:  MSE on absolute-score target (auxiliary, weight 0.1)
+        value_win:  MSE on win/loss target (0 if diff_only)
+        value_diff: MSE on score-differential target (always active)
+        value_abs:  MSE on absolute-score target (0 if diff_only)
     """
     logits, pred_win, pred_diff, pred_abs = net(spatials, flats)
     log_probs = F.log_softmax(logits, dim=1)
-    if value_only:
+
+    if value_only or diff_only:
         policy_loss = torch.tensor(0.0, requires_grad=False)
     else:
         policy_loss = -(policies * log_probs).sum(dim=1).mean()
-    loss_win = F.mse_loss(pred_win, values_win)
+
     loss_diff = F.mse_loss(pred_diff, values_diff)
-    loss_abs = F.mse_loss(pred_abs, values_abs)
-    combined_value = (
-        _AUX_WEIGHT_WIN * loss_win
-        + _AUX_WEIGHT_DIFF * loss_diff
-        + _AUX_WEIGHT_ABS * loss_abs
-    )
+
+    if diff_only:
+        # Only score differential — gives trunk a dense continuous training signal
+        # without the noise of win/loss targets on early-training data.
+        loss_win = torch.tensor(0.0, requires_grad=False)
+        loss_abs = torch.tensor(0.0, requires_grad=False)
+        combined_value = loss_diff
+    else:
+        loss_win = F.mse_loss(pred_win, values_win)
+        loss_abs = F.mse_loss(pred_abs, values_abs)
+        combined_value = (
+            _AUX_WEIGHT_WIN * loss_win
+            + _AUX_WEIGHT_DIFF * loss_diff
+            + _AUX_WEIGHT_ABS * loss_abs
+        )
+
     return {
         "total": policy_loss + combined_value,
         "policy": policy_loss,
@@ -131,7 +149,10 @@ class Trainer:
         self.optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
     def train_step(
-        self, buf: ReplayBuffer, value_only: bool = False
+        self,
+        buf: ReplayBuffer,
+        value_only: bool = False,
+        diff_only: bool = False,
     ) -> dict[str, float]:
         """Sample a batch, backpropagate, and return a loss dict."""
         if len(buf) < self.batch_size:
@@ -153,7 +174,15 @@ class Trainer:
         self.net.train()
         self.optimizer.zero_grad()
         loss_dict = compute_loss(
-            self.net, spatials, flats, policies, vw, vd, va, value_only=value_only
+            self.net,
+            spatials,
+            flats,
+            policies,
+            vw,
+            vd,
+            va,
+            value_only=value_only,
+            diff_only=diff_only,
         )
         loss_dict["total"].backward()
         self.optimizer.step()
@@ -256,8 +285,10 @@ def collect_self_play(
                     policy_vec[encode_move(m, game)] = prob
             else:
                 move = agents[current_player].choose_move(game)
+                policy_pairs = agents[current_player].policy_distribution(game)
                 policy_vec = torch.zeros(MOVE_SPACE_SIZE)
-                policy_vec[encode_move(move, game)] = 1.0
+                for m, prob in policy_pairs:
+                    policy_vec[encode_move(m, game)] = prob
 
             history.append((current_player, spatial, flat, policy_vec))
 
@@ -281,7 +312,7 @@ def collect_self_play(
         az_score = scores[az_player] if az_player is not None else max(scores)
         az_scores.append(az_score)
 
-        # mode = "warmup" if opponent is not None else "self-play"
+        mode = "warmup" if opponent is not None else "self-play"
         opponent_name = (
             type(opponent).__name__ if opponent is not None else "AlphaZeroAgent"
         )
@@ -305,18 +336,43 @@ def collect_self_play(
 #       (make_easy, make_medium, 0.4),
 #       (make_medium, make_medium, 0.3),
 #   ]
+from typing import Callable
 
 MatchupSpec = tuple[Callable, Callable, float]
 
 
 def _default_matchups() -> list[MatchupSpec]:
-    """Default weighted matchup list for heuristic pretraining.
+    """Default weighted matchup list for heuristic data collection.
 
-    easy vs easy:     30% — high volume, lower quality ceiling
-    easy vs medium:   40% — most useful, covers both skill levels
-    medium vs medium: 30% — fewer games, higher quality ceiling
+    All matchups pair a variety of skill levels against AlphaBeta medium,
+    so every game has one strong reference player. This gives the value head
+    a spectrum of position quality to learn from — not just symmetric
+    AlphaBeta-vs-AlphaBeta games where scores cluster narrowly.
+
+    Random vs medium:    10% — extreme loss signal, fast games
+    Efficient vs medium: 10% — weak vs strong, passive play exposed
+    Cautious vs medium:  15% — moderate loss signal, floor avoidance
+    Greedy vs medium:    20% — near-peer, clean policy targets
+    Easy vs medium:      25% — peer matchup, meaningful games
+    Medium vs medium:    20% — symmetric, highest quality games
     """
     from agents.alphabeta import AlphaBetaAgent
+    from agents.random import RandomAgent
+    from agents.efficient import EfficientAgent
+    from agents.cautious import CautiousAgent
+    from agents.greedy import GreedyAgent
+
+    def make_random() -> RandomAgent:
+        return RandomAgent()
+
+    def make_efficient() -> EfficientAgent:
+        return EfficientAgent()
+
+    def make_cautious() -> CautiousAgent:
+        return CautiousAgent()
+
+    def make_greedy() -> GreedyAgent:
+        return GreedyAgent()
 
     def make_easy() -> AlphaBetaAgent:
         return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
@@ -325,9 +381,12 @@ def _default_matchups() -> list[MatchupSpec]:
         return AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10))
 
     return [
-        (make_easy, make_easy, 0.3),
-        (make_easy, make_medium, 0.4),
-        (make_medium, make_medium, 0.3),
+        (make_random, make_medium, 0.10),
+        (make_efficient, make_medium, 0.10),
+        (make_cautious, make_medium, 0.15),
+        (make_greedy, make_medium, 0.20),
+        (make_easy, make_medium, 0.25),
+        (make_medium, make_medium, 0.20),
     ]
 
 
@@ -440,9 +499,8 @@ def _play_heuristic_game(
     Each history entry is (player_index, spatial, flat, policy_vec) where
     policy_vec comes from the acting agent's policy_distribution method.
 
-    For AlphaBeta agents, policy_distribution returns uniform over all legal
-    moves (inherited from Agent base class). This is soft — dozens of moves
-    share probability mass — so it does not produce one-hot targets.
+    For AlphaBeta agents, policy_distribution returns a softmax over root
+    move scores. choose_move must be called first to populate the cache.
     """
     history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
@@ -464,3 +522,221 @@ def _play_heuristic_game(
         game.advance()
 
     return history
+
+
+# ── Parallel heuristic game collection ───────────────────────────────────────
+
+# A game record is a list of move records.
+# Each move record: (player_idx, spatial_list, flat_list, policy_list, vw, vd, va)
+# All tensors are stored as plain Python lists to survive multiprocessing pickle.
+_MoveRecord = tuple[int, list, list, list, float, float, float]
+_GameRecord = list[_MoveRecord]
+
+
+def _worker_play_games(
+    num_games: int,
+    worker_seed: int,
+    matchup_specs: list[tuple[str, str, float]],
+) -> tuple[list[_GameRecord], dict[str, int]]:
+    """Worker function: play num_games heuristic games, return serializable results.
+
+    Runs in a subprocess — no shared state with the main process.
+    matchup_specs uses agent class names (strings) rather than callables
+    because callables don't pickle reliably across processes.
+
+    Returns (game_records, stats_dict).
+    """
+    import random as random_module
+    from agents.alphabeta import AlphaBetaAgent
+    from agents.random import RandomAgent
+    from agents.efficient import EfficientAgent
+    from agents.cautious import CautiousAgent
+    from agents.greedy import GreedyAgent
+
+    def _make_agent(name: str) -> Agent:
+        if name == "random":
+            return RandomAgent()
+        if name == "efficient":
+            return EfficientAgent()
+        if name == "cautious":
+            return CautiousAgent()
+        if name == "greedy":
+            return GreedyAgent()
+        if name == "easy":
+            return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
+        if name == "medium":
+            return AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10))
+        raise ValueError(f"Unknown agent name: {name}")
+
+    rng = random_module.Random(worker_seed)
+    weights = [w for _, _, w in matchup_specs]
+    total_weight = sum(weights)
+
+    wins_by_p0 = 0
+    wins_by_p1 = 0
+    ties = 0
+    game_records: list[_GameRecord] = []
+
+    for game_num in range(num_games):
+        # Sample matchup by weight
+        threshold = rng.random() * total_weight
+        cumulative = 0.0
+        name_a, name_b = matchup_specs[-1][0], matchup_specs[-1][1]
+        for a_name, b_name, weight in matchup_specs:
+            cumulative += weight
+            if threshold <= cumulative:
+                name_a, name_b = a_name, b_name
+                break
+
+        agent_a = _make_agent(name_a)
+        agent_b = _make_agent(name_b)
+
+        if game_num % 2 == 0:
+            agents: list[Agent] = [agent_a, agent_b]
+        else:
+            agents = [agent_b, agent_a]
+
+        game = Game()
+        game.setup_round()
+        history = _play_heuristic_game(game, agents)
+        scores = _compute_game_scores(game)
+
+        if scores[0] > scores[1]:
+            wins_by_p0 += 1
+        elif scores[1] > scores[0]:
+            wins_by_p1 += 1
+        else:
+            ties += 1
+
+        game_record: _GameRecord = []
+        for player_idx, spatial, flat, policy_vec in history:
+            vw = win_loss_value(scores, player_idx)
+            vd = score_differential_value(scores, player_idx)
+            va = total_score_value(scores, player_idx)
+            game_record.append(
+                (
+                    player_idx,
+                    spatial.tolist(),
+                    flat.tolist(),
+                    policy_vec.tolist(),
+                    vw,
+                    vd,
+                    va,
+                )
+            )
+        game_records.append(game_record)
+
+    stats = {
+        "wins_by_p0": wins_by_p0,
+        "wins_by_p1": wins_by_p1,
+        "ties": ties,
+        "games_recorded": num_games,
+    }
+    return game_records, stats
+
+
+def _matchups_to_specs(
+    matchups: list[MatchupSpec],
+) -> list[tuple[str, str, float]]:
+    """Convert callable matchup specs to serializable (name, name, weight) tuples.
+
+    The worker process reconstructs agents by name since callables don't
+    pickle reliably across processes.
+    """
+    from agents.alphabeta import AlphaBetaAgent
+    from agents.random import RandomAgent
+    from agents.efficient import EfficientAgent
+    from agents.cautious import CautiousAgent
+    from agents.greedy import GreedyAgent
+
+    _type_to_name = {
+        RandomAgent: "random",
+        EfficientAgent: "efficient",
+        CautiousAgent: "cautious",
+        GreedyAgent: "greedy",
+    }
+
+    specs = []
+    for factory_a, factory_b, weight in matchups:
+        agent_a = factory_a()
+        agent_b = factory_b()
+        if isinstance(agent_a, AlphaBetaAgent):
+            name_a = "easy" if agent_a.depths == (2, 3, 7) else "medium"
+        else:
+            name_a = _type_to_name[type(agent_a)]
+        if isinstance(agent_b, AlphaBetaAgent):
+            name_b = "easy" if agent_b.depths == (2, 3, 7) else "medium"
+        else:
+            name_b = _type_to_name[type(agent_b)]
+        specs.append((name_a, name_b, weight))
+    return specs
+
+
+def collect_heuristic_games_parallel(
+    buf: ReplayBuffer,
+    num_games: int = 200,
+    matchups: list[MatchupSpec] | None = None,
+    num_workers: int = 4,
+) -> dict[str, int]:
+    """Parallel version of collect_heuristic_games using multiprocessing.
+
+    Splits num_games across num_workers subprocesses. Each worker plays
+    its share of games independently and returns serializable results.
+    The main process collects results and pushes tensors into the buffer.
+
+    Falls back to sequential collection if num_workers <= 1.
+    """
+    import multiprocessing as mp
+    import random
+
+    if num_workers <= 1:
+        return collect_heuristic_games(buf, num_games=num_games, matchups=matchups)
+
+    if matchups is None:
+        matchups = _default_matchups()
+
+    specs = _matchups_to_specs(matchups)
+
+    # Distribute games across workers as evenly as possible
+    base = num_games // num_workers
+    remainder = num_games % num_workers
+    game_counts = [base + (1 if i < remainder else 0) for i in range(num_workers)]
+    seeds = [random.randint(0, 2**31) for _ in range(num_workers)]
+
+    args_list = [(count, seed, specs) for count, seed in zip(game_counts, seeds)]
+
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=num_workers) as pool:
+        results = pool.starmap(_worker_play_games, args_list)
+
+    # Aggregate stats and push all examples into the buffer
+    total_stats: dict[str, int] = {
+        "wins_by_p0": 0,
+        "wins_by_p1": 0,
+        "ties": 0,
+        "games_recorded": 0,
+    }
+    all_scores: list[float] = []
+
+    for game_records, stats in results:
+        for key in total_stats:
+            total_stats[key] += stats[key]
+        for game_record in game_records:
+            for player_idx, spatial_l, flat_l, policy_l, vw, vd, va in game_record:
+                spatial = torch.tensor(spatial_l, dtype=torch.float32)
+                flat = torch.tensor(flat_l, dtype=torch.float32)
+                policy_vec = torch.tensor(policy_l, dtype=torch.float32)
+                buf.push(spatial, flat, policy_vec, vw, vd, va)
+            if game_record:
+                all_scores.append(vw)  # last move's vw as a proxy
+
+    avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
+    logger.info(
+        f"heuristic games complete (parallel, {num_workers} workers) -- "
+        f"p0: {total_stats['wins_by_p0']}W / "
+        f"p1: {total_stats['wins_by_p1']}W / {total_stats['ties']}T -- "
+        f"avg score proxy: {avg_score:.2f} -- "
+        f"{total_stats['games_recorded']} games recorded"
+    )
+
+    return total_stats

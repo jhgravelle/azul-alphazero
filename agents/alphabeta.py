@@ -1,7 +1,31 @@
 # agents/alphabeta.py
+import math
 from engine.game import Game, Move
 from engine.scoring import earned_score_unclamped
 from agents.base import Agent
+
+_POLICY_TEMPERATURE = 1.0
+
+
+def _softmax_distribution(
+    scored_moves: list[tuple[Move, float]],
+    temperature: float,
+) -> list[tuple[Move, float]]:
+    """Convert a list of (move, score) pairs into a probability distribution.
+
+    Applies softmax with the given temperature. Shifts by the max score
+    before exponentiation for numerical stability — the best move always
+    gets exp(0) = 1.0 and all others get a fraction.
+
+    Equal scores produce equal probabilities. Higher temperature produces
+    a softer (more uniform) distribution; lower temperature peaks more
+    sharply on the best move.
+    """
+    scores = [score for _, score in scored_moves]
+    max_score = max(scores)
+    exps = [math.exp((score - max_score) / temperature) for score in scores]
+    total = sum(exps)
+    return [(move, exp_val / total) for (move, _), exp_val in zip(scored_moves, exps)]
 
 
 class AlphaBetaAgent(Agent):
@@ -9,6 +33,11 @@ class AlphaBetaAgent(Agent):
 
     Identical decisions to MinimaxAgent at the same depth, but faster
     due to pruning — allowing deeper search in the same time budget.
+
+    policy_distribution() returns a softmax over root move scores from
+    the most recent choose_move() call. This gives the training pipeline
+    a soft, search-informed distribution rather than uniform over all
+    legal moves.
     """
 
     def __init__(
@@ -19,6 +48,7 @@ class AlphaBetaAgent(Agent):
         self.depths = depths
         self.thresholds = thresholds
         self._nodes: int = 0
+        self._root_move_scores: list[tuple[Move, float]] = []
 
     def _effective_depth(self, game: Game) -> int:
         legal_count = len(game.legal_moves())
@@ -31,18 +61,56 @@ class AlphaBetaAgent(Agent):
 
     def choose_move(self, game: Game) -> Move:
         self._nodes = 0
+        self._root_move_scores = []
         legal = game.legal_moves()
-        root_player = game.state.current_player
         depth = self._effective_depth(game)
-        best_move = legal[0]
-        alpha = float("-inf")
-        beta = float("inf")
+        root_player = game.state.current_player
+
+        self._root_move_scores = self._score_all_root_moves(
+            game, legal, depth, root_player
+        )
+
+        return max(self._root_move_scores, key=lambda pair: pair[1])[0]
+
+    def policy_distribution(self, game: Game) -> list[tuple[Move, float]]:
+        """Softmax over root move scores from the most recent choose_move call.
+
+        Falls back to uniform over legal moves if choose_move has not been
+        called yet for this position — the base class handles that case.
+        """
+        if not self._root_move_scores:
+            return super().policy_distribution(game)
+        return _softmax_distribution(
+            self._root_move_scores, temperature=_POLICY_TEMPERATURE
+        )
+
+    def _score_all_root_moves(
+        self,
+        game: Game,
+        legal: list[Move],
+        depth: int,
+        root_player: int,
+    ) -> list[tuple[Move, float]]:
+        """Score every root move independently with a full alpha-beta window.
+
+        No pruning between root moves — each is evaluated with
+        alpha=-inf, beta=+inf so every move receives a fair score
+        for use in policy_distribution. Child nodes still prune normally.
+
+        Returns moves in the same order as the input legal list.
+        """
+        scored = []
         for move in legal:
-            score = self._alphabeta(game, move, depth, root_player, alpha, beta)
-            if score > alpha:
-                alpha = score
-                best_move = move
-        return best_move
+            score = self._alphabeta(
+                game,
+                move,
+                depth,
+                root_player,
+                float("-inf"),
+                float("inf"),
+            )
+            scored.append((move, score))
+        return scored
 
     def _immediate_score(self, game: Game, move: Move, root_player: int) -> float:
         moving_player = game.state.current_player
@@ -95,12 +163,6 @@ class AlphaBetaAgent(Agent):
         next_player = child.state.current_player
         maximizing = next_player == root_player
 
-        # ordered = legal
-        # ordered = sorted(
-        #     legal,
-        #     key=lambda m: self._immediate_score(child, m, root_player),
-        #     reverse=maximizing,
-        # )
         ordered = sorted(
             legal,
             key=lambda m: self._move_order_key(m, child, root_player),

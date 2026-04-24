@@ -1295,3 +1295,31 @@ def test_manual_factories_persists_to_second_round(client):
         assert state["in_factory_setup"] is True
         for factory in state["factories"]:
             assert factory == []
+
+
+def test_entering_factory_setup_refills_bag_when_empty(client):
+    """When a manual-factories game enters setup with an empty bag,
+    the bag should be refilled from the discard pile. This happens
+    naturally at the start of round 6 in 2-player games."""
+    from api import main
+
+    client.post(
+        "/new-game",
+        json={"player_types": ["human", "human"], "manual_factories": True},
+    )
+
+    # Simulate the start-of-round-6 state: bag fully drained into discard.
+    game = main._game
+    game.state.discard.extend(game.state.bag)
+    game.state.bag.clear()
+    assert len(game.state.bag) == 0
+    assert len(game.state.discard) > 0
+
+    main._enter_factory_setup()
+
+    response = client.get("/state")
+    body = response.json()
+    bag_total = sum(body["bag_counts"].values())
+    assert bag_total > 0, "bag should have been refilled from discard"
+    discard_total = sum(body["discard_counts"].values())
+    assert discard_total == 0, "discard should be empty after refill"

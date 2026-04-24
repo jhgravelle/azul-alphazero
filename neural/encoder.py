@@ -158,29 +158,44 @@ _COLOR_FOR_WALL_CELL: list[list[Tile]] = _build_color_for_wall_cell()
 
 
 def _count_filled_in_rows(wall: list[list[Tile | None]]) -> list[int]:
-    """Return filled cell count for each wall row."""
+    """Return pattern-tile-weighted fill count for each wall row.
+
+    Each filled cell in row r contributes (r + 1) rather than 1,
+    reflecting the number of pattern tiles required to place it.
+    Max value per row is 5 * (row + 1).
+    """
     return [
-        sum(1 for wall_col in range(BOARD_SIZE) if wall[row][wall_col] is not None)
+        sum(
+            row + 1 for wall_col in range(BOARD_SIZE) if wall[row][wall_col] is not None
+        )
         for row in range(BOARD_SIZE)
     ]
 
 
 def _count_filled_in_cols(wall: list[list[Tile | None]]) -> list[int]:
-    """Return filled cell count for each wall column."""
+    """Return pattern-tile-weighted fill count for each wall column.
+
+    Each filled cell in row r contributes (r + 1).
+    Max value per column is 1+2+3+4+5 = 15.
+    """
     return [
-        sum(1 for row in range(BOARD_SIZE) if wall[row][wall_col] is not None)
+        sum(row + 1 for row in range(BOARD_SIZE) if wall[row][wall_col] is not None)
         for wall_col in range(BOARD_SIZE)
     ]
 
 
 def _count_filled_per_color(wall: list[list[Tile | None]]) -> dict[Tile, int]:
-    """Return how many wall cells are filled for each color."""
+    """Return pattern-tile-weighted fill count for each color.
+
+    Each filled cell in row r contributes (r + 1).
+    Max value per color is 1+2+3+4+5 = 15.
+    """
     counts: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
     for row in range(BOARD_SIZE):
         for wall_col in range(BOARD_SIZE):
             if wall[row][wall_col] is not None:
                 color = _COLOR_FOR_WALL_CELL[row][wall_col]
-                counts[color] += 1
+                counts[color] += row + 1
     return counts
 
 
@@ -225,34 +240,76 @@ def _encode_pattern_line_fill_ratio(
         spatial[channel, row, wall_col] = fill_ratio
 
 
+def _add_partial_pattern_line_contributions(
+    board,
+    filled_in_rows: list[int],
+    filled_in_cols: list[int],
+    filled_per_color: dict[Tile, int],
+) -> None:
+    """Add weighted tile counts from partial pattern lines to the progress totals.
+
+    Full pattern lines are already captured via the post-placement wall.
+    This adds contributions from lines that won't complete this round,
+    since their committed tiles still represent future wall progress.
+
+    Each tile in a partial line on row r contributes (r + 1) to the
+    row, column, and color totals — matching the wall cell weighting.
+    Mutates the three count structures in place.
+    """
+    for row in range(BOARD_SIZE):
+        line = board.pattern_lines[row]
+        capacity = row + 1
+        if not line or len(line) == capacity:
+            # Empty line — no contribution.
+            # Full line — already captured in post_placement_wall.
+            continue
+        committed_color = line[0]
+        wall_col = COLUMN_FOR_TILE_IN_ROW[committed_color][row]
+        weighted_contribution = len(line) * (row + 1)
+        filled_in_rows[row] += weighted_contribution
+        filled_in_cols[wall_col] += weighted_contribution
+        filled_per_color[committed_color] += weighted_contribution
+
+
 def _encode_bonus_proximity(
     spatial: torch.Tensor,
     channel: int,
+    board,
     post_placement_wall: list[list[Tile | None]],
 ) -> None:
     """Write bonus proximity into each wall cell.
 
-    Uses the post-placement wall (pattern lines that complete this round
-    are already applied) so the signal reflects end-of-round state.
+    Uses the post-placement wall for full pattern lines, then adds
+    contributions from partial pattern lines that won't complete this
+    round but still represent committed future progress.
+
+    Each filled cell or committed tile in row r contributes (r + 1),
+    reflecting pattern tile cost. Max weighted sum per row/col/color
+    is 1+2+3+4+5 = 15.
 
     For each cell (row, wall_col):
-      row_progress   = filled_in_row / 5
-      col_progress   = filled_in_col / 5
-      color_progress = filled_of_this_color / 5
+      row_progress   = weighted_filled_in_row / 15
+      col_progress   = weighted_filled_in_col / 15
+      color_progress = weighted_filled_of_color / 15
       value = (row_progress + col_progress + color_progress) / 3
     """
+    _MAX_WEIGHTED_SUM = 15
+
     filled_in_rows = _count_filled_in_rows(post_placement_wall)
     filled_in_cols = _count_filled_in_cols(post_placement_wall)
     filled_per_color = _count_filled_per_color(post_placement_wall)
 
+    _add_partial_pattern_line_contributions(
+        board, filled_in_rows, filled_in_cols, filled_per_color
+    )
+
     for row in range(BOARD_SIZE):
-        row_progress = filled_in_rows[row] / BOARD_SIZE
         for wall_col in range(BOARD_SIZE):
-            col_progress = filled_in_cols[wall_col] / BOARD_SIZE
             color = _COLOR_FOR_WALL_CELL[row][wall_col]
-            color_progress = filled_per_color[color] / BOARD_SIZE
             spatial[channel, row, wall_col] = (
-                row_progress + col_progress + color_progress
+                (_MAX_WEIGHTED_SUM - filled_in_rows[row]) / _MAX_WEIGHTED_SUM
+                + (_MAX_WEIGHTED_SUM - filled_in_cols[wall_col]) / _MAX_WEIGHTED_SUM
+                + (_MAX_WEIGHTED_SUM - filled_per_color[color]) / _MAX_WEIGHTED_SUM
             ) / 3.0
 
 
@@ -388,11 +445,11 @@ def encode_state(game: Game) -> tuple[torch.Tensor, torch.Tensor]:
 
     _encode_wall_filled(spatial, CH_MY_WALL, my_board.wall)
     _encode_pattern_line_fill_ratio(spatial, CH_MY_PATTERN, my_board, my_board.wall)
-    _encode_bonus_proximity(spatial, CH_MY_BONUS, my_post_wall)
+    _encode_bonus_proximity(spatial, CH_MY_BONUS, my_board, my_post_wall)
 
     _encode_wall_filled(spatial, CH_OPP_WALL, opp_board.wall)
     _encode_pattern_line_fill_ratio(spatial, CH_OPP_PATTERN, opp_board, opp_board.wall)
-    _encode_bonus_proximity(spatial, CH_OPP_BONUS, opp_post_wall)
+    _encode_bonus_proximity(spatial, CH_OPP_BONUS, opp_board, opp_post_wall)
 
     _encode_bag_count(spatial, CH_BAG, game)
     _encode_source_distribution(spatial, CH_SOURCE_DIST, game)

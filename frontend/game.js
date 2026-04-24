@@ -307,6 +307,7 @@ async function initMenu() {
     const manualFactories = document.getElementById("manual-factories-checkbox").checked;
     closeMenu();
     startNewGame([p1, p2], manualFactories);
+    if (manualFactories) startManualFactoryPoller();
   });
 
   document.getElementById("watch-replay-btn").addEventListener("click", () => {
@@ -341,12 +342,16 @@ async function loadState() {
 }
 
 function _applyNewState(newState) {
+  const wasInSetup = gameState?.in_factory_setup;
   gameState = newState;
   selection = null;
   renderLive();
   maybeRunBot();
   if (gameState.is_game_over && gameState.last_game_id) {
     setTimeout(() => loadReplay(gameState.last_game_id), 1500);
+  }
+  if (gameState.manual_factories && gameState.in_factory_setup && !wasInSetup) {
+    startManualFactoryPoller();
   }
   if (_inspectorEnabled && !gameState.is_game_over) {
     setTimeout(() => {
@@ -641,6 +646,24 @@ async function setupCommit() {
   gameState = await res.json();
   renderLive();
   maybeRunBot();
+}
+
+
+function startManualFactoryPoller() {
+  const interval = setInterval(async () => {
+    if (!gameState?.manual_factories || !gameState?.in_factory_setup) {
+      clearInterval(interval);
+      return;
+    }
+    const res = await fetch(`${API}/state`);
+    const newState = await res.json();
+    if (!newState.in_factory_setup) {
+      gameState = newState;
+      clearInterval(interval);
+      renderLive();
+      maybeRunBot();
+    }
+  }, 1000);
 }
 
 // ── Bot loop ───────────────────────────────────────────────────────────────

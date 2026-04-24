@@ -26,7 +26,6 @@ from agents.alphabeta import AlphaBetaAgent
 from neural.model import AzulNet
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
 
-
 # ── Formatting helpers ─────────────────────────────────────────────────────
 
 

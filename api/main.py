@@ -750,6 +750,46 @@ def setup_factories_commit() -> GameStateResponse:
     return _build_response(_game)
 
 
+@app.post("/setup-factories/load", response_model=GameStateResponse)
+def setup_factories_load(request: list[list[str]]) -> GameStateResponse:
+    """Load a complete factory setup and begin the round in one call."""
+    global _in_factory_setup, _factory_cursor
+
+    if len(request) != len(_game.state.factories):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Expected {len(_game.state.factories)} factories, got "
+            f"{len(request)}",
+        )
+
+    total = sum(len(f) for f in request)
+    if total != _total_slots():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Expected {_total_slots()} tiles total, got {total}",
+        )
+
+    # Return all currently placed tiles to the bag first.
+    for factory in _game.state.factories:
+        _game.state.bag.extend(factory)
+        factory.clear()
+    random.shuffle(_game.state.bag)
+
+    # Draw and place each tile.
+    for factory_req, factory in zip(request, _game.state.factories):
+        for name in factory_req:
+            tile = _str_to_setup_tile(name)
+            _draw_one(tile)
+            factory.append(tile)
+
+    _in_factory_setup = False
+    _factory_cursor = 0
+    if _recorder is not None:
+        _recorder.start_round(_game)
+
+    return _build_response(_game)
+
+
 @app.get("/recordings", response_model=list[RecordingSummary])
 def list_recordings() -> list[RecordingSummary]:
     """Return a summary of every saved game across all subfolders, newest first."""

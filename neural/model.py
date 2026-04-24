@@ -5,10 +5,10 @@ Architecture
 ------------
 Two input branches that merge before the policy and value heads.
 
-Spatial branch — processes the (14, 5, 6) wall+pattern tensor:
-    Conv2d(14 → 64, kernel=3, padding=1) → LayerNorm → ReLU
+Spatial branch — processes the (8, 5, 5) wall+pattern tensor:
+    Conv2d(8 → 64, kernel=3, padding=1) → LayerNorm → ReLU
     Conv2d(64 → 128, kernel=3, padding=1) → LayerNorm → ReLU
-    Flatten → Linear(128*5*6 → hidden_dim) → LayerNorm → ReLU
+    Flatten → Linear(128*5*5 → hidden_dim) → LayerNorm → ReLU
 
 Flat branch — processes the (FLAT_SIZE,) feature vector:
     Linear(FLAT_SIZE → hidden_dim // 2) → LayerNorm → ReLU
@@ -39,8 +39,7 @@ from neural.encoder import (
     FLAT_SIZE,
     MOVE_SPACE_SIZE,
     NUM_CHANNELS,
-    BOARD_SIZE,
-    GRID_COLS,
+    SPATIAL_SHAPE,
 )
 
 # Re-export so callers that do `from neural.model import MOVE_SPACE_SIZE` still work.
@@ -48,6 +47,11 @@ __all__ = ["ResBlock", "AzulNet", "MOVE_SPACE_SIZE"]
 
 _CONV_MID = 64
 _CONV_OUT = 128
+
+# Spatial dimensions after conv layers — derived from SPATIAL_SHAPE so this
+# stays correct if the encoder shape ever changes.
+_SPATIAL_ROWS: int = SPATIAL_SHAPE[1]  # 5
+_SPATIAL_COLS: int = SPATIAL_SHAPE[2]  # 5
 
 
 class ResBlock(nn.Module):
@@ -89,16 +93,16 @@ class AzulNet(nn.Module):
         self.num_blocks = num_blocks
 
         # ── Spatial branch ────────────────────────────────────────────────
-        # Input: (batch, 14, 5, 6)
+        # Input: (batch, 8, 5, 5)
         # Two conv layers preserve spatial dimensions (padding=1, kernel=3).
         # LayerNorm applied over the channel dimension after each conv.
         self.conv1 = nn.Conv2d(NUM_CHANNELS, _CONV_MID, kernel_size=3, padding=1)
-        self.norm1 = nn.LayerNorm([_CONV_MID, BOARD_SIZE, GRID_COLS])
+        self.norm1 = nn.LayerNorm([_CONV_MID, _SPATIAL_ROWS, _SPATIAL_COLS])
         self.conv2 = nn.Conv2d(_CONV_MID, _CONV_OUT, kernel_size=3, padding=1)
-        self.norm2 = nn.LayerNorm([_CONV_OUT, BOARD_SIZE, GRID_COLS])
+        self.norm2 = nn.LayerNorm([_CONV_OUT, _SPATIAL_ROWS, _SPATIAL_COLS])
         self.relu = nn.ReLU()
 
-        conv_flat_size = _CONV_OUT * BOARD_SIZE * GRID_COLS  # 128 * 5 * 6 = 3840
+        conv_flat_size = _CONV_OUT * _SPATIAL_ROWS * _SPATIAL_COLS  # 128 * 5 * 5 = 3200
         self.spatial_proj = nn.Sequential(
             nn.Linear(conv_flat_size, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -144,7 +148,7 @@ class AzulNet(nn.Module):
 
     def forward(
         self,
-        spatial: torch.Tensor,  # (batch, 14, 5, 6)
+        spatial: torch.Tensor,  # (batch, 8, 5, 5)
         flat: torch.Tensor,  # (batch, FLAT_SIZE)
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run a forward pass.

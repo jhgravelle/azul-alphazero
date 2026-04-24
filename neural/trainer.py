@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import logging
+import random
 import torch
 import torch.nn.functional as F
+from typing import Callable
 
 from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
@@ -312,7 +314,7 @@ def collect_self_play(
         az_score = scores[az_player] if az_player is not None else max(scores)
         az_scores.append(az_score)
 
-        mode = "warmup" if opponent is not None else "self-play"
+        # mode = "warmup" if opponent is not None else "self-play"
         opponent_name = (
             type(opponent).__name__ if opponent is not None else "AlphaZeroAgent"
         )
@@ -336,7 +338,6 @@ def collect_self_play(
 #       (make_easy, make_medium, 0.4),
 #       (make_medium, make_medium, 0.3),
 #   ]
-from typing import Callable
 
 MatchupSpec = tuple[Callable, Callable, float]
 
@@ -344,17 +345,16 @@ MatchupSpec = tuple[Callable, Callable, float]
 def _default_matchups() -> list[MatchupSpec]:
     """Default weighted matchup list for heuristic data collection.
 
-    All matchups pair a variety of skill levels against AlphaBeta medium,
-    so every game has one strong reference player. This gives the value head
-    a spectrum of position quality to learn from — not just symmetric
-    AlphaBeta-vs-AlphaBeta games where scores cluster narrowly.
+    All matchups pair a variety of skill levels against AlphaBeta easy,
+    so every game has one reference player without the speed cost of medium.
+    AlphaBeta easy runs ~8x faster than medium (~4ms vs ~35ms per move),
+    allowing significantly more games per iteration.
 
-    Random vs medium:    10% — extreme loss signal, fast games
-    Efficient vs medium: 10% — weak vs strong, passive play exposed
-    Cautious vs medium:  15% — moderate loss signal, floor avoidance
-    Greedy vs medium:    20% — near-peer, clean policy targets
-    Easy vs medium:      25% — peer matchup, meaningful games
-    Medium vs medium:    20% — symmetric, highest quality games
+    Random vs easy:    10% -- extreme loss signal, fast games
+    Efficient vs easy: 10% -- weak vs strong, passive play exposed
+    Cautious vs easy:  15% -- moderate loss signal, floor avoidance
+    Greedy vs easy:    20% -- near-peer, clean policy targets
+    Easy vs easy:      45% -- symmetric, consistent quality
     """
     from agents.alphabeta import AlphaBetaAgent
     from agents.random import RandomAgent
@@ -377,16 +377,12 @@ def _default_matchups() -> list[MatchupSpec]:
     def make_easy() -> AlphaBetaAgent:
         return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
 
-    def make_medium() -> AlphaBetaAgent:
-        return AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10))
-
     return [
-        (make_random, make_medium, 0.10),
-        (make_efficient, make_medium, 0.10),
-        (make_cautious, make_medium, 0.15),
-        (make_greedy, make_medium, 0.20),
-        (make_easy, make_medium, 0.25),
-        (make_medium, make_medium, 0.20),
+        (make_random, make_easy, 0.10),
+        (make_efficient, make_easy, 0.10),
+        (make_cautious, make_easy, 0.15),
+        (make_greedy, make_easy, 0.20),
+        (make_easy, make_easy, 0.45),
     ]
 
 

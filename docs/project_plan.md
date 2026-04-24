@@ -1,7 +1,7 @@
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-04-22
-> Status: Phase 8d complete. Encoding upgraded: blocked_wall channel, earned_score_unclamped, round progress, distinct source-color pairs. Ready for training run with AlphaBeta as pretrain and eval opponent.
+> Last updated: 2026-04-24
+> Status: Phase 8f in progress. Encoder v2 complete — 8-channel (8,5,5) spatial, 8-value flat, 56% input size reduction. Factory fingerprinting eliminated structurally. Phase 1 diff-only training run in progress (30 iterations, AlphaBeta heuristic games, no self-play). Next: diagnose value_diff calibration via sample_policy, then Phase 2 full training.
 
 ---
 
@@ -36,13 +36,13 @@ Build a fully playable implementation of the board game **Azul** with an **Alpha
 azul-alphazero/
 ├── agents/
 │   ├── alphazero.py       # Thin wrapper — delegates to SearchTree
-│   ├── alphabeta.py       # Alpha-beta pruning with cheap move ordering
+│   ├── alphabeta.py       # Alpha-beta pruning, scored policy_distribution (softmax)
 │   ├── base.py            # Agent base class + default policy_distribution (uniform)
 │   ├── cautious.py        # Uniform over non-floor moves
 │   ├── efficient.py       # Uniform over partial-line moves (fallback to all)
 │   ├── greedy.py          # Color-conditional distribution
 │   ├── mcts.py
-│   ├── minimax.py         # Depth-limited minimax, searches to round boundary
+│   ├── minimax.py         # Depth-limited minimax, full tree (no pruning) for analysis
 │   ├── move_filters.py    # non_floor_moves shared helper
 │   ├── random.py          # Inherits uniform distribution
 │   └── registry.py        # Single source of truth for all agents
@@ -64,7 +64,7 @@ azul-alphazero/
 │   ├── render.js
 │   └── style.css
 ├── neural/
-│   ├── encoder.py         # (14,5,6) spatial + (49,) flat encoding
+│   ├── encoder.py         # (8,5,5) spatial + (8,) flat encoding (rewritten 2026-04-24)
 │   ├── model.py           # Conv+MLP trunk with 3 value heads (win/diff/abs)
 │   ├── zobrist.py         # Zobrist hashing for within-round game states
 │   ├── search_tree.py     # SearchTree: MCTS, transposition table, subtree reuse
@@ -72,16 +72,18 @@ azul-alphazero/
 │   └── replay.py          # Circular buffer, three value targets per example
 ├── scripts/
 │   ├── bench_score_placement.py
-│   ├── benchmark_agents.py  # Time agents at various depth configs (first-move isolated)
+│   ├── benchmark_agents.py
 │   ├── benchmark_mcts.py
+│   ├── inspect_policy.py  # Per-move policy/value/MCTS diagnostic tool
+│   ├── sample_policy.py   # Bulk value head calibration checker (N random states)
 │   ├── migrate_recordings.py
 │   ├── parse_log.py
 │   ├── self_play.py
-│   ├── tournament.py        # Round-robin parallel tournament with per-agent timing
+│   ├── tournament.py
 │   └── train.py
-├── tests/                 # pytest suite (~649 tests; timing-sensitive ones marked slow)
-├── checkpoints/           # gitignored
-├── cli/                   # just enough to debug
+├── tests/
+├── checkpoints/           # gitignored; latest.pt always = most recent training state
+├── cli/
 ├── htmlcov/               # gitignored
 ├── recordings/            # gitignored
 └── docs/
@@ -98,7 +100,7 @@ azul-alphazero/
 ### Phase 3 — Random Bot + Agent Interface ✅
 ### Phase 4 — Monte Carlo Tree Search ✅
 ### Phase 5 — Neural Network ✅
-### Phase 6 — AlphaZero Self-Play Training ✅ (superseded by 8c)
+### Phase 6 — AlphaZero Self-Play Training ✅ (superseded)
 ### Phase 6b — Reward Shaping + UI Polish ✅
 ### Phase 7 — Undo + Hypothetical + Manual Factory Setup ✅
 
@@ -113,110 +115,101 @@ Spatial+flat encoding, conv+MLP model, Zobrist hashing, game-owned SearchTree wi
 Virtual loss, parallel leaf collection, single batched forward pass per batch.
 
 #### 8c — Heuristic Baseline ✅
-Strong heuristic agents established. AlphaBeta hard (depths=3,5,8 thresholds=20,10) wins 99% vs Greedy at depth 1 alone, 76% vs Minimax. Inspector UI complete with immediate/cumulative scores, start/stop, copy state/tree. AlphaBeta is now both the pretrain opponent and the promotion bar for AlphaZero.
+AlphaBeta hard wins 99% vs Greedy at depth 1, 76% vs Minimax. Inspector UI complete. AlphaBeta is both pretrain opponent and promotion bar.
 
 #### 8d — Encoding Upgrade ✅
 
-**Changes shipped:**
+Spatial: (12,5,6) → (14,5,6). Two new channels per player:
+- **`blocked_wall`** (ch 6/13): wall cell is 1.0 if already filled OR if pattern line committed to a different color. Makes "this cell is unavailable" explicit rather than inferred.
 
-- **Spatial shape: (12,5,6) → (14,5,6).** Two new channels added — one per player.
-- **`blocked_wall` channel (ch 6 / 13).** A wall cell is marked 1.0 if it is already filled OR if the pattern line for that row is committed to a different color (so that cell cannot be filled this round). Previously the net had to learn this inference itself from wall + pattern line data. Now it is explicit.
-- **`earned_score_unclamped` replaces `earned_score` in flat features (offsets 34–35).** The unclamped value correctly reflects floor penalties dragging scores negative and pending placement points not yet on board.score. The clamped version was hiding meaningful signal.
-- **Score delta divisor: 20 → 50.** AlphaBeta vs weak agents produces large differentials; the wider range keeps the feature informative rather than saturated.
-- **Round progress feature added (offset 47).** `(round - 1) / 5` gives 0.0 at round 1, 1.0 at round 6. Previously derivable only from bag counts — noisy and indirect.
-- **Distinct source-color pairs feature added (offset 48).** `count_distinct_source_color_pairs() / 10`. Counts unique (source, color) combinations with tiles available across all factories and center (excluding FIRST_PLAYER). This is the maximum turns remaining in the round — a clean countdown. Also exposed as `Game.count_distinct_source_color_pairs()` for future use by AlphaBeta/Minimax depth selection.
-- **Flat size: 47 → 49.**
-- **Model `in_channels`: 12 → 14** (via `NUM_CHANNELS` import — no direct model.py edit needed).
+Flat: 47 → 49 features:
+- `earned_score_unclamped` replaces `earned_score` at offsets 34-35
+- Score delta divisor: 20 → 50 (AlphaBeta games have larger spreads)
+- Round progress: `(round-1)/5` at offset 47
+- Distinct source-color pairs / 10 at offset 48 (round countdown proxy)
 
-**What was considered and rejected:**
+`Game.count_distinct_source_color_pairs()` added — cleaner depth-selection signal than legal move count.
 
-- `pending_wall_placement` channel (binary: where will a committed pattern line land on the wall). Rejected — the existing color planes already encode this implicitly; the blocked_wall channel is the more valuable complement.
-- `wall_nearly_complete` channel (bonus proximity). Rejected — the net can learn bonus proximity from wall state alone; adding prior round board state snapshots is a higher-value use of encoding complexity.
-- `clamped_points` flat feature. Rejected — floor fill ratio already captures this; game-history artifacts are not actionable by the net.
-- `value_abs` weight reduction to 0.0. Deferred — set to 0.1 for now, remove entirely after confirming it adds no signal.
+#### 8e — Training Pipeline + Diagnostics ✅
 
-**Deferred to Phase 8f:**
-- Prior round board state snapshots (one encoded board state per completed round, up to 5). This would help the net learn that early-round center column plays create adjacency opportunities in later rounds, and provide a strong game-progress signal. Staged after a training run confirms the Phase 8d encoding improvements work.
+**Major infrastructure shipped:**
 
-#### 8e — Training Run 🔄 (next)
+- **AlphaBeta scored policy distribution.** `policy_distribution()` returns softmax over root move scores (temperature=1.0) rather than uniform. `_score_all_root_moves` evaluates every root move with full alpha/beta window (no root-level pruning). `choose_move` must be called before `policy_distribution` — populates `_root_move_scores` cache. Falls back to uniform if cache empty.
 
-**Pretrain configuration:**
-- Opponent: AlphaBeta easy (depths=2,3,7 thresholds=20,10) vs AlphaBeta medium (depths=3,5,7) — richer training data than Greedy-vs-Cautious, genuine wall-building structure, soft policy targets (uniform inherited distribution).
-- `value_abs` weight: 0.1 (down from 0.3 — low confidence this head adds signal).
-- `--value-only-iterations 0` always.
-- `--clear-buffer-after-pretrain` never.
+- **Diverse heuristic matchups.** `collect_heuristic_games` uses weighted matchup sampling: Random/Efficient/Cautious/Greedy/AlphaBeta easy vs AlphaBeta medium, plus medium vs medium. Gives value head spectrum of position quality including losing positions from weak agents.
 
-**Promotion bar:** Beat `alphabeta_hard` (depths=3,5,8 thresholds=20,10) at ≥55% win rate with ≥1500 eval simulations.
+- **Parallel heuristic collection.** `collect_heuristic_games_parallel` uses `multiprocessing` with `spawn` context (Windows compatible). Workers serialize agent names not callables (callables don't pickle). Near-linear speedup up to core count.
 
-**Graduated eval targets** (checkpoints are promoted through these in order):
-1. Beat Greedy (≥70%) — proves the net learned something real
-2. Beat Cautious (≥60%) — confirms floor avoidance
-3. Beat AlphaBeta easy (≥55%)
-4. Beat AlphaBeta hard (≥55%) — deployable
+- **Training loop fixes.** Net weights no longer reset when eval is skipped (critical bug). Interval loss logging fixed (was cumulative, now per-500-step window). `--diff-only` flag for value-only-differential training. `--initial-generation` for manually promoted checkpoints. `latest.pt` auto-loaded by default; written every iteration and on promotion.
 
-**Smoke test command:**
-```
-python -m scripts.train \
-  --iterations 3 \
-  --games-per-iter 5 \
-  --simulations 200 \
-  --train-steps 200 \
-  --pretrain-games 20 \
-  --pretrain-steps 300 \
-  --value-only-iterations 0 \
-  --skip-eval-iterations 3 \
-  --eval-games 10 \
-  --eval-simulations 200 \
-  --win-threshold 0.55
-```
+- **Diagnostic scripts.** `inspect_policy.py`: per-move AlphaBeta vs net policy, KL divergence, value heads, encoding verification, MCTS probe with top-child subtree analysis. `sample_policy.py`: bulk value calibration across N random states, mean/std/min/max for all heads, floor preference rate.
 
-**Medium run:**
-```
-python -m scripts.train \
-  --iterations 10 \
-  --games-per-iter 15 \
-  --simulations 750 \
-  --train-steps 300 \
-  --pretrain-games 100 \
-  --pretrain-steps 1500 \
-  --value-only-iterations 0 \
-  --skip-eval-iterations 3 \
-  --eval-games 20 \
-  --eval-simulations 1500 \
-  --win-threshold 0.55
-```
+#### 8f — Encoder v2 🔄 (in progress)
 
-**Before running:** trainer.py must be updated to use AlphaBeta (easy/medium) as the pretrain opponent pair instead of Greedy-vs-Cautious. This is the next coding task.
+Complete redesign of the encoder to eliminate factory fingerprinting and reduce input size.
+
+**Spatial: (14,5,6) → (8,5,5).** All channels now in (row, wall_col) space — convolutions operate on true geometric adjacency. 56% reduction in input values (469 → 208).
+
+Channel layout:
+- **ch 0/3** — My/opponent wall filled (0 or 1). Conv learns adjacency implicitly.
+- **ch 1/4** — My/opponent pattern line fill ratio. Nonzero at exactly one wall_col per row (the committed color's column). 0 if line empty or wall cell already filled.
+- **ch 2/5** — My/opponent bonus proximity. Weighted sum of row/col/color completion progress, using pattern tile cost weighting `(row+1)` per filled cell, max 15. Includes partial pattern line contributions. Formula: `((15 - weighted_row) + (15 - weighted_col) + (15 - weighted_color)) / (3 * 15)`. Goes negative for expensive bottom rows at game start — intentional.
+- **ch 6** — Bag count by color, broadcast across rows. col = COLOR_TILES index. value = count / 20.
+- **ch 7** — Source distribution. row = bucket (sources with 1/2/3/4/5+ tiles), col = color. value = source count / 5. Eliminates factory fingerprinting — encodes tile availability and distribution without identifying which factory has which tiles.
+
+**Flat: (49,) → (8,).** Dropped: per-factory counts (memorization culprit), center counts (rolled into ch 7), score delta (derivable), discard (marginal signal), round progress (bag counts sufficient), distinct pairs (ch 7 covers this). Kept: official scores, earned-this-round unclamped, floor penalty (actual penalty value / 14, not fill ratio), first-player token flags.
+
+**All existing tests passing.** Old checkpoints incompatible — deleted. Fresh training required.
 
 ---
 
-### Hard-won lessons (do not repeat)
+### Hard-won training lessons (do not repeat)
 
-1. **`value_only_iterations > 0` is a divergence trap.** Value head learns to accurately predict garbage outcomes while policy stays random. Self-play gets progressively worse. Always `--value-only-iterations 0`.
+**From earlier phases:**
 
-2. **One-hot policy targets from heuristic agents poison the policy head.** The policy head memorizes specific choices rather than learning structure. Fix: `policy_distribution()` on each agent returns its true (soft) sample distribution. Heuristic pretrain pushes these distributions as targets. Uniform inherited distribution (RandomAgent, MinimaxAgent, AlphaBetaAgent) is soft enough — it does NOT produce one-hots because legal moves number in the dozens.
+1. **`value_only_iterations > 0` is a divergence trap.** Policy stays random, value predicts garbage. Always `--value-only-iterations 0`.
 
-3. **Random agent pretrain is nearly useless.** Random plays too many floor moves, producing near-zero `earned_score_unclamped` deltas across games. Value head gets no signal. Greedy-vs-Random was an improvement over random-only but still had one-hot policy target problems. Current recommendation: AlphaBeta easy vs AlphaBeta medium — genuine wall-building, meaningful score variance, soft distributions.
+2. **One-hot policy targets poison the policy head.** Fix: `policy_distribution()` returns soft distributions. AlphaBeta now returns softmax over search scores.
 
-4. **Clearing the buffer after pretrain kills value head signal.** Early self-play data alone has near-uniform scores. Mixed buffer keeps pretrain signal alive during early iterations. Default: never clear.
+3. **Random agent pretrain is nearly useless.** Floor-heavy games, near-zero score signal. Use structured opponents.
 
-5. **`_MAX_MOVES = 100` is the right cap.** Human games max at ~65 moves; anything longer is pathological and wastes compute.
+4. **Clearing buffer after pretrain kills value signal.** Never use `--clear-buffer-after-pretrain`.
 
-6. **Eval at low simulation counts (100-200) is nearly useless.** With separate trees per agent, search quality is too thin. Win rates are ~50% + noise. Need ≥1500 sims for meaningful eval.
+5. **`_MAX_MOVES = 100` is the right game cap.**
 
-7. **GPU utilization is ~1%. CPU is the bottleneck.** MCTS inference runs on CPU deliberately. Parallelism via multiprocessing (not threads — GIL) gives near-linear speedup up to core count.
+6. **Eval at low sim counts is nearly useless.** Need ≥1500 sims for meaningful eval with separate trees.
 
-8. **`earned_score_unclamped` is the correct scoring primitive.** The clamped version hides floor penalties and pending placements. Use unclamped everywhere in the encoding and as the basis for value targets. Official `board.score` is only appropriate for win/loss determination.
+**From Phase 8e (2026-04-23):**
 
-9. **AlphaBeta is strictly superior to Minimax given equal depth.** AlphaBeta prunes without affecting result. Minimax is retained only because it produces a full search tree useful for human game analysis (no pruned branches). Do not use Minimax for training or eval.
+7. **Net weights reset every iteration when eval was skipped.** Non-promoted branch called `net.load_state_dict(best_net)` unconditionally. With `--skip-eval-iterations 20`, every iteration reset to random weights — 9 iterations of training discarded silently each run. Fix: only reset when eval actually ran and net lost.
 
-10. **`count_distinct_source_color_pairs()` is a better depth-selection signal than `len(legal_moves())`.** Legal move count is O(factories × colors × rows) and spikes at round start. Distinct pairs count is O(factories × colors) and cleanly represents maximum remaining turns. Noted for future AlphaBeta/Minimax depth selection refactor.
+8. **Policy loss dominates the trunk (~50x value loss).** With policy loss ~2.0 and value loss ~0.04, trunk receives far more gradient from policy than value heads. During Phase 1, train value-only (`--diff-only`) so trunk develops value-relevant features before policy training dominates.
+
+9. **Value head overfit to factory configurations.** Five fresh empty boards produced `value_diff` of [-0.998, +0.362, -0.453, +0.802, -0.297]. Factory tile configuration at move 1 has almost zero bearing on game outcome, but net memorized factory pattern → outcome correlations. Each factory draw is effectively unique — net sees it once and memorizes it rather than generalizing. **Fix: encoder v2 eliminates per-factory counts entirely, replacing with source distribution buckets.**
+
+10. **Model capacity too large for available data.** 256-dim trunk with 3 residual blocks memorizes unique configurations rather than generalizing. Dropout deferred — encoder redesign is the structural fix; revisit if std > 0.3 persists after encoder v2 training.
+
+11. **AlphaBeta policy distribution is flat at move 1 on empty boards (depth 1).** Most moves score 0 at depth 1 — partial fills have no immediate scoring, factory overflows cancel with floor penalties. Score variation only appears at depth ≥3 or when pattern lines are partially filled. This is correct behavior. Policy head learns from mid/late-round positions where distributions are peaked.
+
+12. **MCTS snowballs on high-value outliers.** Noisy value head gives one move a high estimate on first visit; PUCT concentrates all simulations there regardless of policy prior. Fix: value head calibration, not PUCT change.
+
+13. **Eval against random `gen_0000.pt` produces move-cap hits.** Random net floors constantly; both players score -90 to -106 and hit 100-move cap. Fix: copy `latest.pt` to `gen_0001.pt` after Phase 1 and use `--initial-generation 1`.
+
+14. **`uvicorn --reload` restarts server on checkpoint writes.** Fix: run without `--reload` during training.
+
+**From Phase 8f (2026-04-24):**
+
+15. **Factory fingerprinting is a structural encoder problem, not a capacity problem.** Per-factory per-color counts are a near-unique fingerprint for each game start. The fix is to never encode which factory has which tiles — only encode aggregate availability (source distribution buckets). Dropout addresses symptoms; encoder redesign addresses cause.
+
+16. **Convolutions handle adjacency — don't encode it explicitly.** Explicit adjacency channels are redundant when conv layers operate on a true geometric grid. A 3×3 conv already computes weighted neighbor sums. Removing adjacency channels simplifies the encoder without losing information.
+
+17. **Wall encoding space matters.** Previous encoder used (row, color) indexing — color planes with a diagonal structure the net had to reverse-engineer. Encoder v2 uses (row, wall_col) space where geometric adjacency in the tensor matches geometric adjacency on the board.
+
+18. **Bonus proximity should use pattern tile cost weighting, not cell counts.** Filling row 4 costs 5 pattern tiles; row 0 costs 1. Weighting by `(row+1)` makes the progress signal reflect true tile efficiency. Max weighted sum per row/col/color = 15. Values go negative for expensive rows at game start — this is informative, not a bug.
 
 ---
 
-### Engine design: make_move / advance separation (2026-04-20)
-
-`make_move` now only moves tiles. All phase transitions are the caller's responsibility via `advance()`.
+### Engine design: make_move / advance separation
 
 ```
 make_move(move)           — take tiles from source, place on pattern line/floor
@@ -224,14 +217,13 @@ advance(skip_setup=False) — next_player(), score_round() if round over,
                             score_game() if game over, setup_round() unless
                             skip_setup=True. Returns True if round boundary crossed.
 is_round_over() → bool    — True when no color tiles remain in any source
-next_player()             — rotate current_player (public, used by search tree)
+next_player()             — rotate current_player
 score_round()             — wall scoring, floor penalties, set next first player
 is_game_over() → bool     — True if any player has a completed wall row
 score_game()              — end-of-game bonuses
 setup_round()             — fill factories, add FIRST_PLAYER to center
 count_distinct_source_color_pairs() → int
-                          — unique (source, color) pairs with tiles available;
-                            maximum turns remaining this round
+                          — unique (source, color) pairs with tiles; max turns remaining
 ```
 
 ---
@@ -240,66 +232,104 @@ count_distinct_source_color_pairs() → int
 
 `AzulNet.forward(spatial, flat)` returns `(logits, value_win, value_diff, value_abs)`.
 
-- `value_win` — win/loss outcome (+1/0/-1). Primary target. Only head used by PUCT during search.
-- `value_diff` — normalized score differential (÷50). Auxiliary, dense gradient signal.
-- `value_abs` — normalized absolute player score (÷100). Auxiliary weight reduced to 0.1; candidate for removal after next training run.
+- `value_win` — win/loss (+1/0/-1). Primary target.
+- `value_diff` — normalized score differential (÷50). Dense continuous signal. **Currently used by PUCT** in `search_tree.py` (`make_policy_value_fn`).
+- `value_abs` — normalized absolute score (÷100). Weight 0.1; candidate for removal.
 
-Loss: `policy + value_win + 0.3·value_diff + 0.1·value_abs`.
+Loss weights (full training): `policy + 0.3·value_win + 1.0·value_diff + 0.1·value_abs`
+Loss weights (`--diff-only`): `value_diff` only — policy, value_win, value_abs all zeroed.
 
-When adding callsites that consume net output:
-```python
-logits, value_win, _value_diff, _value_abs = net(spatial, flat)
+**Value head calibration target:** `value_diff` mean < |0.1|, std < 0.3 on turn-1 empty boards.
+**Previous state:** mean ≈ -0.01 (good), std ≈ 0.64 (too high — factory memorization, now fixed structurally).
+
+---
+
+### Training pipeline reference
+
+**Data sources per iteration (Phase 2):**
+
+| Source | Flag | Purpose |
+|---|---|---|
+| Self-play (AZ vs AZ) | `--games-per-iter` | Net learns from own search |
+| AlphaBeta vs AlphaBeta | `--alphabeta-games-per-iter` | High-quality imitation data |
+| AlphaBeta vs candidate | `--candidate-games-per-iter` | Mixed signal, both sides soft policy |
+| Eval games (AZ vs best) | `--eval-games` | Diversity; feeds buffer automatically |
+
+**Heuristic matchup weights (default):**
+
+| Matchup | Weight | Purpose |
+|---|---|---|
+| Random vs AlphaBeta medium | 10% | Extreme loss signal, fast games |
+| Efficient vs AlphaBeta medium | 10% | Weak vs strong |
+| Cautious vs AlphaBeta medium | 15% | Moderate loss signal |
+| Greedy vs AlphaBeta medium | 20% | Near-peer, clean policy targets |
+| AlphaBeta easy vs medium | 25% | Peer matchup |
+| AlphaBeta medium vs medium | 20% | Symmetric high quality |
+
+**Value calibration check (run after each phase):**
+```
+python -m scripts.sample_policy --checkpoint checkpoints/latest.pt --samples 100 --summary-only
+```
+Target: `value_diff` mean < |0.1|, std < 0.3 on turn-1 empty boards.
+
+**Medium run — Phase 1 (value calibration, diff-only, encoder v2):**
+```
+python -m scripts.train \
+  --iterations 30 --games-per-iter 0 --simulations 200 \
+  --train-steps 1000 --value-only-iterations 0 \
+  --skip-eval-iterations 30 --eval-games 0 --eval-simulations 200 \
+  --win-threshold 0.55 --alphabeta-games-per-iter 100 \
+  --buffer-size 500000 --heuristic-workers 8 --diff-only
 ```
 
----
-
-### Policy distribution system
-
-All agents have `policy_distribution(game) -> list[tuple[Move, float]]`.
-
-- `Agent` base class: uniform over legal moves (default)
-- `RandomAgent`: inherits default
-- `CautiousAgent`: uniform over non-floor moves
-- `EfficientAgent`: uniform over partial-line moves (fallback to all)
-- `GreedyAgent`: color-conditional — pick color uniformly, then uniform within color
-- `MinimaxAgent` / `AlphaBetaAgent`: uniform (inherited)
-
-Used in `collect_heuristic_games` to produce soft policy targets. Uniform over dozens of moves is soft enough — not one-hot.
-
----
-
-### Minimax/AlphaBeta agent notes
-
-Both agents search to the round boundary naturally — depth limit is rarely reached. The adaptive depth system via `depths/thresholds` tuples controls depth based on legal move count:
-
-```python
-AlphaBetaAgent(depths=(3, 5, 8), thresholds=(20, 10))
-# >20 legal moves -> depth 3 (early round, high branching)
-# 10-20 legal moves -> depth 5
-# <=10 legal moves  -> depth 8
+**Medium run — Phase 2 (full training):**
+```
+python -m scripts.train \
+  --iterations 30 --games-per-iter 10 --simulations 200 \
+  --train-steps 1000 --value-only-iterations 0 \
+  --skip-eval-iterations 5 --eval-games 20 --eval-simulations 200 \
+  --win-threshold 0.55 --alphabeta-games-per-iter 40 \
+  --candidate-games-per-iter 20 --buffer-size 200000 \
+  --heuristic-workers 8 --initial-generation 1
 ```
 
-**Future:** switch depth selection from `len(legal_moves())` to `count_distinct_source_color_pairs()` for a cleaner branching-factor signal.
+**Promotion bar:** Beat `alphabeta_hard` at ≥55% win rate with ≥1500 eval simulations.
 
-Key invariant: **compute `earned_score_unclamped` BEFORE calling `advance(skip_setup=True)`**. After advance, the wall is scored and pattern lines cleared.
-
-AlphaBeta move ordering uses cheap heuristic (no cloning):
-- Floor moves: bad for maximizer, good for minimizer
-- Line-completing moves: good for maximizer, bad for minimizer
-- Partial fills: neutral
-
-Clone-based `_immediate_score` ordering was 16x slower. Never reintroduce.
+**Graduated eval targets:**
+1. Beat Greedy ≥70%
+2. Beat Cautious ≥60%
+3. Beat AlphaBeta easy ≥55%
+4. Beat AlphaBeta hard ≥55% — deployable
 
 ---
 
-### Inspector UI (2026-04-22)
+### Checkpoint management
+
+- `checkpoints/latest.pt` — current training weights; written every iteration and on promotion
+- `checkpoints/latest_params.json` — args used to produce `latest.pt`
+- `checkpoints/gen_xxxx.pt` — promoted checkpoints only
+- `--load` defaults to `checkpoints/latest.pt`; silently skips if file doesn't exist
+- `--initial-generation N` — start generation counter at N
+
+To manually promote Phase 1 checkpoint before Phase 2:
+```
+copy checkpoints\latest.pt checkpoints\gen_0001.pt
+```
+Then run Phase 2 with `--initial-generation 1`.
+
+**Note:** Checkpoints are tied to encoder/model architecture. Encoder v2 checkpoints are incompatible with encoder v1. All v1 checkpoints deleted 2026-04-24.
+
+---
+
+### Inspector UI
 
 - Start/Pause toggle, sim count from `root.visits`
 - Fully-explored detection — PUCT skips fully-explored nodes
 - Per-move immediate score delta via `earned_score_unclamped`
-- Cumulative minimax rollup of immediate scores along best line
+- Cumulative minimax rollup of immediate scores
 - Children sorted by cumulative score, alternating desc/asc by depth
 - Copy state / Copy tree buttons
+- Run server without `--reload` during training
 
 ---
 
@@ -316,30 +346,27 @@ UI difficulty levels:
 
 ### Open issues
 
-- **trainer.py pretrain opponent must be updated** to AlphaBeta easy vs medium before the next training run.
-- **`value_abs` is a candidate for removal.** Weight reduced to 0.1. Remove entirely if next run shows no benefit.
-- **Distinct pair count not yet used for AlphaBeta depth selection.** Noted for future refactor.
-- **Prior round board state snapshots deferred.** High value for multi-round reasoning but requires architecture change. After 8e confirms basic training works.
-
----
+- **value_diff std after encoder v2** — previous std ≈ 0.64 was due to factory fingerprinting. Run sample_policy after Phase 1 to confirm std < 0.3. If still high, consider dropout.
+- **PUCT uses `value_diff` not `value_win`** — evaluate switching once value_diff is calibrated.
+- **`_terminal_value` uses clamped `earned_score`** — mismatch with training targets. Low priority.
+- **Move cap of 100 in eval** — too low when nets are poorly calibrated. Consider `--eval-move-cap 300`.
 
 ### Deferred
 
-- **Parallel self-play via multiprocessing.** CPU headroom confirmed. 2-4x speedup likely. File until training loop is stable.
-- **Encoding cache keyed by Zobrist hash.** Saves ~19% of search time.
-- **Shared state tree for two-agent eval.** Solves two-tree eval architecturally.
-- **Prior round board state snapshots (Phase 8f).** One encoded board state per completed round, up to 5 rounds. Would help the net learn center-column adjacency value and game progress. Stage after 8e.
+- **Model dropout** — deferred; encoder redesign is the structural fix for memorization. Revisit if std > 0.3 persists after Phase 1.
+- **Prior round board state snapshots** — one encoded board state per completed round, up to 5.
+- **AlphaBeta depth selection via `count_distinct_source_color_pairs()`** — cleaner than legal move count.
+- **Parallel self-play via multiprocessing** — heuristic collection now parallel; self-play still sequential.
+- **Encoding cache keyed by Zobrist hash** — saves ~19% search time.
+- **Shared state tree for two-agent eval** — solves two-tree eval architecturally.
 - **Inspector agent selector** — choose minimax/alphabeta as inspector backend.
 - **Elo ladder** across all agent versions.
-- **AlphaBeta depth selection via `count_distinct_source_color_pairs()`** instead of legal move count.
-
----
 
 ### Next up
 
-- [ ] Update `trainer.py` pretrain to use AlphaBeta easy vs AlphaBeta medium
-- [ ] Smoke test training run
-- [ ] Medium training run
+- [ ] Phase 1 training run complete — check loss curve for learning vs overfit
+- [ ] Run sample_policy — confirm value_diff std < 0.3 on empty boards
+- [ ] If calibrated: copy latest.pt to gen_0001.pt, run Phase 2
 - [ ] Wire best checkpoint into API
 - [ ] Add AlphaZero as UI opponent option
 
@@ -361,11 +388,11 @@ UI difficulty levels:
 | `RandomAgent` | Baseline | Uniform over legal (inherited) | Benchmark floor — avoid for training |
 | `EfficientAgent` | ~22% overall | Uniform over partial-line | Weak — too passive |
 | `CautiousAgent` | ~47% vs Greedy | Uniform over non-floor | Avoids penalties |
-| `GreedyAgent` | ~49% overall | Color-conditional | No longer recommended as pretrain opponent |
+| `GreedyAgent` | ~49% overall | Color-conditional | Training opponent (weak side) |
 | `MCTSAgent` | Untested vs new agents | (N/A) | Lookahead without neural net |
-| `MinimaxAgent` | >> Greedy (100%) | Uniform (inherited) | Full tree for analysis only — not for training |
-| `AlphaBetaAgent` | >> Minimax (76%) | Uniform (inherited) | Pretrain opponent + UI bot + promotion bar |
-| `AlphaZeroAgent` | Goal: >> AlphaBeta hard | (via SearchTree) | Final goal |
+| `MinimaxAgent` | >> Greedy (100%) | Uniform (inherited) | Full tree for analysis only |
+| `AlphaBetaAgent` | >> Minimax (76%) | Softmax over search scores | Pretrain opponent + UI bot + promotion bar |
+| `AlphaZeroAgent` | Goal: >> AlphaBeta hard | (via SearchTree MCTS visits) | Final goal |
 
 ---
 
@@ -380,21 +407,29 @@ UI difficulty levels:
 | Script | Purpose |
 |---|---|
 | `scripts/train.py` | AlphaZero self-play training loop |
-| `scripts/tournament.py` | Round-robin parallel tournament with per-agent timing and depth overrides |
+| `scripts/inspect_policy.py` | Per-move policy/value/MCTS diagnostic; encoding verification |
+| `scripts/sample_policy.py` | Bulk value head calibration across N random game states |
+| `scripts/tournament.py` | Round-robin parallel tournament with per-agent timing |
 | `scripts/benchmark_agents.py` | First-move vs overall timing by depth config |
 | `scripts/self_play.py` | Generate self-play games |
 | `scripts/parse_log.py` | Parse training logs |
 | `scripts/migrate_recordings.py` | Migrate old recording format |
 
+Sample policy usage:
+```
+python -m scripts.sample_policy --checkpoint checkpoints/latest.pt --samples 100 --summary-only
+python -m scripts.sample_policy --checkpoint checkpoints/latest.pt --samples 20 --turn 5
+```
+
+Inspect policy usage:
+```
+python -m scripts.inspect_policy --checkpoint checkpoints/latest.pt --moves 3 --depth 1 --mcts-sims 200
+python -m scripts.inspect_policy --moves 2 --depth 1 --mcts-sims 50 --show-encoding
+```
+
 Tournament usage:
 ```
 python -m scripts.tournament --agents greedy minimax alphabeta_hard --games 200 --workers 8
-python -m scripts.tournament --agents minimax alphabeta --games 100 --workers 8 --depths0 2 3 5 --depths1 3 5 8 --thresholds1 20 10
-```
-
-Benchmark usage:
-```
-python -m scripts.benchmark_agents --games 3
 ```
 
 ---
@@ -412,11 +447,10 @@ python -m scripts.benchmark_agents --games 3
 | 2026-04-14 | Phase 8a complete — spatial encoder, conv+MLP model, Zobrist hashing, SearchTree |
 | 2026-04-14 | Phase 8b complete — batched multithreaded MCTS with virtual loss |
 | 2026-04-15 | Phase 8c begun — eval fixes, move cap, loss diagnostic |
-| 2026-04-18 | First long run diverged (value-only pathology). Applied lessons: full policy+value from iter 1, `_MAX_MOVES = 100`. |
-| 2026-04-18 | Multi-head value network shipped (value_win / value_diff / value_abs with weighted loss). |
-| 2026-04-18 | Distributional policy targets shipped — `policy_distribution()` on all agents. |
-| 2026-04-18 | Eval two-tree problem identified. |
-| 2026-04-20 | Engine refactor: make_move decoupled from round/game transitions. advance() owns phase loop. |
-| 2026-04-20 | API fix: advance() called unconditionally after make_move. |
-| 2026-04-22 | Phase 8c complete. Inspector UI, SearchTree fixes, MinimaxAgent, AlphaBetaAgent, agent registry, tournament script, earned_score_unclamped. |
-| 2026-04-22 | Phase 8d complete. Encoding upgrade: blocked_wall channel (14 channels), earned_score_unclamped in flat features, score delta divisor 50, round progress, distinct source-color pairs. Game.count_distinct_source_color_pairs() added. value_abs weight reduced to 0.1. Pretrain switched to AlphaBeta easy vs medium. 649 tests passing. |
+| 2026-04-18 | First long run diverged (value-only pathology). Applied lessons. |
+| 2026-04-18 | Multi-head value network shipped. Distributional policy targets shipped. |
+| 2026-04-20 | Engine refactor: make_move decoupled from round/game transitions. |
+| 2026-04-22 | Phase 8c complete. Inspector UI, SearchTree fixes, MinimaxAgent, AlphaBetaAgent, registry, tournament, earned_score_unclamped. |
+| 2026-04-22 | Phase 8d complete. Encoding upgrade: blocked_wall channel, unclamped scores, round progress, distinct pairs. |
+| 2026-04-23 | Phase 8e complete. AlphaBeta scored policy distribution. Diverse heuristic matchups. Parallel heuristic collection. Training loop net-reset bug fixed. diff-only mode. Checkpoint management improvements. Diagnostic scripts: inspect_policy, sample_policy. Value head overfit to factory configurations identified (std=0.64, target <0.3). |
+| 2026-04-24 | Phase 8f begun. Encoder v2: (8,5,5) spatial + (8,) flat, 56% input reduction. Wall-col space encoding, bonus proximity with pattern-tile-cost weighting and partial line contributions, source distribution buckets eliminate factory fingerprinting. All tests passing. Phase 1 diff-only training run started. |

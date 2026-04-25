@@ -276,7 +276,7 @@ def test_search_tree_does_not_terminate_after_fourth_move():
     move1 = Move(source=CENTER, tile=Tile.BLUE, destination=2)
     move2 = Move(source=2, tile=Tile.YELLOW, destination=4)
     move3 = Move(source=CENTER, tile=Tile.RED, destination=0)
-    move4 = Move(source=CENTER, tile=Tile.BLACK, destination=3)
+    # move4 = Move(source=CENTER, tile=Tile.BLACK, destination=3)
 
     tree.choose_move(game)
     game.make_move(move1)
@@ -312,7 +312,7 @@ def test_search_tree_does_not_terminate_after_fourth_move():
         "Available children: "
         + str(
             [
-                (c.move.source, c.move.tile.name, c.move.destination)
+                (c.move.source, c.move.tile.name, c.move.destination)  # type: ignore
                 for c in (tree._root.children if tree._root else [])
             ]
         )

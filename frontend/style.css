@@ -956,3 +956,17 @@ h1 { margin-bottom: 8px; }
   color: #888;
   white-space: nowrap;
 }
+
+.inspector-prior {
+  font-size: 11px;
+  color: #aaa;
+  min-width: 52px;
+  text-align: right;
+}
+
+.inspector-visits {
+  font-size: 11px;
+  color: #888;
+  min-width: 64px;
+  text-align: right;
+}

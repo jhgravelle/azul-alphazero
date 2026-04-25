@@ -693,7 +693,14 @@ function renderInspectorPanel(snapshot, {
   const copyBtn = createElement("button", "inspector-extend-btn", "Copy Tree");
   copyBtn.disabled = !snapshot;
   copyBtn.addEventListener("click", () => {
-    const text = _inspectorTreeText(snapshot.tree, 0);
+    const agentLabel = _INSPECTOR_AGENTS.find(a => a.value === selectedAgent)?.label ?? selectedAgent;
+    const paramStr = selectedAgent === "alphazero"
+      ? `sims=${selectedSims}`
+      : selectedAgent in _ALPHABETA_PARAM_LABELS
+        ? _ALPHABETA_PARAM_LABELS[selectedAgent]
+        : "uniform";
+    const header = `${agentLabel} | ${paramStr}\n`;
+    const text = header + _inspectorTreeText(snapshot.tree, 0);
     navigator.clipboard.writeText(text).then(() => {
       copyBtn.textContent = "Copied!";
       setTimeout(() => { copyBtn.textContent = "Copy Tree"; }, 1500);
@@ -744,11 +751,8 @@ function _renderInspectorNode(container, node, {
   expandedKeys,
   onNodeToggle,
   isRoot = false,
+  parentVisits = null,
 }) {
-  console.log("_renderInspectorNode called, depth:", depth, "move:", node.move);
-  console.log("_renderInspectorNode called, depth:", depth, "move:", node.move);
-  console.log("container tag:", container.tagName, "id:", container.id, "class:", container.className);
-  console.log("about to create row...");
   const hasChildren = node.children && node.children.length > 0;
   const isExpanded = expandedKeys.has(node.key);
 
@@ -796,7 +800,7 @@ function _renderInspectorNode(container, node, {
   barWrap.appendChild(barRight);
   row.appendChild(barWrap);
 
-  // ── Value label ──
+  // ── Avg value and minimax ──
   const displayValue = v * 20;
   const mm = (node.minimax_value ?? v) * 20;
   const valueSign = displayValue >= 0 ? "+" : "";
@@ -814,11 +818,11 @@ function _renderInspectorNode(container, node, {
   else if (mm <= -1.0) mmEl.classList.add("inspector-value-neg");
   row.appendChild(mmEl);
 
-// ── Immediate and cumulative ──
+  // ── Immediate and cumulative score deltas ──
   if (!isRoot && node.immediate !== null && node.immediate !== undefined) {
     const immSign = node.immediate >= 0 ? "+" : "";
     const immEl = createElement("span", "inspector-immediate",
-      `${immSign}${node.immediate}`);
+      `imm${immSign}${node.immediate}`);
     if (node.immediate > 0) immEl.classList.add("inspector-value-pos");
     else if (node.immediate < 0) immEl.classList.add("inspector-value-neg");
     row.appendChild(immEl);
@@ -827,7 +831,7 @@ function _renderInspectorNode(container, node, {
     if (ci !== null && ci !== undefined && hasChildren) {
       const ciSign = ci >= 0 ? "+" : "";
       const ciEl = createElement("span", "inspector-cumulative",
-        `(${ciSign}${ci})`);
+        `cum${ciSign}${ci}`);
       if (ci > 0) ciEl.classList.add("inspector-value-pos");
       else if (ci < 0) ciEl.classList.add("inspector-value-neg");
       row.appendChild(ciEl);
@@ -839,7 +843,7 @@ function _renderInspectorNode(container, node, {
     row.appendChild(createElement("span", "inspector-cumulative", ""));
   }
 
-  // ── Net value_diff ──
+  // ── Net value (raw neural net output before MCTS) ──
   if (node.net_value_diff !== null && node.net_value_diff !== undefined) {
     const netV = node.net_value_diff * 20;
     const netSign = netV >= 0 ? "+" : "";
@@ -852,30 +856,41 @@ function _renderInspectorNode(container, node, {
     row.appendChild(createElement("span", "inspector-net-value", ""));
   }
 
+  // ── Prior probability (policy head's initial move preference) ──
+  if (!isRoot && node.prior !== null && node.prior !== undefined) {
+    const priorEl = createElement("span", "inspector-prior",
+      `p=${(node.prior * 100).toFixed(1)}%`);
+    row.appendChild(priorEl);
+  } else {
+    row.appendChild(createElement("span", "inspector-prior", ""));
+  }
+
+  // ── Visit count and fraction ──
+  const visitFraction = (!isRoot && parentVisits && parentVisits > 0)
+    ? ` (${(node.visits / parentVisits * 100).toFixed(0)}%)`
+    : "";
+  row.appendChild(createElement("span", "inspector-visits",
+    `${node.visits.toLocaleString()}v${visitFraction}`));
+
   container.appendChild(row);
 
   // ── Children ──
-  if (!isRoot && isExpanded && hasChildren) {
-    for (const child of node.children) {
-      _renderInspectorNode(container, child, {
-        depth: depth + 1,
-        scale,
-        expandedKeys,
-        onNodeToggle,
-        isRoot: false,
-      });
-    }
-  }
+  const childOptions = {
+    depth: depth + 1,
+    scale,
+    expandedKeys,
+    onNodeToggle,
+    isRoot: false,
+    parentVisits: node.visits,
+  };
 
   if (isRoot && hasChildren) {
     for (const child of node.children) {
-      _renderInspectorNode(container, child, {
-        depth: depth + 1,
-        scale,
-        expandedKeys,
-        onNodeToggle,
-        isRoot: false,
-      });
+      _renderInspectorNode(container, child, childOptions);
+    }
+  } else if (!isRoot && isExpanded && hasChildren) {
+    for (const child of node.children) {
+      _renderInspectorNode(container, child, childOptions);
     }
   }
 }
@@ -907,7 +922,10 @@ function _inspectorTreeText(node, depth) {
     ? (node.net_value_diff * 20).toFixed(1)
     : null;
   const netStr = netV !== null ? ` net${parseFloat(netV) >= 0 ? "+" : ""}${netV}pts` : "";
-  const line = `${indent}${move}  avg${avgSign}${avg}pts${mmStr}${immStr}${ciStr}${netStr}  ${visits}v${boundary}`;
+  const priorStr = (node.prior !== null && node.prior !== undefined && node.move !== null)
+    ? ` p=${(node.prior * 100).toFixed(1)}%`
+    : "";
+  const line = `${indent}${move}  avg${avgSign}${avg}pts${mmStr}${immStr}${ciStr}${netStr}${priorStr}  ${visits}v${boundary}`;
 
   const children = (node.children ?? [])
     .map(c => _inspectorTreeText(c, depth + 1))

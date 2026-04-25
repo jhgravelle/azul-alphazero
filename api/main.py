@@ -12,7 +12,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.base import Agent
-from agents.minimax import MinimaxAgent
 from agents.alphabeta import AlphaBetaAgent
 from agents.alphazero import AlphaZeroAgent
 from agents.registry import make_agent, AGENT_REGISTRY
@@ -36,6 +35,7 @@ from engine.game_recorder import GameRecorder, GameRecord
 from engine.game_state import GameState
 from engine.replay import replay_to_move
 from engine.scoring import (
+    earned_score_unclamped,
     pending_bonus_details,
     pending_placement_details,
 )
@@ -904,21 +904,17 @@ def _make_alphabeta_pv(agent_name: str) -> PolicyValueFn:
 
 
 def _make_minimax_pv() -> PolicyValueFn:
-    """Build a policy/value fn backed by a MinimaxAgent.
-
-    MinimaxAgent inherits uniform policy_distribution from the base class.
-    The tree learns values from heuristic terminal backpropagation.
-    """
-    minimax_agent = MinimaxAgent()
-
     def minimax_pv(game: Game, legal: list[Move]) -> tuple[list[float], float]:
         if not legal:
             return [], 0.0
-        distribution = minimax_agent.policy_distribution(game)
-        # Uniform distribution — all priors are equal, so just read
-        # the prior from the first pair and replicate it.
-        uniform_prior = distribution[0][1] if distribution else 1.0 / len(legal)
-        return [uniform_prior] * len(legal), 0.0
+        n = len(legal)
+        priors = [1.0 / n] * n
+        current = game.state.current_player
+        p2_board = game.state.players[1 - current]
+        current_score = earned_score_unclamped(game.state.players[current])
+        opponent_score = earned_score_unclamped(p2_board)
+        value = (current_score - opponent_score) / 50.0
+        return priors, value
 
     return minimax_pv
 

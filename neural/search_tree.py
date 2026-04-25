@@ -511,24 +511,38 @@ class SearchTree:
             node = max(eligible, key=lambda c: c.puct_score(node.visits))
         return node
 
-    def _ensure_expanded(self, node: AZNode) -> None:
-        """Expand a node if not already expanded."""
+    def _ensure_expanded(self, node: AZNode) -> float | None:
+        """Expand a node if not already expanded.
+
+        Returns the value from the policy_value_fn call if expansion
+        happened, so _evaluate can reuse it without a second call.
+        Returns None if the node was already expanded or is a leaf.
+        """
         if node._untried_moves is not None:
-            return
+            return None
         if node.is_terminal or node.is_round_boundary:
             node._untried_moves = []
             node._untried_priors = []
-            return
+            return None
         legal = self._canonical_moves(node.game)
         if not legal:
             node._untried_moves = []
             node._untried_priors = []
-            return
-        priors, _ = self.policy_value_fn(node.game, legal)
+            return None
+        priors, value = self.policy_value_fn(node.game, legal)
         node._untried_moves = list(legal)
         node._untried_priors = list(priors)
+        if node.net_value_diff is None:
+            node.net_value_diff = value
+        return value
 
     def _evaluate(self, node: AZNode) -> float:
+        """Return a value estimate for node, calling policy_value_fn at most once.
+
+        If _ensure_expanded already called policy_value_fn during this
+        evaluation (first visit to an unexpanded node), reuse that value
+        rather than calling again.
+        """
         if node.is_terminal:
             return self._terminal_value(node.game)
         if node.is_round_boundary:
@@ -539,7 +553,11 @@ class SearchTree:
                 node.net_value_diff = value
             return value
         if node._untried_moves is None:
-            self._ensure_expanded(node)
+            # First visit — expand and return the value from that call.
+            value = self._ensure_expanded(node)
+            if value is not None:
+                return value
+        # Already expanded — call policy_value_fn for the value only.
         _, value = self.policy_value_fn(node.game, self._canonical_moves(node.game))
         if node.net_value_diff is None:
             node.net_value_diff = value
@@ -746,7 +764,14 @@ class SearchTree:
         }
 
     def _serialize_node(
-        self, node, depth, max_depth, top_k, root_player=None, parent_game=None
+        self,
+        node,
+        depth,
+        max_depth,
+        top_k,
+        root_player=None,
+        parent_game=None,
+        parent_visits=None,
     ):
         if root_player is None:
             root_player = node.game.state.current_player
@@ -773,7 +798,13 @@ class SearchTree:
                     deduped.append(c)
             children = [
                 self._serialize_node(
-                    c, depth + 1, max_depth, top_k, root_player, node.game
+                    c,
+                    depth + 1,
+                    max_depth,
+                    top_k,
+                    root_player,
+                    node.game,
+                    parent_visits=node.visits,
                 )
                 for c in deduped
             ]
@@ -797,14 +828,10 @@ class SearchTree:
             if not valid_children:
                 cumulative_immediate = immediate
             else:
-                # After this move, it's the other player's turn.
-                # node.game.state.current_player is who moves next.
                 next_player = node.game.state.current_player
                 if next_player == root_player:
-                    # Root player moves next — maximize
                     best = max(c["cumulative_immediate"] for c in valid_children)
                 else:
-                    # Opponent moves next — minimize
                     best = min(c["cumulative_immediate"] for c in valid_children)
                 cumulative_immediate = immediate + best
 
@@ -831,6 +858,11 @@ class SearchTree:
                     else -node.net_value_diff
                 )
                 if node.net_value_diff is not None
+                else None
+            ),
+            "visit_fraction": (
+                node.visits / parent_visits
+                if parent_visits is not None and parent_visits > 0
                 else None
             ),
         }

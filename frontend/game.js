@@ -62,12 +62,14 @@ function _countInSource(state, source, color) {
 
 let _inspectorEnabled   = false;
 let _inspectorSnapshot  = null;
-let _inspectorSSE       = null;   // EventSource | null
+let _inspectorSSE       = null;
 let _inspectorExpanded  = new Set();
-let _inspectorRunning = false;
+let _inspectorRunning   = false;
 let _inspectorUserPaused = false;
-let _inspectorInterval = null;
-let _showPerspective    = false;  // hook: set to true to show perspective label
+let _inspectorInterval  = null;
+let _showPerspective    = false;
+let _inspectorAgent     = "minimax";   // new
+let _inspectorSims      = 200;         // new
 
 async function _inspectorToggle() {
   _inspectorEnabled = !_inspectorEnabled;
@@ -114,6 +116,42 @@ async function _inspectorRunLoop() {
   }
 }
 
+function _inspectorQueryParams() {
+  return new URLSearchParams({
+    agent: _inspectorAgent,
+    simulations: _inspectorSims,
+  }).toString();
+}
+
+function _inspectorChangeAgent(newAgent, newSims) {
+  _inspectorAgent = newAgent;
+  _inspectorSims  = newSims;
+  _inspectorReset();
+
+  if (!_inspectorEnabled) return;
+
+  if (replayRecord) {
+    // Replay mode — fetch the recording-based tree with new config.
+    const gameId = replayRecord.game_id;
+    const params = _inspectorQueryParams();
+    fetch(`${API}/inspect/${gameId}/${replayTurnIndex}/state?${params}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) { _inspectorSnapshot = data; _renderInspector(); }
+      });
+    _inspectorRunning = true;
+    _inspectorRunLoop();
+  } else if (gameState) {
+    // Live mode — re-post with new config.
+    _inspectorPostLive().then(() => {
+      _inspectorRunning = true;
+      _inspectorRunLoop();
+    });
+  }
+
+  _renderInspector();
+}
+
 function _inspectorCloseSSE() {
   if (_inspectorSSE) {
     _inspectorSSE.close();
@@ -150,7 +188,8 @@ function _inspectorStreamURL() {
   if (replayRecord) {
     const gameId = replayRecord.game_id;
     const moveIndex = replayTurnIndex;
-    return `${API}/inspect/${gameId}/${moveIndex}/stream`;
+    const params = _inspectorQueryParams();
+    return `${API}/inspect/${gameId}/${moveIndex}/stream?${params}`;
   }
   return null;
 }
@@ -168,7 +207,8 @@ async function _inspectorPostLive() {
       floor_line: b.floor_line,
     })),
   };
-  const res = await fetch(`${API}/inspect/live`, {
+  const params = _inspectorQueryParams();
+  const res = await fetch(`${API}/inspect/live?${params}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(snapshot),
@@ -212,9 +252,12 @@ function _renderInspector() {
     enabled: _inspectorEnabled,
     running: _inspectorRunning,
     showPerspective: _showPerspective,
+    selectedAgent: _inspectorAgent,
+    selectedSims: _inspectorSims,
     onToggle: _inspectorToggle,
     onStartStop: _inspectorStartStop,
     onNodeToggle: _inspectorNodeToggle,
+    onAgentChange: _inspectorChangeAgent,
     expandedKeys: _inspectorExpanded,
   }));
 }

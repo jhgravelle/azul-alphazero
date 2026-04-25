@@ -527,36 +527,131 @@ function renderBoard(board, index, label, isActive, opts = {}) {
   return wrapper;
 }
 
+// ── Inspector agent config ─────────────────────────────────────────────────
+
+const _INSPECTOR_AGENTS = [
+  { value: "minimax",            label: "Minimax" },
+  { value: "alphabeta_easy",     label: "AlphaBeta Easy" },
+  { value: "alphabeta_medium",   label: "AlphaBeta Medium" },
+  { value: "alphabeta_hard",     label: "AlphaBeta Hard" },
+  { value: "alphabeta_extreme",  label: "AlphaBeta Extreme" },
+  { value: "alphabeta_ludacris", label: "AlphaBeta Ludacris" },
+  { value: "alphazero",          label: "AlphaZero" },
+];
+
+const _ALPHABETA_PARAM_LABELS = {
+  alphabeta_easy:     "depths=(1,2,3) thresholds=(20,10)",
+  alphabeta_medium:   "depths=(2,3,7) thresholds=(20,10)",
+  alphabeta_hard:     "depths=(3,5,7) thresholds=(20,10)",
+  alphabeta_extreme:  "depths=(4,6,8) thresholds=(20,10)",
+  alphabeta_ludacris: "depths=(20,20,20) thresholds=(180,180)",
+};
+
+const _ALPHAZERO_SIM_OPTIONS = [50, 100, 200, 500, 1000, 5000];
+
+function _renderInspectorAgentSelector(selectedAgent, selectedSims, onAgentChange) {
+  const wrapper = createElement("div", "inspector-agent-selector");
+
+  const agentSelect = document.createElement("select");
+  agentSelect.className = "inspector-select";
+  _INSPECTOR_AGENTS.forEach(({ value, label }) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    if (value === selectedAgent) option.selected = true;
+    agentSelect.appendChild(option);
+  });
+
+  agentSelect.addEventListener("change", () => {
+    const newAgent = agentSelect.value;
+    const newSims = newAgent === "alphazero" ? selectedSims : 200;
+    onAgentChange(newAgent, newSims);
+  });
+
+  wrapper.appendChild(agentSelect);
+  wrapper.appendChild(_renderInspectorParamArea(selectedAgent, selectedSims, onAgentChange));
+  return wrapper;
+}
+
+function _renderInspectorParamArea(selectedAgent, selectedSims, onAgentChange) {
+  const area = createElement("div", "inspector-param-area");
+
+  if (selectedAgent === "minimax") {
+    // Minimax runs to full exploration — no parameters to show.
+    return area;
+  }
+
+  if (selectedAgent in _ALPHABETA_PARAM_LABELS) {
+    const label = createElement("span", "inspector-param-label",
+      _ALPHABETA_PARAM_LABELS[selectedAgent]);
+    area.appendChild(label);
+    return area;
+  }
+
+  if (selectedAgent === "alphazero") {
+    area.appendChild(createElement("span", "inspector-param-label", "Sims:"));
+
+    const simSelect = document.createElement("select");
+    simSelect.className = "inspector-select inspector-select-sims";
+    _ALPHAZERO_SIM_OPTIONS.forEach(count => {
+      const option = document.createElement("option");
+      option.value = count;
+      option.textContent = count.toLocaleString();
+      if (count === selectedSims) option.selected = true;
+      simSelect.appendChild(option);
+    });
+
+    simSelect.addEventListener("change", () => {
+      onAgentChange("alphazero", parseInt(simSelect.value, 10));
+    });
+
+    area.appendChild(simSelect);
+    return area;
+  }
+
+  return area;
+}
+
 // ── Inspector tree panel ───────────────────────────────────────────────────
 
 /**
  * Render the MCTS inspector panel.
  *
- * @param {object}   snapshot     - Inspector snapshot from the API.
+ * @param {object}   snapshot
  * @param {object}   opts
- * @param {boolean}  opts.enabled       - Whether the panel is open.
- * @param {boolean}  opts.showPerspective - Whether to show the perspective label.
- * @param {function} opts.onToggle      - Called when toggle button clicked.
- * @param {function} opts.onExtend      - Called when Extend button clicked.
- * @param {function} opts.onNodeToggle  - Called with nodeKey when chevron clicked.
- * @param {Set}      opts.expandedKeys  - Set of node keys currently expanded.
+ * @param {boolean}  opts.enabled
+ * @param {boolean}  opts.running
+ * @param {boolean}  opts.showPerspective
+ * @param {string}   opts.selectedAgent
+ * @param {number}   opts.selectedSims
+ * @param {function} opts.onToggle
+ * @param {function} opts.onStartStop
+ * @param {function} opts.onNodeToggle
+ * @param {function} opts.onAgentChange   - called with (agentName, sims)
+ * @param {Set}      opts.expandedKeys
  */
 function renderInspectorPanel(snapshot, {
   enabled = false,
   running = false,
   showPerspective = false,
+  selectedAgent = "minimax",
+  selectedSims = 200,
   onToggle = null,
   onStartStop = null,
   onNodeToggle = null,
+  onAgentChange = null,
   expandedKeys = new Set(),
 } = {}) {
   const panel = createElement("div", "inspector-panel");
 
   // ── Header ──
   const header = createElement("div", "inspector-header");
+
   const titleGroup = createElement("div", "inspector-title-group");
   titleGroup.appendChild(createElement("span", "inspector-title", "Search Tree"));
-
+  titleGroup.appendChild(
+    _renderInspectorAgentSelector(selectedAgent, selectedSims, onAgentChange)
+  );
   if (showPerspective && snapshot?.perspective) {
     titleGroup.appendChild(
       createElement("span", "inspector-perspective", `${snapshot.perspective}'s turn`)
@@ -594,7 +689,6 @@ function renderInspectorPanel(snapshot, {
   runBtn.disabled = snapshot?.done ?? false;
   runBtn.addEventListener("click", onStartStop);
   status.appendChild(runBtn);
-  panel.appendChild(status);
 
   const copyBtn = createElement("button", "inspector-extend-btn", "Copy Tree");
   copyBtn.disabled = !snapshot;
@@ -602,10 +696,12 @@ function renderInspectorPanel(snapshot, {
     const text = _inspectorTreeText(snapshot.tree, 0);
     navigator.clipboard.writeText(text).then(() => {
       copyBtn.textContent = "Copied!";
-      setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+      setTimeout(() => { copyBtn.textContent = "Copy Tree"; }, 1500);
     });
   });
   status.appendChild(copyBtn);
+
+  panel.appendChild(status);
 
   if (!snapshot) return panel;
 
@@ -613,7 +709,6 @@ function renderInspectorPanel(snapshot, {
   const treeEl = createElement("div", "inspector-tree");
   const root = snapshot.tree;
 
-  // Compute global scale: max |value_diff| across all visible nodes.
   const maxAbs = _inspectorMaxAbs(root, expandedKeys, 0);
   const scale = maxAbs > 0 ? maxAbs : 1;
 
@@ -650,6 +745,10 @@ function _renderInspectorNode(container, node, {
   onNodeToggle,
   isRoot = false,
 }) {
+  console.log("_renderInspectorNode called, depth:", depth, "move:", node.move);
+  console.log("_renderInspectorNode called, depth:", depth, "move:", node.move);
+  console.log("container tag:", container.tagName, "id:", container.id, "class:", container.className);
+  console.log("about to create row...");
   const hasChildren = node.children && node.children.length > 0;
   const isExpanded = expandedKeys.has(node.key);
 
@@ -725,7 +824,6 @@ function _renderInspectorNode(container, node, {
     row.appendChild(immEl);
 
     const ci = node.cumulative_immediate;
-    const hasChildren = node.children && node.children.length > 0;
     if (ci !== null && ci !== undefined && hasChildren) {
       const ciSign = ci >= 0 ? "+" : "";
       const ciEl = createElement("span", "inspector-cumulative",
@@ -741,9 +839,18 @@ function _renderInspectorNode(container, node, {
     row.appendChild(createElement("span", "inspector-cumulative", ""));
   }
 
-  // ── Visit count ──
-  row.appendChild(createElement("span", "inspector-visits",
-    `${node.visits.toLocaleString()}v`));
+  // ── Net value_diff ──
+  if (node.net_value_diff !== null && node.net_value_diff !== undefined) {
+    const netV = node.net_value_diff * 20;
+    const netSign = netV >= 0 ? "+" : "";
+    const netEl = createElement("span", "inspector-net-value",
+      `net${netSign}${netV.toFixed(1)}`);
+    if (netV > 1.0) netEl.classList.add("inspector-value-pos");
+    else if (netV < -1.0) netEl.classList.add("inspector-value-neg");
+    row.appendChild(netEl);
+  } else {
+    row.appendChild(createElement("span", "inspector-net-value", ""));
+  }
 
   container.appendChild(row);
 
@@ -796,7 +903,11 @@ function _inspectorTreeText(node, depth) {
   const ciStr = (ci !== null && ci !== undefined && hasChildren && node.move !== null)
     ? ` cum${ci >= 0 ? "+" : ""}${ci}pts`
     : "";
-  const line = `${indent}${move}  avg${avgSign}${avg}pts${mmStr}${immStr}${ciStr}  ${visits}v${boundary}`;
+  const netV = node.net_value_diff !== null && node.net_value_diff !== undefined
+    ? (node.net_value_diff * 20).toFixed(1)
+    : null;
+  const netStr = netV !== null ? ` net${parseFloat(netV) >= 0 ? "+" : ""}${netV}pts` : "";
+  const line = `${indent}${move}  avg${avgSign}${avg}pts${mmStr}${immStr}${ciStr}${netStr}  ${visits}v${boundary}`;
 
   const children = (node.children ?? [])
     .map(c => _inspectorTreeText(c, depth + 1))

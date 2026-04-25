@@ -29,20 +29,26 @@ AGENT_REGISTRY: list[tuple[str, str, Callable, bool]] = [
     ),
     (
         "alphabeta_medium",
-        "Easy Bot",
+        "Medium Bot",
         lambda **_: AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10)),
         False,
     ),
     (
         "alphabeta_hard",
-        "Medium Bot",
+        "Hard Bot",
         lambda **_: AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10)),
         False,
     ),
     (
         "alphabeta_extreme",
-        "Hard Bot",
+        "Extreme Bot",
         lambda **_: AlphaBetaAgent(depths=(4, 6, 8), thresholds=(20, 10)),
+        False,
+    ),
+    (
+        "alphabeta_ludacris",
+        "Ludacris Bot",
+        lambda **_: AlphaBetaAgent(depths=(20, 20, 20), thresholds=(180, 180)),
         False,
     ),
 ]

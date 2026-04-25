@@ -105,6 +105,7 @@ class AZNode:
     _untried_moves: list[Move] | None = None
     _untried_priors: list[float] | None = None
     _explored: bool = False
+    net_value_diff: float | None = None
 
     @property
     def q_value(self) -> float:
@@ -409,6 +410,8 @@ class SearchTree:
             ) -> None:
                 with self._lock:
                     self._undo_vl(node)
+                    if node.net_value_diff is None and not node.is_terminal:
+                        node.net_value_diff = value
                     if node.is_terminal:
                         value = self._terminal_value(node.game)
                     elif node._untried_moves is None:
@@ -532,10 +535,14 @@ class SearchTree:
             if self.use_heuristic_value:
                 return self._terminal_value(node.game)
             _, value = self.policy_value_fn(node.game, [])
+            if node.net_value_diff is None:
+                node.net_value_diff = value
             return value
         if node._untried_moves is None:
             self._ensure_expanded(node)
         _, value = self.policy_value_fn(node.game, self._canonical_moves(node.game))
+        if node.net_value_diff is None:
+            node.net_value_diff = value
         return value
 
     def _backpropagate(self, node: AZNode, value: float) -> None:
@@ -817,6 +824,15 @@ class SearchTree:
             "is_round_boundary": bool(node.is_round_boundary),
             "depth": depth,
             "children": children,
+            "net_value_diff": (
+                float(
+                    node.net_value_diff
+                    if node.game.state.current_player == root_player
+                    else -node.net_value_diff
+                )
+                if node.net_value_diff is not None
+                else None
+            ),
         }
 
 

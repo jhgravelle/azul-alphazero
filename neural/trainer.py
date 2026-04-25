@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import logging
+import random
 import torch
 import torch.nn.functional as F
+from typing import Callable
 
 from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
@@ -312,7 +314,7 @@ def collect_self_play(
         az_score = scores[az_player] if az_player is not None else max(scores)
         az_scores.append(az_score)
 
-        mode = "warmup" if opponent is not None else "self-play"
+        # mode = "warmup" if opponent is not None else "self-play"
         opponent_name = (
             type(opponent).__name__ if opponent is not None else "AlphaZeroAgent"
         )
@@ -336,7 +338,6 @@ def collect_self_play(
 #       (make_easy, make_medium, 0.4),
 #       (make_medium, make_medium, 0.3),
 #   ]
-from typing import Callable
 
 MatchupSpec = tuple[Callable, Callable, float]
 
@@ -344,17 +345,16 @@ MatchupSpec = tuple[Callable, Callable, float]
 def _default_matchups() -> list[MatchupSpec]:
     """Default weighted matchup list for heuristic data collection.
 
-    All matchups pair a variety of skill levels against AlphaBeta medium,
-    so every game has one strong reference player. This gives the value head
-    a spectrum of position quality to learn from — not just symmetric
-    AlphaBeta-vs-AlphaBeta games where scores cluster narrowly.
+    All matchups pair a variety of skill levels against AlphaBeta easy,
+    so every game has one reference player without the speed cost of medium.
+    AlphaBeta easy runs ~8x faster than medium (~4ms vs ~35ms per move),
+    allowing significantly more games per iteration.
 
-    Random vs medium:    10% — extreme loss signal, fast games
-    Efficient vs medium: 10% — weak vs strong, passive play exposed
-    Cautious vs medium:  15% — moderate loss signal, floor avoidance
-    Greedy vs medium:    20% — near-peer, clean policy targets
-    Easy vs medium:      25% — peer matchup, meaningful games
-    Medium vs medium:    20% — symmetric, highest quality games
+    Random vs easy:    10% -- extreme loss signal, fast games
+    Efficient vs easy: 10% -- weak vs strong, passive play exposed
+    Cautious vs easy:  15% -- moderate loss signal, floor avoidance
+    Greedy vs easy:    20% -- near-peer, clean policy targets
+    Easy vs easy:      45% -- symmetric, consistent quality
     """
     from agents.alphabeta import AlphaBetaAgent
     from agents.random import RandomAgent
@@ -377,16 +377,12 @@ def _default_matchups() -> list[MatchupSpec]:
     def make_easy() -> AlphaBetaAgent:
         return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
 
-    def make_medium() -> AlphaBetaAgent:
-        return AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10))
-
     return [
-        (make_random, make_medium, 0.10),
-        (make_efficient, make_medium, 0.10),
-        (make_cautious, make_medium, 0.15),
-        (make_greedy, make_medium, 0.20),
-        (make_easy, make_medium, 0.25),
-        (make_medium, make_medium, 0.20),
+        (make_random, make_easy, 0.10),
+        (make_efficient, make_easy, 0.10),
+        (make_cautious, make_easy, 0.15),
+        (make_greedy, make_easy, 0.20),
+        (make_easy, make_easy, 0.45),
     ]
 
 
@@ -406,6 +402,110 @@ def _sample_matchup(
     # Fallback to last matchup (handles floating point edge cases)
     factory_a, factory_b, _ = matchups[-1]
     return factory_a(), factory_b()
+
+
+def _clone_agent(agent: Agent) -> Agent:
+    """Return a fresh instance of the same agent type with identical config.
+
+    Needed before mirror games — agents may carry internal state (e.g.
+    AlphaBeta score cache) from a previous game. Always construct fresh.
+    """
+    from agents.alphabeta import AlphaBetaAgent
+    from agents.random import RandomAgent
+    from agents.efficient import EfficientAgent
+    from agents.cautious import CautiousAgent
+    from agents.greedy import GreedyAgent
+
+    if isinstance(agent, AlphaBetaAgent):
+        return AlphaBetaAgent(depths=agent.depths, thresholds=agent.thresholds)
+    if isinstance(agent, RandomAgent):
+        return RandomAgent()
+    if isinstance(agent, EfficientAgent):
+        return EfficientAgent()
+    if isinstance(agent, CautiousAgent):
+        return CautiousAgent()
+    if isinstance(agent, GreedyAgent):
+        return GreedyAgent()
+    raise ValueError(f"Cannot clone agent type: {type(agent)}")
+
+
+def collect_mirror_heuristic_games(
+    buf: ReplayBuffer,
+    num_pairs: int = 100,
+    matchups: list[MatchupSpec] | None = None,
+) -> dict[str, int]:
+    """Play pairs of mirror games with identical factory sequences.
+
+    For each pair, two agents play both games with sides swapped. Both
+    games use Game(seed=N) so the bag shuffle — and therefore all factory
+    draws across all rounds — is identical. Since a normal 2-player game
+    draws exactly 100 tiles across 5 rounds and the bag holds 100 tiles,
+    no refill occurs and the seed fully determines all factories.
+
+    If the stronger agent wins from both sides, the factory configuration
+    has zero net correlation with outcome in this pair. Over many pairs
+    this forces the value head to ignore factory fingerprints.
+
+    Policy targets come from each agent's policy_distribution.
+    Both players' perspectives are recorded for every game.
+    """
+    if matchups is None:
+        matchups = _default_matchups()
+
+    rng = random.Random()
+    wins_by_p0 = 0
+    wins_by_p1 = 0
+    ties = 0
+
+    for pair_num in range(num_pairs):
+        agent_a, agent_b = _sample_matchup(matchups, rng)
+        game_seed = rng.randint(0, 2**31)
+
+        # Game 1: agent_a as p0, agent_b as p1
+        game_1 = Game(seed=game_seed)
+        game_1.setup_round()
+        history_1 = _play_heuristic_game(game_1, [agent_a, agent_b])
+        scores_1 = _compute_game_scores(game_1)
+
+        # Game 2: sides swapped, identical factory sequence via same seed.
+        # Clone agents to discard any internal state from game 1.
+        game_2 = Game(seed=game_seed)
+        game_2.setup_round()
+        history_2 = _play_heuristic_game(
+            game_2, [_clone_agent(agent_b), _clone_agent(agent_a)]
+        )
+        scores_2 = _compute_game_scores(game_2)
+
+        for scores, history in [(scores_1, history_1), (scores_2, history_2)]:
+            if scores[0] > scores[1]:
+                wins_by_p0 += 1
+            elif scores[1] > scores[0]:
+                wins_by_p1 += 1
+            else:
+                ties += 1
+            for player_idx, spatial, flat, policy_vec in history:
+                vw = win_loss_value(scores, player_idx)
+                vd = score_differential_value(scores, player_idx)
+                va = total_score_value(scores, player_idx)
+                buf.push(spatial, flat, policy_vec, vw, vd, va)
+
+        logger.debug(
+            f"mirror pair {pair_num + 1}/{num_pairs} -- seed {game_seed} -- "
+            f"game1 scores {scores_1} -- game2 scores {scores_2}"
+        )
+
+    games_recorded = num_pairs * 2
+    logger.info(
+        f"mirror games complete -- "
+        f"p0: {wins_by_p0}W / p1: {wins_by_p1}W / {ties}T -- "
+        f"{games_recorded} games recorded"
+    )
+    return {
+        "wins_by_p0": wins_by_p0,
+        "wins_by_p1": wins_by_p1,
+        "ties": ties,
+        "games_recorded": games_recorded,
+    }
 
 
 def collect_heuristic_games(

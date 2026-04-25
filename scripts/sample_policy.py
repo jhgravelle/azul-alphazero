@@ -21,10 +21,79 @@ import torch
 import torch.nn.functional as F
 
 from engine.game import Game, FLOOR
-from engine.constants import Tile
 from agents.alphabeta import AlphaBetaAgent
 from neural.model import AzulNet
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+
+# ── Distribution helpers ───────────────────────────────────────────────────
+
+_DIST_BINS = [-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+_DIST_BAR_WIDTH = 30  # max bar width in characters
+_DECILE_PERCENTILES = [10, 20, 30, 40, 50, 60, 70, 80, 90]
+
+
+def _bucket_values(values: list[float]) -> list[int]:
+    """Count values falling into each bin interval.
+
+    Bins are defined by _DIST_BINS edges, giving len(_DIST_BINS) - 1 buckets.
+    The rightmost edge is inclusive so 1.0 lands in the last bucket.
+    """
+    bucket_counts = [0] * (len(_DIST_BINS) - 1)
+    for value in values:
+        placed = False
+        for bucket_idx in range(len(_DIST_BINS) - 1):
+            left = _DIST_BINS[bucket_idx]
+            right = _DIST_BINS[bucket_idx + 1]
+            if left <= value < right:
+                bucket_counts[bucket_idx] += 1
+                placed = True
+                break
+        if not placed:
+            # value == 1.0 exactly — place in last bucket
+            bucket_counts[-1] += 1
+    return bucket_counts
+
+
+def _percentile(sorted_values: list[float], percentile: int) -> float:
+    """Return the percentile value from a pre-sorted list."""
+    if not sorted_values:
+        return 0.0
+    index = (percentile / 100) * (len(sorted_values) - 1)
+    lower = int(index)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    fraction = index - lower
+    return sorted_values[lower] + fraction * (
+        sorted_values[upper] - sorted_values[lower]
+    )
+
+
+def _print_distribution(values: list[float], label: str) -> None:
+    """Print an ASCII histogram and decile table for a list of values."""
+    bucket_counts = _bucket_values(values)
+    max_count = max(bucket_counts) if bucket_counts else 1
+    total = len(values)
+
+    print(f"\n  {label} distribution (n={total}):")
+    for bucket_idx, count in enumerate(bucket_counts):
+        left = _DIST_BINS[bucket_idx]
+        right = _DIST_BINS[bucket_idx + 1]
+        bar_length = int(count / max_count * _DIST_BAR_WIDTH) if max_count > 0 else 0
+        bar = "#" * bar_length
+        pct = count / total * 100 if total > 0 else 0.0
+        print(
+            f"    [{left:+.1f}, {right:+.1f})  {bar:<{_DIST_BAR_WIDTH}}  "
+            f"{count:4d} ({pct:4.1f}%)"
+        )
+
+    sorted_values = sorted(values)
+    decile_values = [
+        _percentile(sorted_values, percentile) for percentile in _DECILE_PERCENTILES
+    ]
+    decile_header = "    " + "  ".join(f"p{p:02d}" for p in _DECILE_PERCENTILES)
+    decile_row = "    " + "  ".join(f"{v:+.3f}" for v in decile_values)
+    print(decile_header)
+    print(decile_row)
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -118,6 +187,11 @@ def main() -> None:
         action="store_true",
         help="print only the summary statistics, not individual game states",
     )
+    parser.add_argument(
+        "--no-dist",
+        action="store_true",
+        help="skip the distribution histograms and decile tables in the summary",
+    )
     args = parser.parse_args()
 
     net = AzulNet()
@@ -198,6 +272,11 @@ def main() -> None:
     _stats(value_diffs, "value_diff")
     _stats(value_abss, "value_abs")
 
+    if not args.no_dist:
+        _print_distribution(value_wins, "value_win")
+        _print_distribution(value_diffs, "value_diff")
+        _print_distribution(value_abss, "value_abs")
+
     print("\nPolicy head:")
     floor_pct = sum(top1_is_floor) / len(top1_is_floor) * 100
     mean_top1_prob = statistics.mean(top1_probs)
@@ -211,7 +290,6 @@ def main() -> None:
     print(f"  avg legal moves:       {mean_legal:.1f}")
 
     print("\nDiagnosis:")
-    # value_win on an empty board should be near 0 (50/50 game)
     mean_vw = statistics.mean(value_wins)
     std_vw = statistics.stdev(value_wins) if len(value_wins) > 1 else 0.0
     if abs(mean_vw) > 0.3:

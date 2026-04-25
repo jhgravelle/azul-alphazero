@@ -902,3 +902,71 @@ h1 { margin-bottom: 8px; }
 }
 .inspector-minimax.inspector-value-pos { color: #2e7d32; }
 .inspector-minimax.inspector-value-neg { color: #c0392b; }
+
+.inspector-net-value {
+  font-size: 0.72rem;
+  color: #8ab4f8;
+  min-width: 52px;
+  text-align: right;
+}
+
+.inspector-immediate {
+  font-size: 0.72rem;
+  color: #888;
+  width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.inspector-cumulative {
+  font-size: 0.72rem;
+  color: #888;
+  width: 42px;
+  text-align: left;
+  flex-shrink: 0;
+}
+.inspector-agent-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+}
+
+.inspector-select {
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid #555;
+  background: #2a2a2a;
+  color: #ddd;
+  cursor: pointer;
+}
+
+.inspector-select-sims {
+  width: 70px;
+}
+
+.inspector-param-area {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.inspector-param-label {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+}
+
+.inspector-prior {
+  font-size: 11px;
+  color: #aaa;
+  min-width: 52px;
+  text-align: right;
+}
+
+.inspector-visits {
+  font-size: 11px;
+  color: #888;
+  min-width: 64px;
+  text-align: right;
+}

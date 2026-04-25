@@ -1096,3 +1096,78 @@ def test_game_state_clone_players_independent():
 
 
 # endregion
+
+
+def test_game_with_same_seed_produces_identical_factories():
+    """Two games with the same seed see identical factory draws."""
+    game_a = Game(seed=42)
+    game_a.setup_round()
+    factories_a = [list(f) for f in game_a.state.factories]
+
+    game_b = Game(seed=42)
+    game_b.setup_round()
+    factories_b = [list(f) for f in game_b.state.factories]
+
+    assert factories_a == factories_b
+
+
+def test_game_with_different_seeds_likely_produces_different_factories():
+    """Two games with different seeds very likely see different factories."""
+    game_a = Game(seed=1)
+    game_a.setup_round()
+    factories_a = [list(f) for f in game_a.state.factories]
+
+    game_b = Game(seed=2)
+    game_b.setup_round()
+    factories_b = [list(f) for f in game_b.state.factories]
+
+    # Not guaranteed but overwhelmingly likely with 100 tiles
+    assert factories_a != factories_b
+
+
+def test_game_seed_covers_multiple_rounds():
+    """Same seed produces identical factories across multiple rounds."""
+
+    def play_one_round_and_score(
+        seed: int,
+    ) -> tuple[list[list[Tile]], list[list[Tile]]]:
+        game = Game(seed=seed)
+        game.setup_round()
+        factories_round_1 = [list(f) for f in game.state.factories]
+        # Play minimal moves to end the round
+        while not game.is_round_over():
+            move = game.legal_moves()[0]
+            game.make_move(move)
+            game.advance(skip_setup=True)
+        game.setup_round()
+        factories_round_2 = [list(f) for f in game.state.factories]
+        return factories_round_1, factories_round_2
+
+    factories_1a, factories_2a = play_one_round_and_score(99)
+    factories_1b, factories_2b = play_one_round_and_score(99)
+
+    assert factories_1a == factories_1b
+    assert factories_2a == factories_2b
+
+
+def test_game_without_seed_is_not_deterministic():
+    """Games without a seed produce different results (
+    with overwhelming probability)."""
+    game_a = Game()
+    game_a.setup_round()
+    factories_a = [list(f) for f in game_a.state.factories]
+
+    game_b = Game()
+    game_b.setup_round()
+    factories_b = [list(f) for f in game_b.state.factories]
+
+    # Run 5 times to make flakiness astronomically unlikely
+    different = factories_a != factories_b
+    if not different:
+        for _ in range(4):
+            g = Game()
+            g.setup_round()
+            if [list(f) for f in g.state.factories] != factories_a:
+                different = True
+                break
+    assert different

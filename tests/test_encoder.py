@@ -1,386 +1,387 @@
-# tests/test_encoder.py
-"""Encoder tests — changes and additions for the Phase 8d encoding upgrade.
+"""Tests for neural/encoder.py (v2).
 
-Replace / add these tests in tests/test_encoder.py:
-
-CHANGED (update existing tests with these bodies):
-  - test_spatial_shape
-  - test_flat_shape
-  - test_score_delta_positive_when_ahead
-  - test_score_delta_clamped_at_positive_one
-  - test_score_delta_clamped_at_negative_one
-  - test_score_delta_flips_with_current_player
-  - test_scores_swap_with_current_player  (comment updated, logic same)
-
-ADD (new tests, append to file):
-  - All tests in the three new sections below
-
-Also add these imports to the top of test_encoder.py:
-  from neural.encoder import (
-      OFF_ROUND,
-      OFF_DISTINCT_PAIRS,
-      BLOCKED_WALL_CHANNEL_MY,
-      BLOCKED_WALL_CHANNEL_OPP,
-  )
+Run with:
+    pytest tests/test_encoder.py -v
 """
 
 import pytest
-from engine.game import Game
+import torch
+
+from neural.encoder import (
+    FLAT_SIZE,
+    MOVE_SPACE_SIZE,
+    NUM_CHANNELS,
+    SPATIAL_SHAPE,
+    CH_MY_WALL,
+    CH_MY_PATTERN,
+    CH_MY_BONUS,
+    CH_OPP_WALL,
+    CH_BAG,
+    CH_SOURCE_DIST,
+    OFF_MY_SCORE,
+    OFF_OPP_SCORE,
+    OFF_MY_FLOOR,
+    OFF_OPP_FLOOR,
+    OFF_MY_FP_TOKEN,
+    OFF_OPP_FP_TOKEN,
+    encode_state,
+    encode_move,
+    decode_move,
+)
+from engine.game import Game, CENTER, FLOOR
 from engine.constants import (
-    Tile,
     BOARD_SIZE,
     COLOR_TILES,
     COLUMN_FOR_TILE_IN_ROW,
+    WALL_PATTERN,
+    Tile,
 )
-from neural.encoder import (
-    encode_state,
-    SPATIAL_SHAPE,
-    FLAT_SIZE,
-    NUM_COLORS,
-    PATTERN_COL,
-    OFF_MY_SCORE,
-    OFF_SCORE_DELTA,
-    OFF_ROUND,
-    OFF_DISTINCT_PAIRS,
-    BLOCKED_WALL_CHANNEL_MY,
-    BLOCKED_WALL_CHANNEL_OPP,
-)
+
+# ── Fixtures ───────────────────────────────────────────────────────────────
 
 
 def fresh_game() -> Game:
-    g = Game()
-    g.setup_round()
-    return g
+    game = Game()
+    game.setup_round()
+    return game
 
 
-def encode(g: Game):
-    return encode_state(g)
+# ── Shape tests ────────────────────────────────────────────────────────────
 
 
-# ── Changed: shape tests ───────────────────────────────────────────────────
+def test_encode_state_returns_correct_shapes():
+    game = fresh_game()
+    spatial, flat = encode_state(game)
+    assert spatial.shape == SPATIAL_SHAPE
+    assert flat.shape == (FLAT_SIZE,)
 
 
-def test_spatial_shape():
-    spatial, _ = encode(fresh_game())
-    assert spatial.shape == SPATIAL_SHAPE  # (14, 5, 6)
+def test_spatial_shape_constants():
+    assert SPATIAL_SHAPE == (8, 5, 5)
+    assert FLAT_SIZE == 8
+    assert NUM_CHANNELS == 8
 
 
-def test_flat_shape():
-    _, flat = encode(fresh_game())
-    assert flat.shape == (FLAT_SIZE,)  # (49,)
+# ── Wall filled channel ────────────────────────────────────────────────────
 
 
-# ── Changed: score delta divisor is now 50 ────────────────────────────────
-# These replace the old score_delta tests that used divisor 20.
-# Note: scores are now earned_score_unclamped(board), not board.score.
-# Setting board.score directly still works because earned_score_unclamped
-# includes board.score + pending placement + floor penalty + bonuses.
-# With empty walls and pattern lines, pending placement = 0 and floor = 0,
-# so earned_score_unclamped == board.score in these simple cases.
+def test_wall_filled_channel_empty_at_game_start():
+    game = fresh_game()
+    spatial, _ = encode_state(game)
+    assert spatial[CH_MY_WALL].sum().item() == 0.0
+    assert spatial[CH_OPP_WALL].sum().item() == 0.0
 
 
-def test_score_delta_positive_when_ahead():
-    g = fresh_game()
-    g.state.players[0].score = 30
-    g.state.players[1].score = 10
-    g.state.current_player = 0
-    _, flat = encode(g)
-    assert flat[OFF_SCORE_DELTA].item() == pytest.approx((30 - 10) / 50)
+def test_wall_filled_channel_reflects_placed_tile():
+    game = fresh_game()
+    # Place blue in row 0 — blue's wall column in row 0 is 0
+    blue = Tile.BLUE
+    wall_col = COLUMN_FOR_TILE_IN_ROW[blue][0]
+    current_player = game.state.current_player
+    game.state.players[current_player].wall[0][wall_col] = blue
+
+    spatial, _ = encode_state(game)
+    assert spatial[CH_MY_WALL, 0, wall_col].item() == 1.0
+    # All other cells in my wall channel should be 0
+    total = spatial[CH_MY_WALL].sum().item()
+    assert total == 1.0
 
 
-def test_score_delta_clamped_at_positive_one():
-    g = fresh_game()
-    g.state.players[0].score = 100
-    g.state.players[1].score = 0
-    g.state.current_player = 0
-    _, flat = encode(g)
-    assert flat[OFF_SCORE_DELTA].item() == pytest.approx(1.0)
+def test_wall_filled_opponent_channel_reflects_opponent_wall():
+    game = fresh_game()
+    opponent = 1 - game.state.current_player
+    yellow = Tile.YELLOW
+    wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][2]
+    game.state.players[opponent].wall[2][wall_col] = yellow
+
+    spatial, _ = encode_state(game)
+    assert spatial[CH_OPP_WALL, 2, wall_col].item() == 1.0
+    assert spatial[CH_MY_WALL].sum().item() == 0.0
 
 
-def test_score_delta_clamped_at_negative_one():
-    g = fresh_game()
-    g.state.players[0].score = 0
-    g.state.players[1].score = 100
-    g.state.current_player = 0
-    _, flat = encode(g)
-    assert flat[OFF_SCORE_DELTA].item() == pytest.approx(-1.0)
+# ── Pattern line fill ratio channel ───────────────────────────────────────
 
 
-def test_score_delta_flips_with_current_player():
-    g = fresh_game()
-    g.state.players[0].score = 30
-    g.state.players[1].score = 10
-    g.state.current_player = 0
-    _, f0 = encode(g)
-    g.state.current_player = 1
-    _, f1 = encode(g)
-    assert f0[OFF_SCORE_DELTA].item() == pytest.approx(-f1[OFF_SCORE_DELTA].item())
+def test_pattern_line_empty_produces_zero_channel():
+    game = fresh_game()
+    spatial, _ = encode_state(game)
+    assert spatial[CH_MY_PATTERN].sum().item() == 0.0
 
 
-def test_score_delta_not_yet_clamped_reflects_floor_penalty():
-    """earned_score_unclamped includes floor penalty; a heavy floor can make
-    the delta negative even when board.score is equal."""
-    g = fresh_game()
-    g.state.players[0].score = 10
-    g.state.players[1].score = 10
-    # Give current player 7 floor tiles — max penalty is -14
-    g.state.players[0].floor_line = [Tile.BLUE] * 7
-    g.state.current_player = 0
-    _, flat = encode(g)
-    # delta should be negative (floor penalty drags current player down)
-    assert flat[OFF_SCORE_DELTA].item() < 0.0
+def test_pattern_line_partial_fill_lands_at_correct_wall_col():
+    game = fresh_game()
+    current_player = game.state.current_player
+    board = game.state.players[current_player]
+
+    # Fill row 2 (capacity 3) with 2 red tiles
+    red = Tile.RED
+    board.pattern_lines[2] = [red, red]
+    wall_col = COLUMN_FOR_TILE_IN_ROW[red][2]
+
+    spatial, _ = encode_state(game)
+
+    expected_ratio = 2 / 3
+    assert spatial[CH_MY_PATTERN, 2, wall_col].item() == pytest.approx(expected_ratio)
+
+    # All other cells in the pattern channel should be 0
+    total_nonzero = (spatial[CH_MY_PATTERN] != 0.0).sum().item()
+    assert total_nonzero == 1
 
 
-# ── New: earned_score_unclamped drives score features ─────────────────────
+def test_pattern_line_full_still_shows_ratio_when_wall_empty():
+    game = fresh_game()
+    current_player = game.state.current_player
+    board = game.state.players[current_player]
+
+    # Fill row 1 (capacity 2) with 2 yellow tiles — line is full but wall not yet scored
+    yellow = Tile.YELLOW
+    board.pattern_lines[1] = [yellow, yellow]
+    wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][1]
+
+    spatial, _ = encode_state(game)
+    assert spatial[CH_MY_PATTERN, 1, wall_col].item() == pytest.approx(1.0)
 
 
-def test_my_score_reflects_pending_placement_not_just_board_score():
-    """earned_score_unclamped includes pattern line placement points.
-    A full row-0 pattern line with BLUE will score at least 1 point
-    that isn't yet in board.score.
-    """
-    g = fresh_game()
-    g.state.current_player = 0
-    # Row 0 capacity is 1; place BLUE which goes in its wall column
-    # blue_col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
-    # Only add pattern line tile if wall cell is empty (it will be)
-    g.state.players[0].pattern_lines[0] = [Tile.BLUE]
-    # board.score is 0; earned_score_unclamped should be > 0
-    _, flat = encode(g)
-    assert flat[OFF_MY_SCORE].item() > 0.0
+def test_pattern_line_suppressed_when_wall_cell_already_filled():
+    game = fresh_game()
+    current_player = game.state.current_player
+    board = game.state.players[current_player]
+
+    # Put yellow in the pattern line AND the wall cell — wall already scored
+    yellow = Tile.YELLOW
+    board.pattern_lines[1] = [yellow, yellow]
+    wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][1]
+    board.wall[1][wall_col] = yellow
+
+    spatial, _ = encode_state(game)
+    # Pattern channel should be 0 at that cell — wall already filled
+    assert spatial[CH_MY_PATTERN, 1, wall_col].item() == 0.0
 
 
-# ── New: blocked_wall channel ─────────────────────────────────────────────
+# ── Bonus proximity channel ────────────────────────────────────────────────
 
 
-def test_blocked_wall_channel_constants_are_correct_indices():
-    """BLOCKED_WALL_CHANNEL_MY must be channel 6, OPP must be channel 13."""
-    assert BLOCKED_WALL_CHANNEL_MY == 6
-    assert BLOCKED_WALL_CHANNEL_OPP == 13
+def test_bonus_proximity_decreases_as_wall_fills():
+    game = fresh_game()
+    current_player = game.state.current_player
+    board = game.state.players[current_player]
+
+    spatial_before, _ = encode_state(game)
+    proximity_before = spatial_before[CH_MY_BONUS].sum().item()
+
+    # Fill an entire row
+    for wall_col in range(BOARD_SIZE):
+        color = WALL_PATTERN[0][wall_col]
+        board.wall[0][wall_col] = color
+
+    spatial_after, _ = encode_state(game)
+    proximity_after = spatial_after[CH_MY_BONUS].sum().item()
+
+    assert proximity_after < proximity_before
 
 
-def test_blocked_wall_all_zero_when_no_pattern_lines_and_empty_wall():
-    """With nothing placed anywhere, no cell is blocked."""
-    g = Game()
-    g.setup_round()
-    spatial, _ = encode(g)
-    assert spatial[BLOCKED_WALL_CHANNEL_MY].sum().item() == 0.0
-    assert spatial[BLOCKED_WALL_CHANNEL_OPP].sum().item() == 0.0
+def test_bonus_proximity_range():
+    game = fresh_game()
+    current_player = game.state.current_player
+    board = game.state.players[current_player]
 
-
-def test_blocked_wall_marks_filled_wall_cells():
-    """A filled wall cell is blocked regardless of pattern lines."""
-    g = fresh_game()
-    g.state.players[0].wall[0][0] = Tile.BLUE
-    g.state.current_player = 0
-    spatial, _ = encode(g)
-    assert spatial[BLOCKED_WALL_CHANNEL_MY, 0, 0].item() == 1.0
-
-
-def test_blocked_wall_marks_wrong_color_columns_when_pattern_line_committed():
-    """If row 1 pattern line is committed to YELLOW, the wall columns for
-    all other colors in row 1 should be blocked (if empty)."""
-    g = fresh_game()
-    g.state.current_player = 0
-    # Commit row 1 pattern line to YELLOW
-    g.state.players[0].pattern_lines[1] = [Tile.YELLOW]
-    yellow_col = COLUMN_FOR_TILE_IN_ROW[Tile.YELLOW][1]
-    spatial, _ = encode(g)
-    for col in range(BOARD_SIZE):
-        cell_value = spatial[BLOCKED_WALL_CHANNEL_MY, 1, col].item()
-        if col == yellow_col:
-            # The target column is NOT blocked — it's where YELLOW will land
-            assert cell_value == 0.0, f"col {col} (YELLOW target) should not be blocked"
-        else:
-            # Every other column in this row is blocked
-            assert cell_value == 1.0, f"col {col} should be blocked"
-
-
-def test_blocked_wall_does_not_block_already_correct_column():
-    """The wall column matching the committed color should never be blocked."""
-    g = fresh_game()
-    g.state.current_player = 0
+    # Fill entire wall
     for row in range(BOARD_SIZE):
-        color = COLOR_TILES[row % NUM_COLORS]
-        g.state.players[0].pattern_lines[row] = [color]
-        target_col = COLUMN_FOR_TILE_IN_ROW[color][row]
-        spatial, _ = encode(g)
-        assert spatial[BLOCKED_WALL_CHANNEL_MY, row, target_col].item() == 0.0
+        for wall_col in range(BOARD_SIZE):
+            board.wall[row][wall_col] = WALL_PATTERN[row][wall_col]
+
+    spatial, _ = encode_state(game)
+    values = spatial[CH_MY_BONUS]
+    # With a full wall, all counts = 15, so (15-15)/15 = 0 everywhere
+    assert values.max().item() <= 1.0 + 1e-6
+
+    # At game start (empty wall), row 0 col costs are low so values are positive
+    game2 = fresh_game()
+    spatial2, _ = encode_state(game2)
+    # Top-left cell (row 0): row needs 1, col needs 15, color needs 15
+    # row_prog = 14/15, col_prog = 0/15... actually just check it's finite
+    assert torch.isfinite(spatial2[CH_MY_BONUS]).all()
 
 
-def test_blocked_wall_already_filled_cell_is_blocked():
-    """A filled wall cell counts as blocked even if it matches the committed color."""
-    g = fresh_game()
-    g.state.current_player = 0
-    # Fill the BLUE wall cell in row 0
-    blue_col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
-    g.state.players[0].wall[0][blue_col] = Tile.BLUE
-    # Commit row 0 pattern line to BLUE (normally invalid after scoring, but
-    # the encoder doesn't enforce game rules — just encode what's there)
-    g.state.players[0].pattern_lines[0] = [Tile.BLUE]
-    spatial, _ = encode(g)
-    # The filled cell is blocked
-    assert spatial[BLOCKED_WALL_CHANNEL_MY, 0, blue_col].item() == 1.0
+# ── Bag count channel ──────────────────────────────────────────────────────
 
 
-def test_blocked_wall_only_wall_columns_affected_not_pattern_col():
-    """The blocked_wall channel should only affect cols 0–4, not col 5."""
-    g = fresh_game()
-    g.state.current_player = 0
-    g.state.players[0].pattern_lines[2] = [Tile.RED, Tile.RED]
-    spatial, _ = encode(g)
-    # Col 5 (pattern column) must be zero in the blocked channel
-    assert spatial[BLOCKED_WALL_CHANNEL_MY, :, PATTERN_COL].sum().item() == 0.0
+def test_bag_count_broadcast_across_rows():
+    game = fresh_game()
+    spatial, _ = encode_state(game)
+
+    # Each color's column should have the same value in all rows
+    for color_idx in range(BOARD_SIZE):
+        col_values = spatial[CH_BAG, :, color_idx]
+        assert col_values.min().item() == pytest.approx(col_values.max().item())
 
 
-def test_blocked_wall_opponent_channel_reflects_opponent_board():
-    """The opponent blocked_wall channel encodes the opponent's board."""
-    g = fresh_game()
-    g.state.current_player = 0
-    # Only set opponent's pattern line
-    g.state.players[1].pattern_lines[0] = [Tile.RED]
-    red_col = COLUMN_FOR_TILE_IN_ROW[Tile.RED][0]
-    spatial, _ = encode(g)
-    # My channel should be zero
-    assert spatial[BLOCKED_WALL_CHANNEL_MY].sum().item() == 0.0
-    # Opponent channel should have blocked cells in row 0
-    for col in range(BOARD_SIZE):
-        val = spatial[BLOCKED_WALL_CHANNEL_OPP, 0, col].item()
-        if col == red_col:
-            assert val == 0.0
-        else:
-            assert val == 1.0
+def test_bag_count_zero_when_bag_empty():
+    game = fresh_game()
+    game.state.bag.clear()
+
+    spatial, _ = encode_state(game)
+    assert spatial[CH_BAG].sum().item() == 0.0
 
 
-def test_blocked_wall_swaps_with_current_player():
-    """When current_player changes, my/opp blocked channels must swap."""
-    g = fresh_game()
-    g.state.players[0].pattern_lines[1] = [Tile.BLUE]
-    blue_col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+def test_bag_count_normalized_correctly():
+    game = fresh_game()
+    game.state.bag.clear()
+    # Add 10 blue tiles — blue is COLOR_TILES index 0
+    game.state.bag.extend([Tile.BLUE] * 10)
 
-    g.state.current_player = 0
-    s0, _ = encode(g)
-    g.state.current_player = 1
-    s1, _ = encode(g)
-
-    # As player 0: my channel row 1 has blocked cells
-    non_blue_blocked_as_p0 = sum(
-        s0[BLOCKED_WALL_CHANNEL_MY, 1, col].item()
-        for col in range(BOARD_SIZE)
-        if col != blue_col
-    )
-    assert non_blue_blocked_as_p0 == pytest.approx(4.0)
-
-    # As player 1: opp channel row 1 has those blocked cells
-    non_blue_blocked_as_p1 = sum(
-        s1[BLOCKED_WALL_CHANNEL_OPP, 1, col].item()
-        for col in range(BOARD_SIZE)
-        if col != blue_col
-    )
-    assert non_blue_blocked_as_p1 == pytest.approx(4.0)
-
-    # And player 1's own channel should be clear (no pattern lines set)
-    assert s1[BLOCKED_WALL_CHANNEL_MY].sum().item() == 0.0
+    spatial, _ = encode_state(game)
+    blue_col = COLOR_TILES.index(Tile.BLUE)
+    expected = 10 / 20
+    for row in range(BOARD_SIZE):
+        assert spatial[CH_BAG, row, blue_col].item() == pytest.approx(expected)
 
 
-# ── New: flat — round progress ────────────────────────────────────────────
+# ── Source distribution channel ────────────────────────────────────────────
 
 
-def test_round_progress_first_round():
-    """Round 1 → (1 - 1) / 5 = 0.0"""
-    g = fresh_game()
-    g.state.round = 1
-    _, flat = encode(g)
-    assert flat[OFF_ROUND].item() == pytest.approx(0.0)
+def test_source_distribution_zero_when_no_tiles_available():
+    game = fresh_game()
+    # Clear all factories and center
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+
+    spatial, _ = encode_state(game)
+    assert spatial[CH_SOURCE_DIST].sum().item() == 0.0
 
 
-def test_round_progress_last_round():
-    """Round 6 → (6 - 1) / 5 = 1.0"""
-    g = fresh_game()
-    g.state.round = 6
-    _, flat = encode(g)
-    assert flat[OFF_ROUND].item() == pytest.approx(1.0)
+def test_source_distribution_single_source_with_four_tiles():
+    game = fresh_game()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+
+    # One factory with 4 blue tiles
+    blue = Tile.BLUE
+    game.state.factories[0].extend([blue] * 4)
+    blue_col = COLOR_TILES.index(blue)
+
+    spatial, _ = encode_state(game)
+
+    # Bucket index 3 = sources with 4 tiles; value should be 1/5
+    assert spatial[CH_SOURCE_DIST, 3, blue_col].item() == pytest.approx(1 / 5)
+    # No other bucket for blue should be nonzero
+    for bucket in range(5):
+        if bucket != 3:
+            assert spatial[CH_SOURCE_DIST, bucket, blue_col].item() == 0.0
 
 
-def test_round_progress_middle():
-    """Round 3 → (3 - 1) / 5 = 0.4"""
-    g = fresh_game()
-    g.state.round = 3
-    _, flat = encode(g)
-    assert flat[OFF_ROUND].item() == pytest.approx(0.4)
+def test_source_distribution_bucket_4_catches_five_plus():
+    game = fresh_game()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+
+    # Center with 5 blue tiles — should land in bucket 4 (5+ tiles)
+    blue = Tile.BLUE
+    game.state.center.extend([blue] * 5)
+    blue_col = COLOR_TILES.index(blue)
+
+    spatial, _ = encode_state(game)
+    assert spatial[CH_SOURCE_DIST, 4, blue_col].item() == pytest.approx(1 / 5)
 
 
-def test_round_progress_in_range():
-    g = fresh_game()
-    for round_number in range(1, 7):
-        g.state.round = round_number
-        _, flat = encode(g)
-        assert 0.0 <= flat[OFF_ROUND].item() <= 1.0
+def test_source_distribution_two_sources_same_color():
+    game = fresh_game()
+    for factory in game.state.factories:
+        factory.clear()
+    game.state.center.clear()
+
+    red = Tile.RED
+    game.state.factories[0].extend([red] * 2)
+    game.state.factories[1].extend([red] * 2)
+    red_col = COLOR_TILES.index(red)
+
+    spatial, _ = encode_state(game)
+    # Two sources in bucket 1 (2 tiles each) → value = 2/5
+    assert spatial[CH_SOURCE_DIST, 1, red_col].item() == pytest.approx(2 / 5)
 
 
-# ── New: flat — distinct source-color pairs ───────────────────────────────
+# ── Flat vector ────────────────────────────────────────────────────────────
 
 
-def test_distinct_pairs_zero_when_all_sources_empty():
-    """With empty factories and center, no pairs remain."""
-    g = Game()
-    # Don't call setup_round — leave factories and center empty
-    _, flat = encode(g)
-    assert flat[OFF_DISTINCT_PAIRS].item() == pytest.approx(0.0)
+def test_flat_scores_zero_at_game_start():
+    game = fresh_game()
+    _, flat = encode_state(game)
+    # Scores start at 0
+    assert flat[OFF_MY_SCORE].item() == 0.0
+    assert flat[OFF_OPP_SCORE].item() == 0.0
 
 
-def test_distinct_pairs_counts_factory_colors():
-    """A factory with 2 RED and 1 BLUE = 2 distinct pairs for that factory."""
-    g = Game()
-    g.state.factories[0] = [Tile.RED, Tile.RED, Tile.BLUE]
-    _, flat = encode(g)
-    # 2 distinct pairs / 10
-    assert flat[OFF_DISTINCT_PAIRS].item() == pytest.approx(2 / 10)
+def test_flat_floor_penalty_negative():
+    game = fresh_game()
+    current_player = game.state.current_player
+    board = game.state.players[current_player]
+
+    # Put 2 tiles on floor — penalty should be -1 + -1 = -2, normalized = -2/14
+    board.floor_line.extend([Tile.BLUE, Tile.RED])
+
+    _, flat = encode_state(game)
+    assert flat[OFF_MY_FLOOR].item() == pytest.approx(-2 / 14)
+    assert flat[OFF_OPP_FLOOR].item() == 0.0
 
 
-def test_distinct_pairs_counts_center_colors():
-    """Center with RED and YELLOW = 2 distinct pairs."""
-    g = Game()
-    g.state.center = [Tile.RED, Tile.YELLOW]
-    _, flat = encode(g)
-    assert flat[OFF_DISTINCT_PAIRS].item() == pytest.approx(2 / 10)
+def test_flat_first_player_token_on_my_floor():
+    game = fresh_game()
+    current_player = game.state.current_player
+    board = game.state.players[current_player]
+    board.floor_line.append(Tile.FIRST_PLAYER)
+
+    _, flat = encode_state(game)
+    assert flat[OFF_MY_FP_TOKEN].item() == 1.0
+    assert flat[OFF_OPP_FP_TOKEN].item() == 0.0
 
 
-def test_distinct_pairs_first_player_token_not_counted():
-    """FIRST_PLAYER token in center should not contribute a pair."""
-    g = Game()
-    g.state.center = [Tile.FIRST_PLAYER]
-    _, flat = encode(g)
-    assert flat[OFF_DISTINCT_PAIRS].item() == pytest.approx(0.0)
+def test_flat_first_player_token_on_opponent_floor():
+    game = fresh_game()
+    opponent = 1 - game.state.current_player
+    game.state.players[opponent].floor_line.append(Tile.FIRST_PLAYER)
+
+    _, flat = encode_state(game)
+    assert flat[OFF_MY_FP_TOKEN].item() == 0.0
+    assert flat[OFF_OPP_FP_TOKEN].item() == 1.0
 
 
-def test_distinct_pairs_same_color_across_sources_counted_separately():
-    """RED in factory 0 and RED in factory 1 = 2 distinct pairs (different sources)."""
-    g = Game()
-    g.state.factories[0] = [Tile.RED, Tile.RED]
-    g.state.factories[1] = [Tile.RED]
-    _, flat = encode(g)
-    assert flat[OFF_DISTINCT_PAIRS].item() == pytest.approx(2 / 10)
+# ── Move encode / decode roundtrip ────────────────────────────────────────
 
 
-def test_distinct_pairs_same_color_in_factory_and_center_counted_separately():
-    """RED in factory 0 and RED in center = 2 distinct pairs."""
-    g = Game()
-    g.state.factories[0] = [Tile.RED]
-    g.state.center = [Tile.RED]
-    _, flat = encode(g)
-    assert flat[OFF_DISTINCT_PAIRS].item() == pytest.approx(2 / 10)
+def test_move_encode_decode_roundtrip_factory_to_line():
+    game = fresh_game()
+    move = game.legal_moves()[0]
+    index = encode_move(move, game)
+    recovered = decode_move(index, game)
+    assert recovered.source == move.source
+    assert recovered.tile == move.tile
+    assert recovered.destination == move.destination
 
 
-def test_distinct_pairs_full_fresh_round_is_reasonable():
-    """After setup, there should be substantially more than 0 and <=10 pairs."""
-    g = fresh_game()
-    _, flat = encode(g)
-    raw_count = flat[OFF_DISTINCT_PAIRS].item() * 10
-    # A 5-factory game with 4 tiles each, 2 players = 5 factories.
-    # Each factory typically has 2-4 colors. Plus center starts with
-    # FIRST_PLAYER only. Expect roughly 8-15 distinct pairs.
-    assert raw_count > 0.0
-    # We don't clamp, so it could exceed 1.0 early in the round — that's fine.
-    # Just confirm it's a sensible positive number.
-    assert raw_count <= 25.0  # absolute ceiling: 5 factories × 5 colors
+def test_move_encode_decode_roundtrip_center_to_floor():
+    game = fresh_game()
+    from engine.game import Move
+
+    move = Move(source=CENTER, tile=Tile.BLUE, destination=FLOOR)
+    index = encode_move(move, game)
+    recovered = decode_move(index, game)
+    assert recovered.source == CENTER
+    assert recovered.tile == Tile.BLUE
+    assert recovered.destination == FLOOR
+
+
+def test_move_index_in_valid_range():
+    game = fresh_game()
+    for move in game.legal_moves():
+        index = encode_move(move, game)
+        assert 0 <= index < MOVE_SPACE_SIZE
+
+
+def test_all_legal_moves_have_distinct_indices():
+    game = fresh_game()
+    moves = game.legal_moves()
+    indices = [encode_move(m, game) for m in moves]
+    assert len(indices) == len(set(indices))

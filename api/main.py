@@ -12,6 +12,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.base import Agent
+from agents.alphabeta import AlphaBetaAgent
+from agents.alphazero import AlphaZeroAgent
 from agents.registry import make_agent, AGENT_REGISTRY
 from api.schemas import (
     BoardResponse,
@@ -33,11 +35,11 @@ from engine.game_recorder import GameRecorder, GameRecord
 from engine.game_state import GameState
 from engine.replay import replay_to_move
 from engine.scoring import (
+    earned_score_unclamped,
     pending_bonus_details,
     pending_placement_details,
 )
-from neural.search_tree import SearchTree, make_policy_value_fn
-from agents.alphazero import AlphaZeroAgent
+from neural.search_tree import PolicyValueFn, SearchTree, make_policy_value_fn
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +83,9 @@ _inspector_tree: SearchTree | None = None
 _inspector_game_id: str | None = None
 _inspector_move_index: int | None = None
 _inspector_sim_count: int = 0
-_INSPECTOR_BATCH = 100
+_inspector_snapshot_agent: str = "minimax"
+_inspector_snapshot_sims: int = 200
+_INSPECTOR_BATCH = 1000
 
 
 def _make_agent(player_type: PlayerType) -> Agent | None:
@@ -850,7 +854,131 @@ def get_recording(game_id: str) -> dict:
     raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")
 
 
-# ── Inspector endpoints ────────────────────────────────────────────────────
+# ── Inspector helpers ──────────────────────────────────────────────────────
+
+_ALPHABETA_PRESETS: dict[str, dict] = {
+    "alphabeta_easy": {"depths": (1, 2, 3), "thresholds": (20, 10)},
+    "alphabeta_medium": {"depths": (2, 3, 7), "thresholds": (20, 10)},
+    "alphabeta_hard": {"depths": (3, 5, 7), "thresholds": (20, 10)},
+    "alphabeta_extreme": {"depths": (4, 6, 8), "thresholds": (20, 10)},
+    "alphabeta_ludacris": {"depths": (20, 20, 20), "thresholds": (180, 180)},
+}
+
+
+def _make_alphabeta_pv(agent_name: str) -> PolicyValueFn:
+    """Build a policy/value fn backed by an AlphaBetaAgent.
+
+    Calls choose_move to populate _root_move_scores, then reads
+    policy_distribution for the soft prior. Value is always 0.0 —
+    the tree learns values from heuristic terminal backprop.
+    """
+    config = _ALPHABETA_PRESETS[agent_name]
+    ab_agent = AlphaBetaAgent(
+        depths=config["depths"],
+        thresholds=config["thresholds"],
+    )
+
+    def alphabeta_pv(game: Game, legal: list[Move]) -> tuple[list[float], float]:
+        if not legal:
+            return [], 0.0
+        ab_agent.choose_move(game)
+        distribution = ab_agent.policy_distribution(game)
+        # distribution is ordered by legal moves — zip directly rather
+        # than building a dict, since Move is not hashable.
+        dist_moves = [move for move, _ in distribution]
+        dist_priors = [prior for _, prior in distribution]
+        priors = []
+        for legal_move in legal:
+            matched = next(
+                (
+                    dist_priors[i]
+                    for i, dist_move in enumerate(dist_moves)
+                    if dist_move == legal_move
+                ),
+                0.0,
+            )
+            priors.append(matched)
+        return priors, 0.0
+
+    return alphabeta_pv
+
+
+def _make_minimax_pv() -> PolicyValueFn:
+    def minimax_pv(game: Game, legal: list[Move]) -> tuple[list[float], float]:
+        if not legal:
+            return [], 0.0
+        n = len(legal)
+        priors = [1.0 / n] * n
+        current = game.state.current_player
+        p2_board = game.state.players[1 - current]
+        current_score = earned_score_unclamped(game.state.players[current])
+        opponent_score = earned_score_unclamped(p2_board)
+        value = (current_score - opponent_score) / 50.0
+        return priors, value
+
+    return minimax_pv
+
+
+def _make_alphazero_pv(simulations: int) -> PolicyValueFn | None:
+    """Build a policy/value fn backed by the latest AlphaZero checkpoint.
+
+    Returns None if no checkpoint exists so the caller can fall back
+    gracefully rather than crashing.
+    """
+    checkpoint_path = Path("checkpoints/latest.pt")
+    if not checkpoint_path.exists():
+        logger.warning(
+            "alphazero inspector requested but no checkpoint found at %s",
+            checkpoint_path,
+        )
+        return None
+
+    import torch
+    from neural.model import AzulNet
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    net = AzulNet()
+    net.load_state_dict(checkpoint["model_state_dict"])
+    net.eval()
+    return make_policy_value_fn(net)
+
+
+def _build_inspector_tree(agent_name: str, simulations: int) -> SearchTree:
+    """Construct a SearchTree with the right policy/value fn for agent_name."""
+    if agent_name == "minimax":
+        policy_value_fn = _make_minimax_pv()
+        use_heuristic_value = True
+        effective_simulations = _INSPECTOR_BATCH
+
+    elif agent_name in _ALPHABETA_PRESETS:
+        policy_value_fn = _make_alphabeta_pv(agent_name)
+        use_heuristic_value = True
+        effective_simulations = _INSPECTOR_BATCH
+
+    elif agent_name == "alphazero":
+        az_pv = _make_alphazero_pv(simulations)
+        if az_pv is None:
+            # No checkpoint — fall back to uniform with heuristic values.
+            policy_value_fn = _uniform_pv
+            use_heuristic_value = True
+        else:
+            policy_value_fn = az_pv
+            use_heuristic_value = False
+        effective_simulations = _INSPECTOR_BATCH
+
+    else:
+        logger.warning(
+            "unknown inspector agent %r, falling back to uniform", agent_name
+        )
+        policy_value_fn = _uniform_pv
+        use_heuristic_value = True
+        effective_simulations = _INSPECTOR_BATCH
+
+    return SearchTree(
+        policy_value_fn=policy_value_fn,
+        simulations=effective_simulations,
+        use_heuristic_value=use_heuristic_value,
+    )
 
 
 def _inspector_snapshot() -> dict:
@@ -864,28 +992,38 @@ def _inspector_snapshot() -> dict:
         "sim_count": sim_count,
         "done": _inspector_tree.is_stable(),
         "tree": _inspector_tree.serialize(),
-        "checkpoint": "uniform",
+        "checkpoint": _inspector_snapshot_agent,
         "perspective": perspective,
     }
 
 
-def _inspector_init(game: Game, game_id: str, move_index: int) -> None:
-    """Root a fresh inspector tree at the given Game object."""
+def _inspector_init(
+    game: Game,
+    game_id: str,
+    move_index: int,
+    agent_name: str = "minimax",
+    simulations: int = 200,
+) -> None:
+    """Root a fresh inspector tree at the given game object."""
     global _inspector_tree, _inspector_game_id
     global _inspector_move_index, _inspector_sim_count
+    global _inspector_snapshot_agent, _inspector_snapshot_sims
 
-    _inspector_tree = SearchTree(
-        policy_value_fn=_uniform_pv,
-        simulations=_INSPECTOR_BATCH,
-        use_heuristic_value=True,
-    )
+    _inspector_tree = _build_inspector_tree(agent_name, simulations)
     _inspector_tree.reset(game)
     _inspector_game_id = game_id
     _inspector_move_index = move_index
     _inspector_sim_count = 0
+    _inspector_snapshot_agent = agent_name
+    _inspector_snapshot_sims = simulations
 
 
-def _inspector_load(game_id: str, move_index: int) -> None:
+def _inspector_load(
+    game_id: str,
+    move_index: int,
+    agent_name: str = "minimax",
+    simulations: int = 200,
+) -> None:
     """Build a fresh inspector tree from a recording at move_index."""
     folders = [_RECORDINGS_DIR, _RECORDINGS_DIR / "eval"]
     record = None
@@ -917,7 +1055,9 @@ def _inspector_load(game_id: str, move_index: int) -> None:
         )
 
     game = replay_to_move(record, move_index)
-    _inspector_init(game, game_id, move_index)
+    _inspector_init(
+        game, game_id, move_index, agent_name=agent_name, simulations=simulations
+    )
 
 
 def _inspector_run_batch() -> None:
@@ -929,23 +1069,33 @@ def _inspector_run_batch() -> None:
     _inspector_tree.record_batch_stability()
 
 
+# ── Inspector endpoints ────────────────────────────────────────────────────
+
+
 @app.get("/inspect/{game_id}/{move_index}/state")
-def inspect_state(game_id: str, move_index: int) -> dict:
+def inspect_state(
+    game_id: str,
+    move_index: int,
+    agent: str = "minimax",
+    simulations: int = 200,
+) -> dict:
     """Return the current inspector tree snapshot.
 
-    If the requested position differs from the active inspector tree,
-    a fresh tree is created and one batch of simulations is run before
-    returning. If the same position is requested again, the existing tree
-    is returned as-is.
+    Creates a fresh tree if the position, agent, or sim count has changed.
     """
     global _inspector_tree
 
-    if (
+    position_changed = (
         _inspector_tree is None
         or _inspector_game_id != game_id
         or _inspector_move_index != move_index
-    ):
-        _inspector_load(game_id, move_index)
+    )
+    config_changed = (
+        _inspector_snapshot_agent != agent or _inspector_snapshot_sims != simulations
+    )
+
+    if position_changed or config_changed:
+        _inspector_load(game_id, move_index, agent_name=agent, simulations=simulations)
         _inspector_run_batch()
 
     return _inspector_snapshot()
@@ -953,10 +1103,7 @@ def inspect_state(game_id: str, move_index: int) -> dict:
 
 @app.post("/inspect/extend")
 def inspect_extend() -> dict:
-    """Run another batch of simulations on the active inspector tree.
-
-    Returns 404 if no inspector tree is active.
-    """
+    """Run another batch of simulations on the active inspector tree."""
     if _inspector_tree is None:
         raise HTTPException(
             status_code=404,
@@ -969,40 +1116,36 @@ def inspect_extend() -> dict:
 
 @app.post("/inspect/reset")
 def inspect_reset() -> dict:
-    """Clear the active inspector tree. Used in testing and UI navigation."""
+    """Clear the active inspector tree."""
     global _inspector_tree, _inspector_game_id
     global _inspector_move_index, _inspector_sim_count
+    global _inspector_snapshot_agent, _inspector_snapshot_sims
 
     _inspector_tree = None
     _inspector_game_id = None
     _inspector_move_index = None
     _inspector_sim_count = 0
+    _inspector_snapshot_agent = "minimax"
+    _inspector_snapshot_sims = 200
     return {"cleared": True}
 
 
 @app.post("/inspect/live")
-def inspect_live(request: HypotheticalSnapshotRequest) -> dict:
-    """Root the inspector tree at an arbitrary game snapshot.
-
-    Accepts the same HypotheticalSnapshotRequest schema used by the
-    hypothetical endpoints. Runs one batch before returning so the
-    first response always has a populated tree.
-
-    game_id is set to 'live'; move_index is 0.
-    """
+def inspect_live(
+    request: HypotheticalSnapshotRequest,
+    agent: str = "minimax",
+    simulations: int = 200,
+) -> dict:
+    """Root the inspector tree at an arbitrary game snapshot."""
     game = _game_from_snapshot(request)
-    _inspector_init(game, "live", 0)
+    _inspector_init(game, "live", 0, agent_name=agent, simulations=simulations)
     _inspector_run_batch()
     return _inspector_snapshot()
 
 
 @app.get("/inspect/live/state")
 def inspect_live_state() -> dict:
-    """Return the current inspector snapshot for a live tree.
-
-    Returns 404 if no live tree is active or the active tree is
-    recording-based (game_id != 'live').
-    """
+    """Return the current snapshot for a live inspector tree."""
     if _inspector_tree is None or _inspector_game_id != "live":
         raise HTTPException(
             status_code=404,

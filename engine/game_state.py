@@ -5,7 +5,6 @@
 from dataclasses import dataclass, field
 from engine.board import Board
 from engine.constants import Tile, COLOR_TILES, PLAYERS, TILES_PER_COLOR
-import random
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,7 +44,6 @@ class GameState:
         if not self.bag:
             self.bag = [color for color in COLOR_TILES] * TILES_PER_COLOR
             logger.debug(f"Created bag with {len(self.bag)} tiles")
-            random.shuffle(self.bag)  # Shuffle the bag at the start of the game
 
     def clone(self) -> "GameState":
         """Return a fast independent copy of this game state.

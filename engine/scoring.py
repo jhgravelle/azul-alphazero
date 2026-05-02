@@ -13,7 +13,7 @@ from typing import Literal
 from engine.board import Board
 from engine.constants import (
     BOARD_SIZE,
-    BONUS_COLOR,
+    BONUS_TILE,
     BONUS_COLUMN,
     BONUS_ROW,
     COLOR_TILES,
@@ -85,7 +85,7 @@ def score_wall_bonus(wall: list[list[Tile | None]]) -> int:
     """Return end-of-game bonus points already guaranteed by the current wall.
 
     Awards +BONUS_ROW per completed row, +BONUS_COLUMN per completed column,
-    +BONUS_COLOR per color with all 5 tiles placed.
+    +BONUS_TILE per color with all 5 tiles placed.
     """
     total = 0
     for row in range(BOARD_SIZE):
@@ -99,7 +99,7 @@ def score_wall_bonus(wall: list[list[Tile | None]]) -> int:
             wall[row][COLUMN_FOR_TILE_IN_ROW[tile][row]] == tile
             for row in range(BOARD_SIZE)
         ):
-            total += BONUS_COLOR
+            total += BONUS_TILE
     return total
 
 
@@ -163,7 +163,7 @@ def pending_bonus_details(wall: list[list[Tile | None]]) -> list[BonusDetail]:
         ):
             bonuses.append(
                 BonusDetail(
-                    bonus_type="tile", index=tile.value, bonus_points=BONUS_COLOR
+                    bonus_type="tile", index=tile.value, bonus_points=BONUS_TILE
                 )
             )
 

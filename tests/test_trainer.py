@@ -552,6 +552,7 @@ def test_collect_mirror_games_fills_buffer():
     assert len(buf) > 0
 
 
+@pytest.mark.slow
 def test_collect_mirror_games_records_double_the_pairs():
     """Each pair produces 2 games — buffer should have examples from both."""
     from neural.trainer import collect_mirror_heuristic_games
@@ -566,6 +567,7 @@ def test_collect_mirror_games_records_double_the_pairs():
     assert len(buf_double) > len(buf_single)
 
 
+@pytest.mark.slow
 def test_collect_mirror_games_returns_correct_game_count():
     from neural.trainer import collect_mirror_heuristic_games
 
@@ -574,6 +576,7 @@ def test_collect_mirror_games_returns_correct_game_count():
     assert stats["games_recorded"] == 6
 
 
+@pytest.mark.slow
 def test_collect_mirror_games_policy_sums_to_one():
     """Every policy target from mirror games should sum to 1.0."""
     from neural.trainer import collect_mirror_heuristic_games
@@ -615,6 +618,7 @@ def test_mirror_games_different_seeds_different_factories():
     assert factories_a != factories_b
 
 
+@pytest.mark.slow
 def test_mirror_games_both_sides_represented():
     """Mirror pairs should produce wins from both p0 and p1 across enough pairs."""
     from neural.trainer import collect_mirror_heuristic_games

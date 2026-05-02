@@ -53,11 +53,13 @@ def test_game_state_bag_has_correct_tile_counts():
             assert state.bag.count(tile_type) == TILES_PER_COLOR
 
 
-def test_game_state_bag_is_shuffled():
-    state1 = GameState()
-    state2 = GameState()
-    # It's possible but very unlikely that two shuffles are identical
-    assert state1.bag != state2.bag
+def test_game_bag_is_shuffled():
+    from engine.game import Game
+
+    game1 = Game()
+    game2 = Game()
+    # It's possible but very unlikely that two independent seeds produce identical order
+    assert game1.state.bag != game2.state.bag
 
 
 def test_game_state_discard_is_empty():

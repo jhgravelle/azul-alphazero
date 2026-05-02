@@ -10,6 +10,7 @@ from engine.constants import (
     CELLS_BY_COLUMN,
     CELLS_BY_ROW,
     CELLS_BY_TILE,
+    COLUMN_FOR_TILE_IN_ROW,
     CUMULATIVE_FLOOR_PENALTIES,
     FLOOR,
     FLOOR_PENALTIES,
@@ -239,8 +240,8 @@ class Player:
         - The pattern line is not already at full capacity.
         - The pattern line is empty, or already committed to the same color.
         """
-        wall_column = WALL_PATTERN[row].index(tile)
-        if self.wall[row][wall_column] is not None:
+        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        if self.wall[row][col] is not None:
             return False
         if len(self.pattern_lines[row]) == CAPACITY[row]:
             return False
@@ -264,11 +265,11 @@ class Player:
         for row in range(BOARD_SIZE):
             if not self._is_line_pending(row):
                 continue
-            tile = self._line_tile(row)
-            col = WALL_PATTERN[row].index(tile)
+            tile = self.pattern_lines[row].pop()
+            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
             self.wall[row][col] = tile
-            discard.extend([tile] * (CAPACITY[row] - 1))
-            self.pattern_lines[row] = []
+            discard.extend(self.pattern_lines[row])
+            self.pattern_lines[row].clear()
         self.update_score()
         discard.extend(t for t in self.floor_line if t != Tile.FIRST_PLAYER)
         self.floor_line.clear()
@@ -318,11 +319,8 @@ class Player:
         if placed, current line length if aimed at this cell, 0 otherwise).
         Denominator is the sum of CAPACITY[row] for all cells in the group.
         """
-        numerator = sum(
-            CAPACITY[row] if self.wall[row][col] else self._cell_completion(row, col)
-            for row, col in cells
-        )
-        denominator = sum(CAPACITY[row] for row, col in cells)
+        numerator = sum(self._cell_completion(row, col) for row, col in cells)
+        denominator = sum(CAPACITY[row] for row, _ in cells)
         return numerator / denominator
 
     def encode_completion_progress(self) -> list[list[float]]:

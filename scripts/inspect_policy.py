@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 
 from engine.game import Game, CENTER, FLOOR
-from engine.constants import COLOR_TILES, WALL_PATTERN, COLUMN_FOR_TILE_IN_ROW, Tile
+from engine.constants import WALL_PATTERN, Tile
 from agents.alphabeta import AlphaBetaAgent
 from neural.model import AzulNet
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -120,32 +120,22 @@ def _net_forward(
 
 
 def _print_encoding(game: Game) -> None:
-    """Print the flat encoding vector alongside expected values.
-
-    Shows each flat feature with its encoded value, the value we expect
-    from the game state, and whether they match. Helps catch perspective
-    flips, wrong divisors, or stale state bugs.
-    """
+    """Print the flat encoding vector alongside expected values."""
     from neural.encoder import (
-        OFF_FACTORIES,
-        OFF_CENTER,
-        OFF_FP_CENTER,
-        OFF_FP_MINE,
-        OFF_MY_FLOOR,
-        OFF_OPP_FLOOR,
         OFF_MY_SCORE,
         OFF_OPP_SCORE,
-        OFF_SCORE_DELTA,
-        OFF_BAG,
-        OFF_DISCARD,
-        OFF_ROUND,
-        OFF_DISTINCT_PAIRS,
-        FLAT_SIZE,
-        NUM_COLORS,
-        SCORE_DELTA_DIVISOR,
+        OFF_MY_EARNED,
+        OFF_OPP_EARNED,
+        OFF_MY_FLOOR,
+        OFF_OPP_FLOOR,
+        OFF_MY_FP_TOKEN,
+        OFF_OPP_FP_TOKEN,
+        EARNED_DIVISOR,
+        MAX_SCORE_DIVISOR,
+        FLOOR_PENALTY_DIVISOR,
     )
-    from engine.scoring import earned_score_unclamped
-    from engine.constants import TILES_PER_COLOR, TILES_PER_FACTORY, Tile
+    from engine.scoring import earned_score_unclamped, score_floor_penalty
+    from engine.constants import Tile
 
     _, flat = encode_state(game)
     cur = game.state.current_player
@@ -153,11 +143,7 @@ def _print_encoding(game: Game) -> None:
     my = game.state.players[cur]
     op = game.state.players[opp]
 
-    my_score = earned_score_unclamped(my)
-    opp_score = earned_score_unclamped(op)
-    delta = max(-1.0, min(1.0, (my_score - opp_score) / SCORE_DELTA_DIVISOR))
-
-    print(f"\nFlat encoding (current_player={cur}):")
+    print(f"\nFlat encoding (current_player={cur}, FLAT_SIZE={flat.shape[0]}):")
     print(f"  {'Feature':<35} {'encoded':>8}  {'expected':>8}  match")
     print(f"  {'-'*35} {'-'*8}  {'-'*8}  -----")
 
@@ -165,60 +151,46 @@ def _print_encoding(game: Game) -> None:
         match = "OK" if abs(enc_val - exp_val) <= tol else "*** MISMATCH ***"
         print(f"  {label:<35} {enc_val:>8.4f}  {exp_val:>8.4f}  {match}")
 
-    # First player token
     row(
-        "fp_in_center",
-        flat[OFF_FP_CENTER].item(),
-        1.0 if Tile.FIRST_PLAYER in game.state.center else 0.0,
+        f"my_score (player {cur}) /100",
+        flat[OFF_MY_SCORE].item(),
+        my.score / MAX_SCORE_DIVISOR,
     )
     row(
-        "fp_mine (player " + str(cur) + ")",
-        flat[OFF_FP_MINE].item(),
+        f"opp_score (player {opp}) /100",
+        flat[OFF_OPP_SCORE].item(),
+        op.score / MAX_SCORE_DIVISOR,
+    )
+    row(
+        f"my_earned (player {cur}) /50",
+        flat[OFF_MY_EARNED].item(),
+        earned_score_unclamped(my) / EARNED_DIVISOR,
+    )
+    row(
+        f"opp_earned (player {opp}) /50",
+        flat[OFF_OPP_EARNED].item(),
+        earned_score_unclamped(op) / EARNED_DIVISOR,
+    )
+    row(
+        f"my_floor (player {cur}) /14",
+        flat[OFF_MY_FLOOR].item(),
+        score_floor_penalty(my.floor_line) / FLOOR_PENALTY_DIVISOR,
+    )
+    row(
+        f"opp_floor (player {opp}) /14",
+        flat[OFF_OPP_FLOOR].item(),
+        score_floor_penalty(op.floor_line) / FLOOR_PENALTY_DIVISOR,
+    )
+    row(
+        f"my_fp_token (player {cur})",
+        flat[OFF_MY_FP_TOKEN].item(),
         1.0 if Tile.FIRST_PLAYER in my.floor_line else 0.0,
     )
-
-    # Floor lines
-    row(f"my_floor (player {cur})", flat[OFF_MY_FLOOR].item(), len(my.floor_line) / 7)
-    row(f"opp_floor (player {opp})", flat[OFF_OPP_FLOOR].item(), len(op.floor_line) / 7)
-
-    # Scores
-    row(f"my_score (player {cur}) /100", flat[OFF_MY_SCORE].item(), my_score / 100)
-    row(f"opp_score (player {opp}) /100", flat[OFF_OPP_SCORE].item(), opp_score / 100)
     row(
-        f"score_delta (my-opp)/{SCORE_DELTA_DIVISOR:.0f}",
-        flat[OFF_SCORE_DELTA].item(),
-        delta,
+        f"opp_fp_token (player {opp})",
+        flat[OFF_OPP_FP_TOKEN].item(),
+        1.0 if Tile.FIRST_PLAYER in op.floor_line else 0.0,
     )
-
-    # Round and distinct pairs
-    row(
-        "round_progress (round-1)/5", flat[OFF_ROUND].item(), (game.state.round - 1) / 5
-    )
-    expected_pairs = game.count_distinct_source_color_pairs()
-    row("distinct_pairs /10", flat[OFF_DISTINCT_PAIRS].item(), expected_pairs / 10)
-
-    # Bag totals — spot check first color
-    from engine.constants import COLOR_TILES
-
-    for color_idx, color in enumerate(COLOR_TILES):
-        enc = flat[OFF_BAG + color_idx].item()
-        exp = game.state.bag.count(color) / TILES_PER_COLOR
-        row(f"bag[{color.name[:3]}] /20", enc, exp)
-
-    # Discard totals — spot check
-    for color_idx, color in enumerate(COLOR_TILES):
-        enc = flat[OFF_DISCARD + color_idx].item()
-        exp = game.state.discard.count(color) / TILES_PER_COLOR
-        row(f"discard[{color.name[:3]}] /20", enc, exp)
-
-    # Factory spot check — just show nonzero entries
-    print(f"\n  Factory encoding (nonzero entries):")
-    for f_idx, factory in enumerate(game.state.factories):
-        for color_idx, color in enumerate(COLOR_TILES):
-            enc = flat[OFF_FACTORIES + f_idx * NUM_COLORS + color_idx].item()
-            exp = factory.count(color) / TILES_PER_FACTORY
-            if enc > 0 or exp > 0:
-                row(f"  factory[{f_idx}][{color.name[:3]}] /4", enc, exp)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -261,6 +233,12 @@ def main() -> None:
         action="store_true",
         help="print the flat encoding vector alongside expected values for debugging",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="MCTS batch size for the probe (default 8)",
+    )
     args = parser.parse_args()
 
     net = AzulNet()
@@ -293,7 +271,7 @@ def main() -> None:
         _after = _esu(_child.state.players[0])
         _line = _child.state.players[0].pattern_lines[0]
         _wall = _child.state.players[0].wall[0]
-        print(f"\nScoring diagnostic (row-0 fill):")
+        print("\nScoring diagnostic (row-0 fill):")
         print(f"  move:         {_move_label(_row0_moves[0])}")
         print(f"  pattern[0]:   {_line}  (capacity 1, full={len(_line) >= 1})")
         print(f"  wall[0]:      {_wall}")
@@ -358,11 +336,12 @@ def main() -> None:
         net_dist_sorted = sorted(net_dist, key=lambda x: x[1], reverse=True)
 
         # Value head summary for current position
-        puct_head = value_diff  # this is what PUCT uses in search_tree.py
-        print(f"\nNet value heads (current position):")
+        # puct_head = value_diff  # this is what PUCT uses in search_tree.py
+        print("\nNet value heads (current position):")
         print(f"  value_win:  {value_win:+.4f}  (win/loss, range -1 to +1)")
         print(
-            f"  value_diff: {value_diff:+.4f}  (score differential / 50)  <-- PUCT uses this"
+            f"  value_diff: {value_diff:+.4f}  (score differential / 50)  <-- PUCT "
+            "uses this"
         )
         print(f"  value_abs:  {value_abs:+.4f}  (absolute score / 100)")
 
@@ -376,7 +355,7 @@ def main() -> None:
             moves_to_probe.append(("floor move", floor_moves[0]))
 
         if moves_to_probe:
-            print(f"\n  Value heads after specific moves:")
+            print("\n  Value heads after specific moves:")
             print(f"  {'Move':<28} {'v_win':>7} {'v_diff':>7} {'v_abs':>7}")
             for label, probe_move in moves_to_probe:
                 probe_game = game.clone()
@@ -425,7 +404,7 @@ def main() -> None:
             batch_policy_value_fn=make_batch_policy_value_fn(net),
             simulations=args.mcts_sims,
             temperature=0.0,
-            batch_size=args.mcts_sims,
+            batch_size=args.batch_size,
         )
         probe_tree.reset(game.clone())
         mcts_move = probe_tree.choose_move(game.clone())
@@ -437,7 +416,7 @@ def main() -> None:
             print(
                 f"  {'Move':<22} {'visits':>7} {'visit%':>7} {'q(root)':>8}  {'chosen'}"
             )
-            for child in visited_sorted[: args.top_k]:
+            for child in visited_sorted:
                 visit_pct = child.visits / total_visits * 100
                 chosen_marker = (
                     " <-- MCTS"
@@ -536,24 +515,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-from engine.game import Game
-from neural.model import AzulNet
-from neural.encoder import encode_state
-import torch
-
-net = AzulNet()
-net.load_state_dict(torch.load("checkpoints/latest.pt", map_location="cpu"))
-net.eval()
-
-# Run 5 fresh games, encode state, get value_diff
-diffs = []
-for _ in range(5):
-    g = Game()
-    g.setup_round()
-    spatial, flat = encode_state(g)
-    with torch.no_grad():
-        _, _, vd, _ = net(spatial.unsqueeze(0), flat.unsqueeze(0))
-    diffs.append(vd.item())
-print(diffs)

@@ -1,6 +1,7 @@
 checkpoints/
 logs/
 recordings/
+scratch/
 .vscode/
 
 # Byte-compiled / optimized / DLL files

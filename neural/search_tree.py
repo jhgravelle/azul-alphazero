@@ -468,7 +468,8 @@ class SearchTree:
                 node.virtual_loss += 1
                 return node
             node.virtual_loss += 1
-            node = max(eligible, key=lambda c: c.puct_score(node.visits))
+            parent_visits = node.visits + node.virtual_loss
+            node = max(eligible, key=lambda c: c.puct_score(parent_visits))
         node.virtual_loss += 1
         return node
 

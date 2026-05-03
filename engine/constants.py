@@ -35,7 +35,12 @@ TILES_PER_FACTORY = 4  # number of tiles placed in each factory at the start of 
 FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3]
 BONUS_ROW = 2  # points for completing a row on the wall
 BONUS_COLUMN = 7  # points for completing a column on the wall
-BONUS_COLOR = 10  # points for placing all 5 tiles of a color on the wall
+BONUS_TILE = 10  # points for placing all 5 tiles of a color on the wall
+
+FLOOR = -2  # sentinel destination: tiles go to the floor line
+CAPACITY: list[int] = [
+    row + 1 for row in range(BOARD_SIZE)
+]  # max tiles per pattern line row
 
 # --- Wall pattern ---
 
@@ -63,4 +68,30 @@ CUMULATIVE_FLOOR_PENALTIES: list[int] = (
 COLUMN_FOR_TILE_IN_ROW: dict[Tile, list[int]] = {
     tile: [WALL_PATTERN[row].index(tile) for row in range(BOARD_SIZE)]
     for tile in COLOR_TILES
+}
+
+# --- Cell groups for bonus scoring and completion progress ---
+
+CELLS_BY_ROW: list[list[tuple[int, int]]] = [
+    [(row, col) for col in range(BOARD_SIZE)] for row in range(BOARD_SIZE)
+]
+CELLS_BY_COLUMN: list[list[tuple[int, int]]] = [
+    [(row, col) for row in range(BOARD_SIZE)] for col in range(BOARD_SIZE)
+]
+CELLS_BY_TILE: list[list[tuple[int, int]]] = [
+    [(row, WALL_PATTERN[row].index(tile)) for row in range(BOARD_SIZE)]
+    for tile in COLOR_TILES
+]
+
+# --- Display ---
+
+BOARD_SEPARATOR = "|"
+TILE_CHAR: dict[Tile | None, str] = {
+    None: ".",
+    Tile.BLUE: "B",
+    Tile.YELLOW: "Y",
+    Tile.RED: "R",
+    Tile.BLACK: "K",
+    Tile.WHITE: "W",
+    Tile.FIRST_PLAYER: "F",
 }

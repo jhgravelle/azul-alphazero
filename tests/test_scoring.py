@@ -4,7 +4,7 @@
 
 from engine.constants import (
     BOARD_SIZE,
-    BONUS_COLOR,
+    BONUS_TILE,
     BONUS_COLUMN,
     BONUS_ROW,
     COLOR_TILES,
@@ -217,7 +217,7 @@ def test_score_wall_bonus_complete_color_scores_ten():
     for row in range(BOARD_SIZE):
         column = WALL_PATTERN[row].index(Tile.BLUE)
         wall[row][column] = Tile.BLUE
-    assert score_wall_bonus(wall) == BONUS_COLOR
+    assert score_wall_bonus(wall) == BONUS_TILE
 
 
 def test_score_wall_bonus_row_and_column_overlap_counts_both():
@@ -238,7 +238,7 @@ def test_score_wall_bonus_all_three_bonuses():
     for row in range(BOARD_SIZE):
         column = WALL_PATTERN[row].index(Tile.BLUE)
         wall[row][column] = Tile.BLUE
-    assert score_wall_bonus(wall) == BONUS_ROW + BONUS_COLUMN + BONUS_COLOR
+    assert score_wall_bonus(wall) == BONUS_ROW + BONUS_COLUMN + BONUS_TILE
 
 
 # ── pending_placement_details ──────────────────────────────────────────────────
@@ -360,7 +360,7 @@ def test_pending_bonus_details_completed_tile_color():
     tile_bonuses = [b for b in bonuses if b.bonus_type == "tile"]
     assert len(tile_bonuses) == 1
     assert tile_bonuses[0].index == Tile.BLUE.value
-    assert tile_bonuses[0].bonus_points == BONUS_COLOR
+    assert tile_bonuses[0].bonus_points == BONUS_TILE
 
 
 def test_pending_bonus_details_full_wall_yields_all_bonuses():

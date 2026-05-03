@@ -5,9 +5,11 @@
 from dataclasses import dataclass
 from engine.board import Board
 from engine.constants import (
+    PLAYERS,
     Tile,
     BOARD_SIZE,
     COLOR_TILES,
+    FLOOR,
     TILES_PER_FACTORY,
     COLUMN_FOR_TILE_IN_ROW,
 )
@@ -19,7 +21,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 CENTER = -1
-FLOOR = -2
 
 
 @dataclass
@@ -36,23 +37,34 @@ class Game:
     take actions. Mutation lives here; pure scoring logic lives in scoring.py.
     """
 
-    def __init__(self, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        player_names: list[str] | None = None,
+        agent_details: list[str] | None = None,
+        seed: int = 0,
+    ) -> None:
         """Initialize a new game with a fresh GameState.
 
         Args:
-            seed: Optional integer seed for the random number generator.
-                  When provided, the bag shuffle and any bag refills use
-                  this seed, making the game fully reproducible. Useful
-                  for mirror training games and human replay.
-                  When None, uses Python's global RNG state (default behavior).
+            seed: Optional RNG seed. When None or 0, a random seed is
+                  generated and stored in self.seed. Pass a positive integer
+                  to reproduce a specific game exactly.
         """
-        if seed is not None:
-            random.seed(seed)
+
+        self.seed: int = seed or random.randint(1, 2**31)
+        self.rng = random.Random(self.seed)
         self.state = GameState()
+        self.rng.shuffle(self.state.bag)
+
+        player_names = player_names or [f"Player {i + 1}" for i in range(PLAYERS)]
+        agent_details = agent_details or ["human"] * PLAYERS
 
     def clone(self) -> "Game":
         """Return a fast independent copy of this game."""
         g = object.__new__(Game)
+        g.seed = self.seed
+        g.rng = random.Random()
+        g.rng.setstate(self.rng.getstate())
         g.state = self.state.clone()
         return g
 
@@ -66,7 +78,7 @@ class Game:
             return
         self.state.bag.extend(self.state.discard)
         self.state.discard.clear()
-        random.shuffle(self.state.bag)
+        self.rng.shuffle(self.state.bag)
         logger.debug("refilled bag from discard and shuffled")
 
     def setup_round(self, factories: list[list[Tile]] | None = None) -> None:

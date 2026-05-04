@@ -2,9 +2,9 @@
 
 """Monte Carlo Tree Search agent for Azul."""
 
-import copy
 import math
 import logging
+import random
 
 from agents.base import Agent
 from engine.game import Game, Move
@@ -38,25 +38,27 @@ def ucb1(
 class MCTSNode:
     """A single node in the Monte Carlo search tree.
 
-    Each node represents a game state reached by a particular move.
-    The root node has move=None and parent=None.
+    Nodes do NOT store a game copy. The game state at any node is
+    reconstructed by replaying moves from the root on demand. This avoids
+    a deepcopy per simulation — the single most expensive operation in the
+    naive implementation.
 
     Attributes:
-        game:          A complete copy of the game state at this node.
         move:          The move that was applied to reach this node (None for root).
         parent:        The parent MCTSNode (None for root).
-        children:      MCTSNodes that have been expanded from this node.
+        children:      MCTSNodes expanded from this node.
         untried_moves: Legal moves not yet expanded into children.
         visits:        Number of times this node has been visited.
         total_value:   Sum of simulation outcomes backpropagated through this node.
     """
 
-    def __init__(self, *, game: Game, move: Move | None, parent: "MCTSNode | None"):
-        self.game = game
+    def __init__(
+        self, *, move: Move | None, parent: "MCTSNode | None", untried_moves: list[Move]
+    ):
         self.move = move
         self.parent = parent
         self.children: list["MCTSNode"] = []
-        self.untried_moves: list[Move] = game.legal_moves()
+        self.untried_moves: list[Move] = untried_moves
         self.visits: int = 0
         self.total_value: float = 0.0
 
@@ -76,6 +78,16 @@ class MCTSNode:
             ),
         )
 
+    def path_from_root(self) -> list[Move]:
+        """Return the sequence of moves from root to this node."""
+        moves = []
+        current: MCTSNode | None = self
+        while current is not None and current.move is not None:
+            moves.append(current.move)
+            current = current.parent
+        moves.reverse()
+        return moves
+
 
 class MCTSAgent(Agent):
     """An agent that uses Monte Carlo Tree Search to choose moves.
@@ -91,76 +103,77 @@ class MCTSAgent(Agent):
     def choose_move(self, game: Game) -> Move:
         """Run MCTS from the current game state and return the best move found.
 
-        The game passed in is never modified — we work on deep copies internally.
+        The game passed in is never modified — we clone it once at the start
+        and replay moves onto working copies per simulation.
         """
-        root = MCTSNode(game=copy.deepcopy(game), move=None, parent=None)
+        root_game = game.clone()
+        root = MCTSNode(move=None, parent=None, untried_moves=root_game.legal_moves())
 
         for _ in range(self.simulations):
-            node = self._select(root)
-            node = self._expand(node)
-            result = self._simulate(node)
+            node, sim_game = self._select(root, root_game)
+            node, sim_game = self._expand(node, sim_game)
+            result = self._simulate(sim_game)
             self._backpropagate(node, result)
 
-        # After all simulations, pick the most-visited child of the root.
-        # Most-visited (not highest UCB1) is the standard choice at decision
-        # time — it's more robust to outliers than picking by win rate alone.
         best = max(root.children, key=lambda n: n.visits)
-        assert best.move is not None  # root's children always have moves
+        assert best.move is not None
         return best.move
 
     # ── The four MCTS steps ───────────────────────────────────────────────
 
-    def _select(self, node: MCTSNode) -> MCTSNode:
-        """Walk down the tree, choosing the best child at each level.
+    def _select(self, node: MCTSNode, root_game: Game) -> tuple[MCTSNode, Game]:
+        """Walk down the tree to a node with untried moves (or a terminal).
 
-        Stop when we reach a node that still has untried moves (we'll expand
-        it next) or a terminal node (no legal moves remain).
+        Returns the selected node and a game copy advanced to that node's state.
+        The game is reconstructed by replaying the path from root — one clone,
+        then O(depth) make_move calls, no further copies.
         """
-        while node.game.legal_moves():
-            if not node.is_fully_expanded():
-                return node
+        while not node.untried_moves and node.children:
             node = node.best_child()
-        return node
 
-    def _expand(self, node: MCTSNode) -> MCTSNode:
+        sim_game = self._replay_to_node(node, root_game)
+        return node, sim_game
+
+    def _expand(self, node: MCTSNode, sim_game: Game) -> tuple[MCTSNode, Game]:
         """Add one new child by trying an unexplored move.
 
-        If the node is terminal (no untried moves because the game is over,
-        not because all moves are expanded), return it as-is.
+        Returns the new child node and the game advanced to the child's state.
+        No additional clone needed — we continue mutating sim_game in place.
         """
         if not node.untried_moves:
-            return node
+            return node, sim_game
 
         move = node.untried_moves.pop()
-        new_game = copy.deepcopy(node.game)
-        new_game.make_move(move)
-        new_game.advance()
-        child = MCTSNode(game=new_game, move=move, parent=node)
+        sim_game.make_move(move)
+        sim_game.advance()
+        child = MCTSNode(
+            move=move,
+            parent=node,
+            untried_moves=sim_game.legal_moves(),
+        )
         node.children.append(child)
-        return child
+        return child, sim_game
 
-    def _simulate(self, node: MCTSNode) -> float:
-        """Play out the game randomly from this node and return the result.
+    def _simulate(self, sim_game: Game) -> float:
+        """Play out the current round randomly and return a heuristic result.
 
-        Result is from the perspective of the root player (player 0):
-            1.0 = player 0 wins
-            0.0 = player 0 loses
-            0.5 = tie
+        Stops at the round boundary rather than playing to game over. This
+        cuts rollout length from ~150 moves to ~10-20, making each simulation
+        much cheaper without meaningfully weakening move selection.
 
-        We work on a copy so the node's game state is never touched.
+        Result is from the perspective of player 0:
+            1.0 = player 0 winning, 0.0 = losing, 0.5 = tied
         """
-        sim_game = copy.deepcopy(node.game)
-        random_agent = _RandomRolloutAgent()
-
         while sim_game.legal_moves():
-            move = random_agent.choose_move(sim_game)
+            move = random.choice(sim_game.legal_moves())
             sim_game.make_move(move)
-            sim_game.advance()
+            round_ended = sim_game.advance()
+            if round_ended:
+                break
 
-        scores = [p.score for p in sim_game.players]
+        scores = [p.earned for p in sim_game.players]
         best = max(scores)
         winners = [i for i, s in enumerate(scores) if s == best]
-
         if len(winners) > 1:
             return 0.5
         return 1.0 if winners[0] == 0 else 0.0
@@ -173,20 +186,12 @@ class MCTSAgent(Agent):
             current.total_value += result
             current = current.parent
 
+    # ── Internal helpers ──────────────────────────────────────────────────
 
-# ── Internal rollout helper ───────────────────────────────────────────────────
-
-
-class _RandomRolloutAgent:
-    """Minimal random agent used only for rollout simulations.
-
-    Kept private to this module — it's not part of the public agent interface.
-    We don't use RandomAgent here because we want the simplest possible rollout:
-    pick any legal move uniformly. RandomAgent's heuristics add overhead and
-    could subtly bias value estimates.
-    """
-
-    def choose_move(self, game: Game) -> Move:
-        import random
-
-        return random.choice(game.legal_moves())
+    def _replay_to_node(self, node: MCTSNode, root_game: Game) -> Game:
+        """Clone root_game and replay moves to reach node's game state."""
+        sim_game = root_game.clone()
+        for move in node.path_from_root():
+            sim_game.make_move(move)
+            sim_game.advance()
+        return sim_game

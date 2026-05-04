@@ -21,7 +21,7 @@ def _play_full_game(recorder: GameRecorder | None = None) -> Game:
     game.setup_round()
     if recorder:
         recorder.start_round(game)
-    last_round = game.state.round
+    last_round = game.round
     max_moves = 500
     moves_made = 0
     while not game.is_game_over() and moves_made < max_moves:
@@ -30,15 +30,15 @@ def _play_full_game(recorder: GameRecorder | None = None) -> Game:
             break
         move = moves[0]
         if recorder:
-            recorder.record_move(move, player_index=game.state.current_player)
+            recorder.record_move(move, player_index=game.current_player_index)
         game.make_move(move)
         game.advance()
-        if recorder and not game.is_game_over() and game.state.round != last_round:
+        if recorder and not game.is_game_over() and game.round != last_round:
             recorder.start_round(game)
-            last_round = game.state.round
+            last_round = game.round
         moves_made += 1
     if game.is_game_over():
-        game.score_game()
+        game._score_game()
     return game
 
 
@@ -95,7 +95,7 @@ def test_start_round_captures_factories():
     recorder = GameRecorder()
     recorder.start_round(game)
     round_record = recorder.record.rounds[0]
-    assert len(round_record.factories) == len(game.state.factories)
+    assert len(round_record.factories) == len(game.factories)
 
 
 def test_start_round_captures_center():
@@ -184,7 +184,7 @@ def test_record_move_captures_player_index():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_move(move, player_index=game.state.current_player)
+    recorder.record_move(move, player_index=game.current_player_index)
     assert recorder.record.rounds[0].moves[0].player_index == 0
 
 
@@ -210,15 +210,12 @@ def test_finalize_sets_final_scores():
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, player_index=game.state.current_player)
+        recorder.record_move(move, player_index=game.current_player_index)
         game.make_move(move)
         game.advance()
-        if (
-            game.state.round > recorder.record.rounds[-1].round
-            and not game.is_game_over()
-        ):
+        if game.round > recorder.record.rounds[-1].round and not game.is_game_over():
             recorder.start_round(game)
-    game.score_game()
+    game._score_game()
     recorder.finalize(game)
     assert len(recorder.record.final_scores) == PLAYERS
 
@@ -234,15 +231,12 @@ def test_finalize_winner_has_highest_score():
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, player_index=game.state.current_player)
+        recorder.record_move(move, player_index=game.current_player_index)
         game.make_move(move)
         game.advance()
-        if (
-            game.state.round > recorder.record.rounds[-1].round
-            and not game.is_game_over()
-        ):
+        if game.round > recorder.record.rounds[-1].round and not game.is_game_over():
             recorder.start_round(game)
-    game.score_game()
+    game._score_game()
     recorder.finalize(game)
     assert recorder.record.winner is not None
     winner_score = recorder.record.final_scores[recorder.record.winner]
@@ -259,7 +253,7 @@ def test_to_json_is_valid_json():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_move(move, player_index=game.state.current_player)
+    recorder.record_move(move, player_index=game.current_player_index)
     assert isinstance(json.loads(recorder.to_json()), dict)
 
 
@@ -269,7 +263,7 @@ def test_to_json_contains_rounds():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_move(move, player_index=game.state.current_player)
+    recorder.record_move(move, player_index=game.current_player_index)
     parsed = json.loads(recorder.to_json())
     assert "rounds" in parsed
     assert len(parsed["rounds"]) == 1
@@ -281,7 +275,7 @@ def test_round_trip_preserves_moves(tmp_path):
     recorder = GameRecorder(player_names=["Alice", "Bob"])
     recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_move(move, player_index=game.state.current_player)
+    recorder.record_move(move, player_index=game.current_player_index)
 
     path = tmp_path / "game.json"
     recorder.save(path)
@@ -304,7 +298,7 @@ def test_round_trip_preserves_factories(tmp_path):
     recorder.save(path)
     loaded = GameRecord.load(path)
 
-    assert len(loaded.rounds[0].factories) == len(game.state.factories)
+    assert len(loaded.rounds[0].factories) == len(game.factories)
 
 
 def test_round_trip_preserves_player_types(tmp_path):
@@ -330,18 +324,18 @@ def test_reconstruct_returns_one_state_per_move():
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
-    last_round = game.state.round
+    last_round = game.round
     for _ in range(4):
         moves = game.legal_moves()
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, player_index=game.state.current_player)
+        recorder.record_move(move, player_index=game.current_player_index)
         game.make_move(move)
         game.advance()
-        if game.state.round != last_round and not game.is_game_over():
+        if game.round != last_round and not game.is_game_over():
             recorder.start_round(game)
-            last_round = game.state.round
+            last_round = game.round
 
     states, _ = recorder.record.reconstruct()
     total_moves = sum(len(r.moves) for r in recorder.record.rounds)
@@ -359,15 +353,12 @@ def test_reconstruct_final_boards_reflect_scoring():
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, player_index=game.state.current_player)
+        recorder.record_move(move, player_index=game.current_player_index)
         game.make_move(move)
         game.advance()
-        if (
-            game.state.round > recorder.record.rounds[-1].round
-            and not game.is_game_over()
-        ):
+        if game.round > recorder.record.rounds[-1].round and not game.is_game_over():
             recorder.start_round(game)
-    game.score_game()
+    game._score_game()
     recorder.finalize(game)
 
     _, final_boards = recorder.record.reconstruct()
@@ -383,7 +374,7 @@ def test_reconstruct_grand_totals_are_after_move():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_move(move, player_index=game.state.current_player)
+    recorder.record_move(move, player_index=game.current_player_index)
     game.make_move(move)
 
     states, _ = recorder.record.reconstruct()

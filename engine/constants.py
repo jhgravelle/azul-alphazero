@@ -37,6 +37,7 @@ BONUS_ROW = 2  # points for completing a row on the wall
 BONUS_COLUMN = 7  # points for completing a column on the wall
 BONUS_TILE = 10  # points for placing all 5 tiles of a color on the wall
 
+CENTER = -1  # sentinel source: tiles from the center
 FLOOR = -2  # sentinel destination: tiles go to the floor line
 CAPACITY: list[int] = [
     row + 1 for row in range(BOARD_SIZE)
@@ -86,12 +87,18 @@ CELLS_BY_TILE: list[list[tuple[int, int]]] = [
 # --- Display ---
 
 BOARD_SEPARATOR = "|"
-TILE_CHAR: dict[Tile | None, str] = {
-    None: ".",
-    Tile.BLUE: "B",
-    Tile.YELLOW: "Y",
-    Tile.RED: "R",
-    Tile.BLACK: "K",
-    Tile.WHITE: "W",
-    Tile.FIRST_PLAYER: "F",
+MOVE_SOURCE_CENTER = "C"  # center pool source in move strings
+MOVE_DEST_FLOOR = "F"  # floor destination in move strings
+MOVE_MARKER_NORMAL = "-"  # no first-player tile taken
+MOVE_MARKER_FIRST_PLAYER = "+"  # first-player tile also taken
+MOVE_MARKER_UNKNOWN = "?"  # move not yet executed (count=0)
+CHAR_TILE: dict[str, Tile | None] = {
+    "B": Tile.BLUE,
+    "Y": Tile.YELLOW,
+    "R": Tile.RED,
+    "K": Tile.BLACK,
+    "W": Tile.WHITE,
+    "F": Tile.FIRST_PLAYER,
+    ".": None,
 }
+TILE_CHAR: dict[Tile | None, str] = {tile: char for char, tile in CHAR_TILE.items()}

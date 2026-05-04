@@ -226,15 +226,17 @@ def test_collect_self_play_warmup_az_as_p1_records_nonzero_score():
 
     def rigged_setup(self, factories=None):
         original_setup(self, factories)
-        for board in self.state.players:
+        for board in self.players:
             board.score = 15
-        for board in self.state.players:
+        for board in self.players:
             board.pattern_lines[0] = [Tile.BLUE]
         blue_col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
-        for board in self.state.players:
+        for board in self.players:
             for col in range(5):
                 if col != blue_col:
                     board.wall[0][col] = WALL_PATTERN[0][col]
+            board._update_pending()
+            board._update_bonus()
 
     game_module.Game.setup_round = rigged_setup
     try:
@@ -594,11 +596,11 @@ def test_mirror_games_same_seed_same_factories():
 
     game_a = Game(seed=42)
     game_a.setup_round()
-    factories_a = [list(f) for f in game_a.state.factories]
+    factories_a = [list(f) for f in game_a.factories]
 
     game_b = Game(seed=42)
     game_b.setup_round()
-    factories_b = [list(f) for f in game_b.state.factories]
+    factories_b = [list(f) for f in game_b.factories]
 
     assert factories_a == factories_b
 
@@ -609,11 +611,11 @@ def test_mirror_games_different_seeds_different_factories():
 
     game_a = Game(seed=1)
     game_a.setup_round()
-    factories_a = [list(f) for f in game_a.state.factories]
+    factories_a = [list(f) for f in game_a.factories]
 
     game_b = Game(seed=2)
     game_b.setup_round()
-    factories_b = [list(f) for f in game_b.state.factories]
+    factories_b = [list(f) for f in game_b.factories]
 
     assert factories_a != factories_b
 

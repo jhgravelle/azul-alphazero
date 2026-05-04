@@ -59,7 +59,7 @@ def test_game_bag_is_shuffled():
     game1 = Game()
     game2 = Game()
     # It's possible but very unlikely that two independent seeds produce identical order
-    assert game1.state.bag != game2.state.bag
+    assert game1.bag != game2.bag
 
 
 def test_game_state_discard_is_empty():
@@ -75,7 +75,7 @@ def test_game_state_round_starts_at_zero():
 def test_setup_round_increments_round():
     game = Game()
     game.setup_round()
-    assert game.state.round == 1
-    game.score_round()
+    assert game.round == 1
+    game._score_round()
     game.setup_round()
-    assert game.state.round == 2
+    assert game.round == 2

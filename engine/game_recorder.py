@@ -1,5 +1,4 @@
 # engine/game_recorder.py
-
 """Game recorder for capturing Azul games for replay and analysis."""
 
 import json
@@ -9,24 +8,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from engine.board import Board
-from engine.constants import PLAYERS, Tile
+from engine.constants import (
+    BONUS_COLUMN,
+    BONUS_ROW,
+    BONUS_TILE,
+    CELLS_BY_COLUMN,
+    CELLS_BY_ROW,
+    CELLS_BY_TILE,
+    COLOR_TILES,
+    COLUMN_FOR_TILE_IN_ROW,
+    PLAYERS,
+    Tile,
+)
 from engine.game import Game, Move
-from engine.scoring import earned_score
+from engine.player import Player
 
 # ── Data classes ───────────────────────────────────────────────────────────
 
 
 @dataclass
 class MoveRecord:
-    """A single move within a round.
-
-    Attributes:
-        player_index: Which player made this move.
-        source:       Factory index, CENTER (-1), or FLOOR (-2).
-        tile:         Tile color name (e.g. 'BLUE').
-        destination:  Pattern line index, or FLOOR (-2).
-    """
+    """A single move within a round."""
 
     player_index: int
     source: int
@@ -36,14 +38,7 @@ class MoveRecord:
 
 @dataclass
 class RoundRecord:
-    """The factory layout and moves for one round.
-
-    Attributes:
-        round:     Round number (1-indexed).
-        factories: Tile names in each factory at the start of the round.
-        center:    Tile names in the center at the start of the round.
-        moves:     Ordered list of moves made this round.
-    """
+    """The factory layout and moves for one round."""
 
     round: int
     factories: list[list[str]]
@@ -51,34 +46,123 @@ class RoundRecord:
     moves: list[MoveRecord] = field(default_factory=list)
 
 
-def _board_to_dict(board: Board) -> dict[str, Any]:
-    """Serialize a Board to a JSON-compatible dict."""
+# ── Pending breakdown helpers ──────────────────────────────────────────────
+
+
+def _pending_placement_details(player: Player) -> list[dict[str, Any]]:
+    """Return placement details for all full pattern lines.
+
+    Simulates end-of-round placement in row order on a temporary wall copy
+    so adjacency scores are correct when pending placements are adjacent.
+    """
+    wall: list[list[Tile | None]] = [row[:] for row in player.wall]
+    details = []
+    for row, line in enumerate(player.pattern_lines):
+        if len(line) < row + 1:
+            continue
+        tile = line[0]
+        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        wall[row][col] = tile
+        points = _score_placement(wall, row, col)
+        details.append({"row": row, "column": col, "placement_points": points})
+    return details
+
+
+def _score_placement(wall: list[list[Tile | None]], row: int, col: int) -> int:
+    """Score a single tile at (row, col) on the wall.
+
+    Precondition: wall[row][col] must already be set before calling.
+    """
+    from engine.constants import BOARD_SIZE
+
+    h_start, h_end = col, col
+    while h_start - 1 >= 0 and wall[row][h_start - 1] is not None:
+        h_start -= 1
+    while h_end + 1 < BOARD_SIZE and wall[row][h_end + 1] is not None:
+        h_end += 1
+    h = h_end - h_start + 1
+
+    v_start, v_end = row, row
+    while v_start - 1 >= 0 and wall[v_start - 1][col] is not None:
+        v_start -= 1
+    while v_end + 1 < BOARD_SIZE and wall[v_end + 1][col] is not None:
+        v_end += 1
+    v = v_end - v_start + 1
+
+    return (h if h > 1 else 0) + (v if v > 1 else 0) or 1
+
+
+def _pending_bonus_details(
+    wall: list[list[Tile | None]],
+) -> list[dict[str, Any]]:
+    """Return bonus details for all end-of-game bonuses guaranteed by the wall."""
+    bonuses = []
+    for row_idx, cells in enumerate(CELLS_BY_ROW):
+        if all(wall[r][c] is not None for r, c in cells):
+            bonuses.append(
+                {"bonus_type": "row", "index": row_idx, "bonus_points": BONUS_ROW}
+            )
+    for col_idx, cells in enumerate(CELLS_BY_COLUMN):
+        if all(wall[r][c] is not None for r, c in cells):
+            bonuses.append(
+                {
+                    "bonus_type": "column",
+                    "index": col_idx,
+                    "bonus_points": BONUS_COLUMN,
+                }
+            )
+    for tile_idx, (tile, cells) in enumerate(zip(COLOR_TILES, CELLS_BY_TILE)):
+        if all(wall[r][c] is not None for r, c in cells):
+            bonuses.append(
+                {
+                    "bonus_type": "tile",
+                    "index": tile_idx,
+                    "bonus_points": BONUS_TILE,
+                }
+            )
+    return bonuses
+
+
+def _build_post_placement_wall(
+    player: Player,
+) -> list[list[Tile | None]]:
+    """Return a copy of the wall with all pending full pattern lines placed."""
+    wall: list[list[Tile | None]] = [row[:] for row in player.wall]
+    for row, line in enumerate(player.pattern_lines):
+        if len(line) < row + 1:
+            continue
+        tile = line[0]
+        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        wall[row][col] = tile
+    return wall
+
+
+# ── Board serialization ────────────────────────────────────────────────────
+
+
+def _player_to_dict(player: Player) -> dict[str, Any]:
+    """Serialize a Player to a JSON-compatible dict."""
     return {
-        "score": board.score,
-        "pattern_lines": [[tile.name for tile in line] for line in board.pattern_lines],
+        "score": player.score,
+        "pattern_lines": [
+            [tile.name for tile in line] for line in player.pattern_lines
+        ],
         "wall": [
             [cell.name if cell is not None else None for cell in row]
-            for row in board.wall
+            for row in player.wall
         ],
-        "floor_line": [tile.name for tile in board.floor_line],
+        "floor_line": [tile.name for tile in player.floor_line],
     }
 
 
-def _board_to_dict_with_pending(board: Board) -> dict[str, Any]:
-    """Serialize a board including pending placement and bonus details."""
-    from engine.scoring import pending_placement_details, pending_bonus_details
-
-    placement_details, temp_wall = pending_placement_details(board)
-    bonus_details = pending_bonus_details(temp_wall)
-    base = _board_to_dict(board)
-    base["pending_placements"] = [
-        {"row": d.row, "column": d.column, "placement_points": d.placement_points}
-        for d in placement_details
-    ]
-    base["pending_bonuses"] = [
-        {"bonus_type": d.bonus_type, "index": d.index, "bonus_points": d.bonus_points}
-        for d in bonus_details
-    ]
+def _player_to_dict_with_pending(player: Player) -> dict[str, Any]:
+    """Serialize a player including pending placement and bonus details."""
+    post_wall = _build_post_placement_wall(player)
+    placement_details = _pending_placement_details(player)
+    bonus_details = _pending_bonus_details(post_wall)
+    base = _player_to_dict(player)
+    base["pending_placements"] = placement_details
+    base["pending_bonuses"] = bonus_details
     return base
 
 
@@ -87,19 +171,12 @@ def _counts(tile_list: list[Tile]) -> dict[str, int]:
     return {t.name: tile_list.count(t) for t in colors}
 
 
+# ── GameRecord ─────────────────────────────────────────────────────────────
+
+
 @dataclass
 class GameRecord:
-    """The complete record of one Azul game.
-
-    Attributes:
-        game_id:      Unique identifier for this game.
-        timestamp:    ISO 8601 UTC timestamp of when recording began.
-        player_names: Display name for each player.
-        player_types: Agent type string for each player.
-        rounds:       One RoundRecord per round played.
-        final_scores: Score for each player after end-of-game bonuses.
-        winner:       Index of the winning player, or None for a draw.
-    """
+    """The complete record of one Azul game."""
 
     game_id: str
     timestamp: str
@@ -109,32 +186,10 @@ class GameRecord:
     final_scores: list[int] = field(default_factory=list)
     winner: int | None = None
 
-    # ── Reconstruction ─────────────────────────────────────────────────
-
     def reconstruct(
         self,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Replay all moves and return (computed_turns, final_boards).
-
-        computed_turns is a flat list — one entry per move across all rounds,
-        in order. Each entry reflects the state AFTER the move:
-
-            {
-                "round":        int,
-                "player_index": int,
-                "source":       int,
-                "tile":         str,
-                "destination":  int,
-                "boards":       [board_dict, ...],
-                "factories":    [[tile_name, ...], ...],
-                "center":       [tile_name, ...],
-                "bag_counts":   {color: count, ...},
-                "discard_counts": {color: count, ...},
-                "grand_totals": [int, ...],
-            }
-
-        final_boards is a list of board dicts after end-of-game scoring.
-        """
+        """Replay all moves and return (computed_turns, final_boards)."""
         game = Game()
         computed_turns: list[dict[str, Any]] = []
 
@@ -144,7 +199,6 @@ class GameRecord:
             ]
             game.setup_round(factories=explicit_factories)
 
-            # Insert initial state before any moves in the first round.
             if not computed_turns:
                 computed_turns.append(
                     {
@@ -154,15 +208,13 @@ class GameRecord:
                         "tile": None,
                         "destination": None,
                         "boards": [
-                            _board_to_dict_with_pending(p) for p in game.state.players
+                            _player_to_dict_with_pending(p) for p in game.players
                         ],
-                        "factories": [
-                            [t.name for t in f] for f in game.state.factories
-                        ],
-                        "center": [t.name for t in game.state.center],
-                        "bag_counts": _counts(game.state.bag),
-                        "discard_counts": _counts(game.state.discard),
-                        "grand_totals": [earned_score(p) for p in game.state.players],
+                        "factories": [[t.name for t in f] for f in game.factories],
+                        "center": [t.name for t in game.center],
+                        "bag_counts": _counts(game.bag),
+                        "discard_counts": _counts(game.discard),
+                        "grand_totals": [p.earned for p in game.players],
                         "is_initial": True,
                     }
                 )
@@ -176,7 +228,6 @@ class GameRecord:
                 game.make_move(move)
                 game.advance(skip_setup=True)
 
-                grand_totals = [earned_score(p) for p in game.state.players]
                 computed_turns.append(
                     {
                         "round": round_record.round,
@@ -185,24 +236,20 @@ class GameRecord:
                         "tile": move_record.tile,
                         "destination": move_record.destination,
                         "boards": [
-                            _board_to_dict_with_pending(p) for p in game.state.players
+                            _player_to_dict_with_pending(p) for p in game.players
                         ],
-                        "factories": [
-                            [t.name for t in f] for f in game.state.factories
-                        ],
-                        "center": [t.name for t in game.state.center],
-                        "bag_counts": _counts(game.state.bag),
-                        "discard_counts": _counts(game.state.discard),
-                        "grand_totals": grand_totals,
+                        "factories": [[t.name for t in f] for f in game.factories],
+                        "center": [t.name for t in game.center],
+                        "bag_counts": _counts(game.bag),
+                        "discard_counts": _counts(game.discard),
+                        "grand_totals": [p.earned for p in game.players],
                     }
                 )
 
         if game.is_game_over():
-            game.score_game()
-        final_boards = [_board_to_dict(p) for p in game.state.players]
+            game._score_game()
+        final_boards = [_player_to_dict(p) for p in game.players]
         return computed_turns, final_boards
-
-    # ── Serialization ──────────────────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
@@ -213,20 +260,20 @@ class GameRecord:
             "player_types": self.player_types,
             "rounds": [
                 {
-                    "round": round_record.round,
-                    "factories": round_record.factories,
-                    "center": round_record.center,
+                    "round": r.round,
+                    "factories": r.factories,
+                    "center": r.center,
                     "moves": [
                         {
-                            "player_index": move.player_index,
-                            "source": move.source,
-                            "tile": move.tile,
-                            "destination": move.destination,
+                            "player_index": m.player_index,
+                            "source": m.source,
+                            "tile": m.tile,
+                            "destination": m.destination,
                         }
-                        for move in round_record.moves
+                        for m in r.moves
                     ],
                 }
-                for round_record in self.rounds
+                for r in self.rounds
             ],
             "final_scores": self.final_scores,
             "winner": self.winner,
@@ -274,17 +321,7 @@ class GameRecord:
 
 
 class GameRecorder:
-    """Records an Azul game round by round for later replay and analysis.
-
-    Usage::
-
-        recorder = GameRecorder(player_names=["Alice", "Bob"])
-        recorder.start_round(game)          # call at start of each round
-        recorder.record_move(move, player_index=0)  # call before make_move
-        ...
-        recorder.finalize(game)
-        recorder.save("recordings/game.json")
-    """
+    """Records an Azul game round by round for later replay and analysis."""
 
     def __init__(
         self,
@@ -305,31 +342,17 @@ class GameRecorder:
         self._current_round: RoundRecord | None = None
 
     def start_round(self, game: Game) -> None:
-        """Capture the factory layout at the start of a round.
-
-        Must be called after setup_round() so the factories are filled.
-        """
+        """Capture the factory layout at the start of a round."""
         round_record = RoundRecord(
-            round=game.state.round,
-            factories=[
-                [tile.name for tile in factory] for factory in game.state.factories
-            ],
-            center=[tile.name for tile in game.state.center],
+            round=game.round,
+            factories=[[tile.name for tile in factory] for factory in game.factories],
+            center=[tile.name for tile in game.center],
         )
         self.record.rounds.append(round_record)
         self._current_round = round_record
 
-    def record_move(
-        self,
-        move: Move,
-        player_index: int = 0,
-    ) -> None:
-        """Record a move within the current round.
-
-        Must be called before game.make_move(move).
-
-        Raises RuntimeError if start_round has not been called yet.
-        """
+    def record_move(self, move: Move, player_index: int = 0) -> None:
+        """Record a move within the current round."""
         if self._current_round is None:
             raise RuntimeError("start_round must be called before record_move")
         self._current_round.moves.append(
@@ -342,8 +365,8 @@ class GameRecorder:
         )
 
     def finalize(self, game: Game) -> None:
-        """Record final scores and winner. Call after score_game()."""
-        self.record.final_scores = [p.score for p in game.state.players]
+        """Record final scores and winner."""
+        self.record.final_scores = [p.score for p in game.players]
         scores = self.record.final_scores
         best = max(scores)
         winners = [i for i, s in enumerate(scores) if s == best]

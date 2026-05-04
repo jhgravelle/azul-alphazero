@@ -88,42 +88,37 @@ class ZobristTable:
         h = 0
         num_colors = len(COLOR_TILES)
 
-        # Current player
-        h ^= self._current_player[game.state.current_player]
+        h ^= self._current_player[game.current_player_index]
 
-        # Pattern lines — both players
         for player_idx in range(PLAYERS):
-            board = game.state.players[player_idx]
+            player = game.players[player_idx]
             for row in range(BOARD_SIZE):
-                line = board.pattern_lines[row]
+                line = player.pattern_lines[row]
                 if line:
                     color_idx = COLOR_TILES.index(line[0])
                     count = len(line)
                 else:
-                    color_idx = num_colors  # empty sentinel
+                    color_idx = num_colors
                     count = 0
                 h ^= self._pattern[player_idx][row][color_idx][count]
 
-        # Floor lines — both players
         for player_idx in range(PLAYERS):
-            board = game.state.players[player_idx]
-            floor_count = min(len(board.floor_line), _MAX_FLOOR - 1)
+            player = game.players[player_idx]
+            floor_count = min(len(player.floor_line), _MAX_FLOOR - 1)
             h ^= self._floor[player_idx][floor_count]
 
-        # Factories
-        for f_idx, factory in enumerate(game.state.factories):
+        for f_idx, factory in enumerate(game.factories):
             for color_idx, color in enumerate(COLOR_TILES):
                 count = min(factory.count(color), _MAX_FACTORY_COUNT - 1)
                 if count > 0:
                     h ^= self._factory[f_idx][color_idx][count]
 
-        # Center
         for color_idx, color in enumerate(COLOR_TILES):
-            count = min(game.state.center.count(color), _MAX_CENTER_COUNT - 1)
+            count = min(game.center.count(color), _MAX_CENTER_COUNT - 1)
             if count > 0:
                 h ^= self._center[color_idx][count]
 
-        if Tile.FIRST_PLAYER in game.state.center:
+        if Tile.FIRST_PLAYER in game.center:
             h ^= self._center_fp
 
         return h

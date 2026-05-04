@@ -41,7 +41,7 @@ class GreedyAgent(Agent):
     @staticmethod
     def _color_candidates(game: Game, candidates: list[Move], color) -> list[Move]:
         """Return the moves this agent would sample from for a given color."""
-        player = game.state.players[game.state.current_player]
+        player = game.current_player
         color_moves = [m for m in candidates if m.tile == color]
         preferred = [
             m

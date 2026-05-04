@@ -12,7 +12,6 @@ from typing import Callable
 from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
 from engine.game import Game, FLOOR
-from engine.scoring import earned_score_unclamped
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -198,16 +197,12 @@ class Trainer:
 
 
 def _compute_game_scores(game: Game) -> list[int]:
-    """Return earned_score_unclamped minus clamped_points for each player.
+    """Return earned score for each player.
 
-    This is the correct scoring signal: unclamped so floor penalties below
-    zero carry meaning, minus clamped_points so score-clamping artifacts
-    don't inflate the target.
+    Uses player.earned (score + pending + penalty + bonus) so floor
+    penalties below zero carry meaningful signal even when score is clamped.
     """
-    return [
-        earned_score_unclamped(player) - player.clamped_points
-        for player in game.state.players
-    ]
+    return [player.earned for player in game.players]
 
 
 def collect_self_play(
@@ -222,8 +217,6 @@ def collect_self_play(
     """Play num_games games and push training examples into buf."""
     from engine.game import Game
 
-    # MCTS inference is faster on CPU than GPU for this model size.
-    # Create a CPU copy of the net if it's on another device.
     cpu = torch.device("cpu")
     if next(net.parameters()).device.type != "cpu":
         net_cpu = AzulNet()
@@ -255,16 +248,16 @@ def collect_self_play(
 
         history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
-        while not game.is_game_over():
-            current_player = game.state.current_player
+        while True:
+            if not game.legal_moves():
+                break
+            current_player = game.current_player_index
             is_az_turn = az_player is None or current_player == az_player
 
             spatial, flat = encode_state(game)
 
             if is_az_turn:
                 move, policy_pairs = az_agent.get_policy_targets(game)
-                # In warmup mode, avoid floor moves when non-floor moves exist.
-                # Untrained AZ learns to floor everything — this keeps games meaningful.
                 if opponent is not None and move.destination == FLOOR:
                     legal = game.legal_moves()
                     non_floor = [m for m in legal if m.destination != FLOOR]
@@ -294,13 +287,16 @@ def collect_self_play(
 
             history.append((current_player, spatial, flat, policy_vec))
 
-            prev_round = game.state.round
+            prev_round = game.round
             game.make_move(move)
             game.advance()
 
-            if game.state.round != prev_round:
+            if game.is_game_over():
+                break
+
+            if game.round != prev_round:
                 az_agent.reset_tree(game)
-            elif not game.is_game_over():
+            else:
                 az_agent.advance(move)
 
         scores = _compute_game_scores(game)
@@ -314,7 +310,6 @@ def collect_self_play(
         az_score = scores[az_player] if az_player is not None else max(scores)
         az_scores.append(az_score)
 
-        # mode = "warmup" if opponent is not None else "self-play"
         opponent_name = (
             type(opponent).__name__ if opponent is not None else "AlphaZeroAgent"
         )
@@ -604,13 +599,13 @@ def _play_heuristic_game(
     """
     history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
-    while not game.is_game_over():
-        current_player = game.state.current_player
+    while True:
+        if not game.legal_moves():
+            break
+        current_player = game.current_player_index
         spatial, flat = encode_state(game)
 
         agent = agents[current_player]
-        # choose_move must come first — for AlphaBeta it populates the
-        # internal score cache that policy_distribution reads from.
         move = agent.choose_move(game)
         policy_pairs = agent.policy_distribution(game)
         policy_vec = torch.zeros(MOVE_SPACE_SIZE)
@@ -620,6 +615,9 @@ def _play_heuristic_game(
         history.append((current_player, spatial, flat, policy_vec))
         game.make_move(move)
         game.advance()
+
+        if game.is_game_over():
+            break
 
     return history
 

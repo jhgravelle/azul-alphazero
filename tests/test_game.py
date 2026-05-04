@@ -1,5 +1,4 @@
 # tests/test_game.py
-
 """Tests for core game methods."""
 
 from engine.game import CENTER, FLOOR, Game, Move
@@ -19,51 +18,51 @@ from engine.constants import (
 def test_setup_round_places_first_player_token_in_center():
     game = Game()
     game.setup_round()
-    assert Tile.FIRST_PLAYER in game.state.center
+    assert Tile.FIRST_PLAYER in game.center
 
 
 def test_setup_round_fills_factories():
     game = Game()
     game.setup_round()
-    for factory in game.state.factories:
+    for factory in game.factories:
         assert len(factory) == TILES_PER_FACTORY
 
 
 def test_setup_round_draws_from_bag():
     game = Game()
-    initial_bag_size = len(game.state.bag)
+    initial_bag_size = len(game.bag)
     game.setup_round()
-    num_factories = len(game.state.factories)
+    num_factories = len(game.factories)
     expected_tiles_drawn = num_factories * TILES_PER_FACTORY
-    assert len(game.state.bag) == initial_bag_size - expected_tiles_drawn
+    assert len(game.bag) == initial_bag_size - expected_tiles_drawn
 
 
 def test_setup_round_uses_discard_when_bag_empty():
     game = Game()
-    game.state.discard = game.state.bag.copy()
-    game.state.bag.clear()
+    game.discard = game.bag.copy()
+    game.bag.clear()
     game.setup_round()
-    for factory in game.state.factories:
+    for factory in game.factories:
         assert len(factory) == TILES_PER_FACTORY
 
 
 def test_setup_round_partial_fill_when_no_tiles():
     game = Game()
-    game.state.bag.clear()
-    game.state.discard.clear()
+    game.bag.clear()
+    game.discard.clear()
     game.setup_round()
-    total_tiles = sum(len(f) for f in game.state.factories)
+    total_tiles = sum(len(f) for f in game.factories)
     assert total_tiles == 0
 
 
 def test_setup_round_fills_factories_in_order():
     game = Game()
-    game.state.bag = [Tile.BLUE] * (TILES_PER_FACTORY + 1)
-    game.state.discard.clear()
+    game.bag = [Tile.BLUE] * (TILES_PER_FACTORY + 1)
+    game.discard.clear()
     game.setup_round()
-    assert len(game.state.factories[0]) == TILES_PER_FACTORY
-    assert len(game.state.factories[1]) == 1
-    for factory in game.state.factories[2:]:
+    assert len(game.factories[0]) == TILES_PER_FACTORY
+    assert len(game.factories[1]) == 1
+    for factory in game.factories[2:]:
         assert len(factory) == 0
 
 
@@ -85,16 +84,16 @@ def test_legal_moves_only_contain_tiles_present_in_source():
     game.setup_round()
     for move in game.legal_moves():
         if move.source == CENTER:
-            source_tiles = game.state.center
+            source_tiles = game.center
         else:
-            source_tiles = game.state.factories[move.source]
+            source_tiles = game.factories[move.source]
         assert move.tile in source_tiles
 
 
 def test_legal_moves_empty_center_generates_no_center_moves():
     game = Game()
     game.setup_round()
-    game.state.center.clear()
+    game.center.clear()
     center_moves = [m for m in game.legal_moves() if m.source == CENTER]
     assert len(center_moves) == 0
 
@@ -102,8 +101,7 @@ def test_legal_moves_empty_center_generates_no_center_moves():
 def test_legal_moves_exclude_full_pattern_line():
     game = Game()
     game.setup_round()
-    player = game.state.players[game.state.current_player]
-    player.pattern_lines[0] = [Tile.BLUE]  # row 0 holds max 1 tile
+    game.current_player.pattern_lines[0] = [Tile.BLUE]
     moves = game.legal_moves()
     assert not [m for m in moves if m.destination == 0]
 
@@ -111,8 +109,7 @@ def test_legal_moves_exclude_full_pattern_line():
 def test_legal_moves_exclude_pattern_line_with_different_tile():
     game = Game()
     game.setup_round()
-    player = game.state.players[game.state.current_player]
-    player.pattern_lines[0].append(Tile.BLUE)
+    game.current_player.pattern_lines[0].append(Tile.BLUE)
     moves = game.legal_moves()
     assert not [m for m in moves if m.destination == 0 and m.tile != Tile.BLUE]
 
@@ -120,23 +117,21 @@ def test_legal_moves_exclude_pattern_line_with_different_tile():
 def test_legal_moves_exclude_pattern_line_where_wall_row_has_tile():
     game = Game()
     game.setup_round()
-    player = game.state.players[game.state.current_player]
-    player.wall[0][0] = Tile.BLUE
+    game.current_player.wall[0][0] = Tile.BLUE
     moves = game.legal_moves()
     assert not [m for m in moves if m.destination == 0 and m.tile == Tile.BLUE]
 
 
 def test_legal_moves_always_include_floor_move_for_every_available_tile():
-    # Block all pattern lines so FLOOR is the only valid destination.
-    # This confirms _is_valid_destination always returns True for FLOOR.
     game = Game()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.factories[0] = [Tile.BLUE] * TILES_PER_FACTORY
-    player = game.state.players[game.state.current_player]
-    player.pattern_lines[0] = [Tile.BLUE]  # full (capacity 1)
+    game.factories[0] = [Tile.BLUE] * TILES_PER_FACTORY
+    game.current_player.pattern_lines[0] = [Tile.BLUE]
     for row in range(1, BOARD_SIZE):
-        player.wall[row][COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]] = Tile.BLUE
+        game.current_player.wall[row][
+            COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]
+        ] = Tile.BLUE
     floor_moves = [
         m for m in game.legal_moves() if m.destination == FLOOR and m.tile == Tile.BLUE
     ]
@@ -146,11 +141,10 @@ def test_legal_moves_always_include_floor_move_for_every_available_tile():
 def test_legal_moves_allow_tile_when_different_tile_already_on_wall_row():
     game = Game()
     game.setup_round()
-    player = game.state.players[game.state.current_player]
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
         factory.extend([Tile.BLUE] * TILES_PER_FACTORY)
-    player.wall[0][1] = Tile.YELLOW  # Yellow in col 1 — should not block Blue
+    game.current_player.wall[0][1] = Tile.YELLOW
     moves = game.legal_moves()
     assert [m for m in moves if m.destination == 0 and m.tile == Tile.BLUE]
 
@@ -206,59 +200,53 @@ def test_column_for_tile_in_row_every_row_has_unique_columns():
 
 
 def _mid_round_game() -> Game:
-    """Return a game with one factory loaded and the rest empty.
-
-    The round will NOT end after a single make_move call, so player-advance
-    and tile-placement assertions stay clean.
-    """
+    """Return a game with one factory loaded and the rest empty."""
     game = Game()
-    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
     return game
 
 
 def test_make_move_removes_tile_from_factory():
     game = _mid_round_game()
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
-    assert Tile.BLUE not in game.state.factories[0]
+    assert Tile.BLUE not in game.factories[0]
 
 
 def test_make_move_leftover_factory_tiles_go_to_center():
     game = _mid_round_game()
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
-    assert Tile.RED in game.state.center
-    assert Tile.YELLOW in game.state.center
+    assert Tile.RED in game.center
+    assert Tile.YELLOW in game.center
 
 
 def test_make_move_taking_from_center_leaves_no_leftover():
     game = Game()
-    game.state.center = [Tile.BLUE, Tile.BLUE, Tile.RED]
-    game.state.factories[0] = [Tile.YELLOW] * TILES_PER_FACTORY  # keep round alive
+    game.center = [Tile.BLUE, Tile.BLUE, Tile.RED]
+    game.factories[0] = [Tile.YELLOW] * TILES_PER_FACTORY
     game.make_move(Move(source=CENTER, tile=Tile.BLUE, destination=0))
-    assert Tile.BLUE not in game.state.center
-    assert Tile.RED in game.state.center
+    assert Tile.BLUE not in game.center
+    assert Tile.RED in game.center
 
 
 def test_make_move_taking_from_center_moves_first_player_marker_to_floor():
     game = Game()
-    game.state.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE, Tile.RED]
-    game.state.factories[0] = [Tile.YELLOW] * TILES_PER_FACTORY  # keep round alive
+    game.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE, Tile.RED]
+    game.factories[0] = [Tile.YELLOW] * TILES_PER_FACTORY
     game.make_move(Move(source=CENTER, tile=Tile.BLUE, destination=0))
-    player = game.state.players[0]
-    assert Tile.FIRST_PLAYER in player.floor_line
-    assert Tile.FIRST_PLAYER not in game.state.center
+    assert Tile.FIRST_PLAYER in game.players[0].floor_line
+    assert Tile.FIRST_PLAYER not in game.center
 
 
 def test_make_move_places_tiles_on_pattern_line():
     game = _mid_round_game()
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=1))
-    assert game.state.players[0].pattern_lines[1].count(Tile.BLUE) == 2
+    assert game.players[0].pattern_lines[1].count(Tile.BLUE) == 2
 
 
 def test_make_move_overflow_tiles_go_to_floor():
     game = _mid_round_game()
-    # Row 0 holds max 1 tile — 2 blues means 1 overflows
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
-    player = game.state.players[0]
+    player = game.players[0]
     assert player.pattern_lines[0] == [Tile.BLUE]
     assert player.floor_line.count(Tile.BLUE) == 1
 
@@ -266,7 +254,7 @@ def test_make_move_overflow_tiles_go_to_floor():
 def test_make_move_to_floor_puts_all_tiles_on_floor():
     game = _mid_round_game()
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=FLOOR))
-    player = game.state.players[0]
+    player = game.players[0]
     assert player.floor_line.count(Tile.BLUE) == 2
     assert player.pattern_lines[0] == []
 
@@ -279,100 +267,109 @@ def test_make_move_to_floor_puts_all_tiles_on_floor():
 
 def test_full_pattern_line_moves_tile_to_wall():
     game = Game()
-    game.state.players[0].pattern_lines[0] = [Tile.BLUE]
-    game.score_round()
-    assert game.state.players[0].wall[0][0] == Tile.BLUE
+    player = game.players[0]
+    player.place(0, [Tile.BLUE])
+    game._score_round()
+    assert player.wall[0][0] == Tile.BLUE
 
 
 def test_completed_line_remaining_tiles_go_to_discard():
     game = Game()
-    game.state.players[0].pattern_lines[1] = [Tile.YELLOW, Tile.YELLOW]
-    game.score_round()
-    assert game.state.discard.count(Tile.YELLOW) == 1
+    player = game.players[0]
+    player.place(1, [Tile.YELLOW, Tile.YELLOW])
+    game._score_round()
+    assert game.discard.count(Tile.YELLOW) == 1
 
 
 def test_incomplete_pattern_line_is_unchanged():
     game = Game()
-    game.state.players[0].pattern_lines[2] = [Tile.RED]
-    game.score_round()
-    assert game.state.players[0].pattern_lines[2] == [Tile.RED]
-    assert game.state.players[0].wall[2][2] is None
+    player = game.players[0]
+    player.place(2, [Tile.RED])
+    game._score_round()
+    assert player.pattern_lines[2] == [Tile.RED]
+    assert player.wall[2][2] is None
 
 
 def test_tile_with_no_neighbours_scores_one_point():
     game = Game()
-    game.state.players[0].pattern_lines[0] = [Tile.BLUE]
-    game.score_round()
-    assert game.state.players[0].score == 1
+    player = game.players[0]
+    player.place(0, [Tile.BLUE])
+    game._score_round()
+    assert player.score == 1
 
 
 def test_tile_with_horizontal_neighbours_scores_run_length():
     game = Game()
-    player = game.state.players[0]
+    player = game.players[0]
     player.wall[0][1] = Tile.YELLOW
-    player.pattern_lines[0] = [Tile.BLUE]
-    game.score_round()
+    player.place(0, [Tile.BLUE])
+    game._score_round()
     assert player.score == 2
 
 
 def test_tile_with_vertical_neighbours_scores_run_length():
     game = Game()
-    player = game.state.players[0]
+    player = game.players[0]
     player.wall[1][0] = Tile.WHITE
-    player.pattern_lines[0] = [Tile.BLUE]
-    game.score_round()
+    player.place(0, [Tile.BLUE])
+    game._score_round()
     assert player.score == 2
 
 
 def test_tile_with_both_neighbours_scores_combined_run_lengths():
     game = Game()
-    player = game.state.players[0]
+    player = game.players[0]
     player.wall[0][1] = Tile.YELLOW
     player.wall[1][0] = Tile.WHITE
-    player.pattern_lines[0] = [Tile.BLUE]
-    game.score_round()
+    player.place(0, [Tile.BLUE])
+    game._score_round()
     assert player.score == 4
 
 
 def test_floor_penalties_are_applied():
     game = Game()
-    player = game.state.players[0]
+    player = game.players[0]
     player.score = 10
     player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -1, -1, -2 = -4
-    game.score_round()
+    player._update_penalty()
+    game._score_round()
     assert player.score == 6
 
 
 def test_score_does_not_go_below_zero():
     game = Game()
-    player = game.state.players[0]
+    player = game.players[0]
     player.score = 1
     player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]
-    game.score_round()
+    player._update_penalty()
+    game._score_round()
     assert player.score == 0
 
 
 def test_floor_line_is_cleared_after_scoring():
     game = Game()
-    game.state.players[0].floor_line = [Tile.BLUE, Tile.RED]
-    game.score_round()
-    assert game.state.players[0].floor_line == []
+    game.players[0].floor_line = [Tile.BLUE, Tile.RED]
+    game.players[0]._update_penalty()
+    game._score_round()
+    assert game.players[0].floor_line == []
 
 
-def test_score_floor_does_not_send_first_player_tile_to_discard():
+def test_floor_tiles_except_first_player_go_to_discard():
     game = Game()
-    player = game.state.players[0]
+    player = game.players[0]
     player.floor_line = [Tile.FIRST_PLAYER, Tile.BLUE]
-    game._score_floor(player)
-    assert Tile.FIRST_PLAYER not in game.state.discard
-    assert Tile.BLUE in game.state.discard
+    player._update_penalty()
+    game._score_round()
+    assert Tile.FIRST_PLAYER not in game.discard
+    assert Tile.BLUE in game.discard
 
 
 def test_player_with_first_player_tile_starts_next_round():
     game = Game()
-    game.state.players[1].floor_line = [Tile.FIRST_PLAYER]
-    game.score_round()
-    assert game.state.current_player == 1
+    game.players[1].floor_line = [Tile.FIRST_PLAYER]
+    game.players[1]._update_penalty()
+    game._score_round()
+    assert game.current_player_index == 1
 
 
 # endregion
@@ -387,13 +384,13 @@ def test_game_is_not_over_with_empty_walls():
 
 def test_game_is_not_over_with_incomplete_row():
     game = Game()
-    game.state.players[0].wall[0] = [Tile.BLUE, Tile.YELLOW, None, None, None]
+    game.players[0].wall[0] = [Tile.BLUE, Tile.YELLOW, None, None, None]
     assert game.is_game_over() is False
 
 
 def test_game_is_over_when_one_player_completes_a_row():
     game = Game()
-    game.state.players[0].wall[0] = [
+    game.players[0].wall[0] = [
         Tile.BLUE,
         Tile.YELLOW,
         Tile.RED,
@@ -405,7 +402,7 @@ def test_game_is_over_when_one_player_completes_a_row():
 
 def test_game_is_over_when_second_player_completes_a_row():
     game = Game()
-    game.state.players[1].wall[2] = [
+    game.players[1].wall[2] = [
         Tile.BLACK,
         Tile.WHITE,
         Tile.BLUE,
@@ -423,117 +420,107 @@ def test_game_is_over_when_second_player_completes_a_row():
 
 def test_complete_row_scores_two_points():
     game = Game()
-    game.state.players[0].wall[0] = [
+    game.players[0].wall[0] = [
         Tile.BLUE,
         Tile.YELLOW,
         Tile.RED,
         Tile.BLACK,
         Tile.WHITE,
     ]
-    game.score_game()
-    assert game.state.players[0].score == 2
+    game.players[0]._update_bonus()
+    game._score_game()
+    assert game.players[0].score == 2
 
 
 def test_two_complete_rows_scores_four_points():
     game = Game()
-    p = game.state.players[0]
+    p = game.players[0]
     p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
     p.wall[1] = [Tile.WHITE, Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK]
-    game.score_game()
+    p._update_bonus()
+    game._score_game()
     assert p.score == 4
 
 
 def test_complete_column_scores_seven_points():
     game = Game()
-    p = game.state.players[0]
+    p = game.players[0]
     for row in range(BOARD_SIZE):
         p.wall[row][0] = WALL_PATTERN[row][0]
-    game.score_game()
+    p._update_bonus()
+    game._score_game()
     assert p.score == 7
 
 
 def test_complete_tile_color_scores_ten_points():
     game = Game()
-    p = game.state.players[0]
+    p = game.players[0]
     for row in range(BOARD_SIZE):
         p.wall[row][COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]] = Tile.BLUE
-    game.score_game()
+    p._update_bonus()
+    game._score_game()
     assert p.score == 10
 
 
 def test_score_game_combines_all_bonuses():
     game = Game()
-    p = game.state.players[0]
+    p = game.players[0]
     p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
     for row in range(BOARD_SIZE):
         p.wall[row][0] = WALL_PATTERN[row][0]
     for row in range(BOARD_SIZE):
         p.wall[row][COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]] = Tile.BLUE
-    game.score_game()
+    p._update_bonus()
+    game._score_game()
     assert p.score == 2 + 7 + 10
 
 
 def test_score_game_applies_to_all_players():
     game = Game()
-    for p in game.state.players:
+    for p in game.players:
         p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
-    game.score_game()
-    for p in game.state.players:
+        p._update_bonus()
+    game._score_game()
+    for p in game.players:
         assert p.score == 2
 
 
 def test_score_game_bonuses_applied_on_game_over():
-    """End-of-game wall bonuses are applied automatically when the game ends.
-
-    Player 0 has 4 tiles already in wall row 0 and a full pattern line that
-    will place the 5th tile, completing the row and triggering game over.
-    After the move resolves, player 0's score must include the +BONUS_ROW
-    bonus on top of the placement score.
-    """
     game = Game()
     game.setup_round()
-    player = game.state.players[0]
+    player = game.players[0]
 
-    # Fill wall row 0 columns 1-4 — placing BLUE at column 0 completes the row.
     for column in range(1, BOARD_SIZE):
         player.wall[0][column] = WALL_PATTERN[0][column]
 
-    # One BLUE tile in factory 0 — this is the only remaining source tile.
-    # BLUE goes to column 0 of row 0 per WALL_PATTERN.
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.factories[0] = [Tile.BLUE]
-    game.state.current_player = 0
+    game.center.clear()
+    game.factories[0] = [Tile.BLUE]
+    game.current_player_index = 0
 
-    # Make the move — takes BLUE into pattern line 0 (capacity 1, so it's full).
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
     game.advance()
 
-    # score_round fires (sources empty), places BLUE on wall, then
-    # is_game_over returns True (row 0 complete), then score_game fires.
     assert game.is_game_over()
     assert player.score >= BONUS_ROW
 
 
 def test_score_game_not_applied_mid_game():
-    """Wall bonuses are not applied while the game is still in progress."""
     game = Game()
     game.setup_round()
-    player = game.state.players[0]
+    player = game.players[0]
 
-    # Give player 0 a nearly complete wall row but don't finish it.
     for column in range(1, BOARD_SIZE):
         player.wall[0][column] = WALL_PATTERN[0][column]
 
-    # Score at this point should be 0 — no bonuses yet.
     assert player.score == 0
 
 
 # endregion
 
 
-# ── Game.clone ─────────────────────────────────────────────────────────────
+# region clone -------------------------------------------------------------
 
 
 def test_clone_returns_different_object():
@@ -546,78 +533,78 @@ def test_clone_state_is_equal():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    assert clone.state.current_player == game.state.current_player
-    assert clone.state.round == game.state.round
-    assert clone.state.center == game.state.center
-    assert clone.state.bag == game.state.bag
-    assert clone.state.discard == game.state.discard
+    assert clone.current_player_index == game.current_player_index
+    assert clone.round == game.round
+    assert clone.center == game.center
+    assert clone.bag == game.bag
+    assert clone.discard == game.discard
 
 
 def test_clone_factories_equal_but_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    assert clone.state.factories == game.state.factories
-    clone.state.factories[0].clear()
-    assert game.state.factories[0] != clone.state.factories[0]
+    assert clone.factories == game.factories
+    clone.factories[0].clear()
+    assert game.factories[0] != clone.factories[0]
 
 
 def test_clone_center_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    clone.state.center.append(Tile.BLUE)
-    assert Tile.BLUE not in game.state.center
+    clone.center.append(Tile.BLUE)
+    assert Tile.BLUE not in game.center
 
 
 def test_clone_bag_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    original_len = len(game.state.bag)
-    clone.state.bag.pop()
-    assert len(game.state.bag) == original_len
+    original_len = len(game.bag)
+    clone.bag.pop()
+    assert len(game.bag) == original_len
 
 
 def test_clone_discard_independent():
     game = Game()
     game.setup_round()
-    game.state.discard = [Tile.RED, Tile.BLUE]
+    game.discard = [Tile.RED, Tile.BLUE]
     clone = game.clone()
-    clone.state.discard.append(Tile.BLACK)
-    assert len(game.state.discard) == 2
+    clone.discard.append(Tile.BLACK)
+    assert len(game.discard) == 2
 
 
 def test_clone_player_score_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    clone.state.players[0].score = 99
-    assert game.state.players[0].score != 99
+    clone.players[0].score = 99
+    assert game.players[0].score != 99
 
 
 def test_clone_player_wall_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    clone.state.players[0].wall[0][0] = Tile.BLUE
-    assert game.state.players[0].wall[0][0] is None
+    clone.players[0].wall[0][0] = Tile.BLUE
+    assert game.players[0].wall[0][0] is None
 
 
 def test_clone_player_pattern_lines_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    clone.state.players[0].pattern_lines[0].append(Tile.BLUE)
-    assert game.state.players[0].pattern_lines[0] == []
+    clone.players[0].pattern_lines[0].append(Tile.BLUE)
+    assert game.players[0].pattern_lines[0] == []
 
 
 def test_clone_player_floor_line_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    clone.state.players[0].floor_line.append(Tile.RED)
-    assert game.state.players[0].floor_line == []
+    clone.players[0].floor_line.append(Tile.RED)
+    assert game.players[0].floor_line == []
 
 
 def test_clone_make_move_does_not_affect_original():
@@ -626,44 +613,43 @@ def test_clone_make_move_does_not_affect_original():
     clone = game.clone()
     move = clone.legal_moves()[0]
     clone.make_move(move)
-    # Original game state should be unchanged
-    assert game.state.current_player == 0
-    assert game.state.factories == game.clone().state.factories
+    assert game.current_player_index == 0
+    assert game.factories == game.clone().factories
+
+
+# endregion
 
 
 # region advance -----------------------------------------------------------
 
 
 def test_advance_sets_up_next_round_when_round_ends():
-    """advance() must refill factories after the round ends (game not over)."""
     game = Game()
     game.setup_round()
-
     while not game.is_round_over():
         game.make_move(game.legal_moves()[0])
-
     game.advance()
-
-    total_tiles = sum(len(f) for f in game.state.factories)
+    total_tiles = sum(len(f) for f in game.factories)
     assert total_tiles > 0
 
 
 def test_advance_rotates_player():
     game = _mid_round_game()
-    game.state.factories[1] = [Tile.RED] * TILES_PER_FACTORY
+    game.factories[1] = [Tile.RED] * TILES_PER_FACTORY
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=1))
     game.advance()
-    assert game.state.current_player == 1
+    assert game.current_player_index == 1
 
 
 def test_advance_scores_round_when_round_ends():
     game = Game()
     game.setup_round()
-    player = game.state.players[0]
+    player = game.players[0]
     player.pattern_lines[0] = [Tile.BLUE]
-    for factory in game.state.factories:
+    player._update_pending()
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
+    game.center.clear()
     game.advance()
     assert player.wall[0][0] == Tile.BLUE
 
@@ -671,40 +657,36 @@ def test_advance_scores_round_when_round_ends():
 def test_advance_skips_setup_when_skip_setup_true():
     game = Game()
     game.setup_round()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-
+    game.center.clear()
     assert game.advance(skip_setup=True) is True
-    total = sum(len(f) for f in game.state.factories)
+    total = sum(len(f) for f in game.factories)
     assert total == 0
 
 
 def test_advance_calls_setup_round_when_skip_setup_false():
     game = Game()
     game.setup_round()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-
+    game.center.clear()
     assert game.advance(skip_setup=False) is True
-    total = sum(len(f) for f in game.state.factories)
+    total = sum(len(f) for f in game.factories)
     assert total > 0
 
 
 def test_advance_does_not_call_on_round_setup_when_game_ends():
     game = Game()
     game.setup_round()
-    player = game.state.players[0]
+    player = game.players[0]
     for column in range(1, BOARD_SIZE):
         player.wall[0][column] = WALL_PATTERN[0][column]
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.factories[0] = [Tile.BLUE]
+    game.center.clear()
+    game.factories[0] = [Tile.BLUE]
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
-
-    # skip_setup=True should have no effect when game is over
     assert game.advance(skip_setup=True) is True
     assert game.is_game_over()
 
@@ -712,13 +694,13 @@ def test_advance_does_not_call_on_round_setup_when_game_ends():
 def test_advance_scores_game_when_game_ends():
     game = Game()
     game.setup_round()
-    player = game.state.players[0]
+    player = game.players[0]
     for column in range(1, BOARD_SIZE):
         player.wall[0][column] = WALL_PATTERN[0][column]
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.factories[0] = [Tile.BLUE]
+    game.center.clear()
+    game.factories[0] = [Tile.BLUE]
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
     game.advance()
     assert game.is_game_over()
@@ -727,22 +709,21 @@ def test_advance_scores_game_when_game_ends():
 
 def test_advance_does_nothing_mid_round():
     game = _mid_round_game()
-    game.state.factories[1] = [Tile.RED] * TILES_PER_FACTORY
+    game.factories[1] = [Tile.RED] * TILES_PER_FACTORY
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=1))
-    round_before = game.state.round
+    round_before = game.round
     result = game.advance()
     assert result is False
-    assert game.state.round == round_before
+    assert game.round == round_before
 
 
 # endregion
 
 
-def test_setup_round_with_explicit_factories():
-    """setup_round should load the provided tile lists instead of drawing
-    from the bag."""
-    from engine.constants import Tile
+# region setup_round with explicit factories -------------------------------
 
+
+def test_setup_round_with_explicit_factories():
     game = Game()
     explicit = [
         [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW],
@@ -751,126 +732,146 @@ def test_setup_round_with_explicit_factories():
         [Tile.YELLOW, Tile.YELLOW, Tile.BLUE, Tile.BLACK],
         [Tile.WHITE, Tile.RED, Tile.YELLOW, Tile.BLACK],
     ]
-    bag_before = len(game.state.bag)
+    bag_before = len(game.bag)
     game.setup_round(factories=explicit)
-
-    assert game.state.factories == explicit
-    # Bag must be untouched -- no random draw occurred.
-    assert len(game.state.bag) == bag_before
+    assert game.factories == explicit
+    assert len(game.bag) == bag_before
 
 
 def test_setup_round_with_none_draws_randomly():
-    """setup_round() with no argument should draw from the bag as before."""
     game = Game()
-    bag_before = len(game.state.bag)
+    bag_before = len(game.bag)
     game.setup_round()
-    total_drawn = sum(len(f) for f in game.state.factories)
-    assert len(game.state.bag) == bag_before - total_drawn
+    total_drawn = sum(len(f) for f in game.factories)
+    assert len(game.bag) == bag_before - total_drawn
 
 
 def test_setup_round_increments_round_number():
     game = Game()
-    assert game.state.round == 0
+    assert game.round == 0
     game.setup_round()
-    assert game.state.round == 1
+    assert game.round == 1
     game.setup_round()
-    assert game.state.round == 2
+    assert game.round == 2
 
 
 def test_setup_round_places_first_player_marker_in_center():
     game = Game()
     game.setup_round()
-    assert Tile.FIRST_PLAYER in game.state.center
+    assert Tile.FIRST_PLAYER in game.center
 
 
 # endregion
-# region clamped_points ----------------------------------------------------
 
 
-def test_clamped_points_initialized_to_zero():
+# region _take_from_source -------------------------------------------------
+
+
+def test_take_from_source_returns_chosen_tiles():
     game = Game()
-    assert game.state.players[0].clamped_points == 0
-    assert game.state.players[1].clamped_points == 0
+    game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    chosen = game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert chosen.count(Tile.BLUE) == 2
 
 
-def test_clamped_points_zero_when_floor_does_not_cause_clamp():
+def test_take_from_source_removes_chosen_from_factory():
     game = Game()
-    player = game.state.players[0]
-    player.score = 10
-    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4
-    game._score_floor(player)
-    assert player.score == 6
-    assert player.clamped_points == 0
+    game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert Tile.BLUE not in game.factories[0]
 
 
-def test_clamped_points_records_amount_lost_to_clamp():
+def test_take_from_source_sends_leftovers_to_center():
     game = Game()
-    player = game.state.players[0]
-    player.score = 1
-    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4
-    game._score_floor(player)
-    assert player.score == 0  # clamped
-    assert player.clamped_points == 3  # 3 points lost to clamp
+    game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert Tile.RED in game.center
+    assert Tile.YELLOW in game.center
 
 
-def test_clamped_points_accumulates_across_rounds():
+def test_take_from_source_clears_factory():
     game = Game()
-    player = game.state.players[0]
-    player.score = 1
-    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4, clamps 3
-    game._score_floor(player)
-    assert player.clamped_points == 3
-
-    player.score = 2
-    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4, clamps 2
-    game._score_floor(player)
-    assert player.clamped_points == 5  # 3 + 2
+    game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert game.factories[0] == []
 
 
-def test_full_floor_line_clamped_points():
+def test_take_from_source_from_center_leaves_no_leftover():
     game = Game()
-    player = game.state.players[0]
-    # Full floor: -1-1-2-2-2-3-3 = -14, score starts at 0
-    player.floor_line = [
-        Tile.BLUE,
-        Tile.RED,
-        Tile.YELLOW,
-        Tile.BLACK,
-        Tile.WHITE,
-        Tile.BLUE,
-        Tile.RED,
-    ]
-    game._score_floor(player)
-    assert player.score == 0
-    assert player.clamped_points == 14
+    game.center = [Tile.BLUE, Tile.BLUE, Tile.RED]
+    game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
+    assert Tile.BLUE not in game.center
+    assert Tile.RED in game.center
 
 
-def test_raw_score_is_score_plus_clamped_points():
+def test_take_from_source_includes_first_player_when_present():
     game = Game()
-    player = game.state.players[0]
-    player.score = 1
-    player.floor_line = [Tile.BLUE, Tile.RED, Tile.YELLOW]  # -4
-    game._score_floor(player)
-    raw = player.score - player.clamped_points
-    assert raw == -3  # true unclamped score: 1 - 4
+    game.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE]
+    chosen = game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
+    assert Tile.FIRST_PLAYER in chosen
 
 
-def test_clone_preserves_clamped_points():
+def test_take_from_source_removes_first_player_from_center():
     game = Game()
-    game.state.players[0].clamped_points = 7
-    clone = game.clone()
-    assert clone.state.players[0].clamped_points == 7
+    game.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE]
+    game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
+    assert Tile.FIRST_PLAYER not in game.center
 
 
-def test_clone_clamped_points_is_independent():
+def test_take_from_source_does_not_send_first_player_to_center():
     game = Game()
-    game.state.players[0].clamped_points = 7
-    clone = game.clone()
-    clone.state.players[0].clamped_points = 99
-    assert game.state.players[0].clamped_points == 7
+    game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    game.center = [Tile.FIRST_PLAYER]
+    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
+    assert game.center.count(Tile.FIRST_PLAYER) == 1
 
 
 # endregion
+
+
+# region player.place (replaces _place_tiles) ------------------------------
+
+
+def test_place_puts_chosen_on_pattern_line():
+    game = Game()
+    player = game.players[0]
+    player.place(1, [Tile.BLUE, Tile.BLUE])
+    assert player.pattern_lines[1].count(Tile.BLUE) == 2
+
+
+def test_place_overflow_goes_to_floor():
+    game = Game()
+    player = game.players[0]
+    player.place(0, [Tile.BLUE, Tile.BLUE])
+    assert player.pattern_lines[0] == [Tile.BLUE]
+    assert player.floor_line.count(Tile.BLUE) == 1
+
+
+def test_place_to_floor_destination_puts_all_on_floor():
+    game = Game()
+    player = game.players[0]
+    player.place(FLOOR, [Tile.BLUE, Tile.BLUE])
+    assert player.floor_line.count(Tile.BLUE) == 2
+    assert player.pattern_lines[0] == []
+
+
+def test_place_puts_first_player_on_floor():
+    game = Game()
+    player = game.players[0]
+    player.place(1, [Tile.BLUE, Tile.BLUE, Tile.FIRST_PLAYER])
+    assert Tile.FIRST_PLAYER in player.floor_line
+
+
+def test_place_first_player_does_not_go_on_pattern_line():
+    game = Game()
+    player = game.players[0]
+    player.place(1, [Tile.BLUE, Tile.BLUE, Tile.FIRST_PLAYER])
+    assert Tile.FIRST_PLAYER not in player.pattern_lines[1]
+
+
+# endregion
+
+
 # region is_round_over -----------------------------------------------------
 
 
@@ -883,291 +884,101 @@ def test_is_round_over_false_when_factories_have_tiles():
 def test_is_round_over_true_when_all_sources_empty():
     game = Game()
     game.setup_round()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
+    game.center.clear()
     assert game.is_round_over() is True
 
 
 def test_is_round_over_true_when_center_has_only_first_player():
     game = Game()
     game.setup_round()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.center.append(Tile.FIRST_PLAYER)
+    game.center.clear()
+    game.center.append(Tile.FIRST_PLAYER)
     assert game.is_round_over() is True
 
 
 def test_is_round_over_false_when_center_has_color_tile():
     game = Game()
     game.setup_round()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.center.append(Tile.FIRST_PLAYER)
-    game.state.center.append(Tile.BLUE)
+    game.center.clear()
+    game.center.append(Tile.FIRST_PLAYER)
+    game.center.append(Tile.BLUE)
     assert game.is_round_over() is False
 
 
 # endregion
-# region _take_from_source -------------------------------------------------
 
 
-def test_take_from_source_returns_chosen_tiles():
-    game = Game()
-    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
-    chosen = game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
-    assert chosen.count(Tile.BLUE) == 2
-
-
-def test_take_from_source_removes_chosen_from_factory():
-    game = Game()
-    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
-    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
-    assert Tile.BLUE not in game.state.factories[0]
-
-
-def test_take_from_source_sends_leftovers_to_center():
-    game = Game()
-    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
-    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
-    assert Tile.RED in game.state.center
-    assert Tile.YELLOW in game.state.center
-
-
-def test_take_from_source_clears_factory():
-    game = Game()
-    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
-    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
-    assert game.state.factories[0] == []
-
-
-def test_take_from_source_from_center_leaves_no_leftover():
-    game = Game()
-    game.state.center = [Tile.BLUE, Tile.BLUE, Tile.RED]
-    game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
-    assert Tile.BLUE not in game.state.center
-    assert Tile.RED in game.state.center
-
-
-def test_take_from_source_includes_first_player_when_present():
-    game = Game()
-    game.state.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE]
-    chosen = game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
-    assert Tile.FIRST_PLAYER in chosen
-
-
-def test_take_from_source_removes_first_player_from_center():
-    game = Game()
-    game.state.center = [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE]
-    game._take_from_source(Move(source=CENTER, tile=Tile.BLUE, destination=0))
-    assert Tile.FIRST_PLAYER not in game.state.center
-
-
-def test_take_from_source_does_not_send_first_player_to_center():
-    game = Game()
-    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
-    game.state.center = [Tile.FIRST_PLAYER]
-    game._take_from_source(Move(source=0, tile=Tile.BLUE, destination=0))
-    assert game.state.center.count(Tile.FIRST_PLAYER) == 1
-
-
-# endregion
-
-
-# region _place_tiles -------------------------------------------------------
-
-
-def test_place_tiles_puts_chosen_on_pattern_line():
-    game = Game()
-    player = game.state.players[0]
-    game._place_tiles(
-        player, Move(source=0, tile=Tile.BLUE, destination=1), [Tile.BLUE, Tile.BLUE]
-    )
-    assert player.pattern_lines[1].count(Tile.BLUE) == 2
-
-
-def test_place_tiles_overflow_goes_to_floor():
-    game = Game()
-    player = game.state.players[0]
-    # Row 0 holds max 1 tile — 2 blues means 1 overflows
-    game._place_tiles(
-        player, Move(source=0, tile=Tile.BLUE, destination=0), [Tile.BLUE, Tile.BLUE]
-    )
-    assert player.pattern_lines[0] == [Tile.BLUE]
-    assert player.floor_line.count(Tile.BLUE) == 1
-
-
-def test_place_tiles_to_floor_destination_puts_all_on_floor():
-    game = Game()
-    player = game.state.players[0]
-    game._place_tiles(
-        player,
-        Move(source=0, tile=Tile.BLUE, destination=FLOOR),
-        [Tile.BLUE, Tile.BLUE],
-    )
-    assert player.floor_line.count(Tile.BLUE) == 2
-    assert player.pattern_lines[0] == []
-
-
-def test_place_tiles_puts_first_player_on_floor():
-    game = Game()
-    player = game.state.players[0]
-    game._place_tiles(
-        player,
-        Move(source=CENTER, tile=Tile.BLUE, destination=1),
-        [Tile.BLUE, Tile.BLUE, Tile.FIRST_PLAYER],
-    )
-    assert Tile.FIRST_PLAYER in player.floor_line
-
-
-def test_place_tiles_first_player_does_not_go_on_pattern_line():
-    game = Game()
-    player = game.state.players[0]
-    game._place_tiles(
-        player,
-        Move(source=CENTER, tile=Tile.BLUE, destination=1),
-        [Tile.BLUE, Tile.BLUE, Tile.FIRST_PLAYER],
-    )
-    assert Tile.FIRST_PLAYER not in player.pattern_lines[1]
-
-
-# endregion
-# region GameState.clone ---------------------------------------------------
-
-
-def test_game_state_clone_returns_different_object():
-    game = Game()
-    game.setup_round()
-    assert game.state.clone() is not game.state
-
-
-def test_game_state_clone_scalar_fields_match():
-    game = Game()
-    game.setup_round()
-    game.state.current_player = 1
-    game.state.round = 3
-    clone = game.state.clone()
-    assert clone.current_player == 1
-    assert clone.round == 3
-
-
-def test_game_state_clone_factories_equal_but_independent():
-    game = Game()
-    game.setup_round()
-    clone = game.state.clone()
-    assert clone.factories == game.state.factories
-    clone.factories[0].clear()
-    assert game.state.factories[0] != clone.factories[0]
-
-
-def test_game_state_clone_center_independent():
-    game = Game()
-    game.setup_round()
-    clone = game.state.clone()
-    clone.center.append(Tile.BLUE)
-    assert Tile.BLUE not in game.state.center
-
-
-def test_game_state_clone_bag_independent():
-    game = Game()
-    game.setup_round()
-    clone = game.state.clone()
-    original_len = len(game.state.bag)
-    clone.bag.pop()
-    assert len(game.state.bag) == original_len
-
-
-def test_game_state_clone_discard_independent():
-    game = Game()
-    game.state.discard = [Tile.RED, Tile.BLUE]
-    clone = game.state.clone()
-    clone.discard.append(Tile.BLACK)
-    assert len(game.state.discard) == 2
-
-
-def test_game_state_clone_players_independent():
-    game = Game()
-    game.setup_round()
-    clone = game.state.clone()
-    clone.players[0].score = 99
-    assert game.state.players[0].score != 99
-
-
-# endregion
+# region seeded RNG --------------------------------------------------------
 
 
 def test_game_with_same_seed_produces_identical_factories():
-    """Two games with the same seed see identical factory draws."""
     game_a = Game(seed=42)
     game_a.setup_round()
-    factories_a = [list(f) for f in game_a.state.factories]
+    factories_a = [list(f) for f in game_a.factories]
 
     game_b = Game(seed=42)
     game_b.setup_round()
-    factories_b = [list(f) for f in game_b.state.factories]
+    factories_b = [list(f) for f in game_b.factories]
 
     assert factories_a == factories_b
 
 
 def test_game_with_different_seeds_likely_produces_different_factories():
-    """Two games with different seeds very likely see different factories."""
     game_a = Game(seed=1)
     game_a.setup_round()
-    factories_a = [list(f) for f in game_a.state.factories]
+    factories_a = [list(f) for f in game_a.factories]
 
     game_b = Game(seed=2)
     game_b.setup_round()
-    factories_b = [list(f) for f in game_b.state.factories]
+    factories_b = [list(f) for f in game_b.factories]
 
-    # Not guaranteed but overwhelmingly likely with 100 tiles
     assert factories_a != factories_b
 
 
 def test_game_seed_covers_multiple_rounds():
-    """Same seed produces identical factories across multiple rounds."""
-
-    def play_one_round_and_score(
-        seed: int,
-    ) -> tuple[list[list[Tile]], list[list[Tile]]]:
+    def play_one_round(seed: int):
         game = Game(seed=seed)
         game.setup_round()
-        factories_round_1 = [list(f) for f in game.state.factories]
-        # Play minimal moves to end the round
+        factories_round_1 = [list(f) for f in game.factories]
         while not game.is_round_over():
             move = game.legal_moves()[0]
             game.make_move(move)
             game.advance(skip_setup=True)
         game.setup_round()
-        factories_round_2 = [list(f) for f in game.state.factories]
+        factories_round_2 = [list(f) for f in game.factories]
         return factories_round_1, factories_round_2
 
-    factories_1a, factories_2a = play_one_round_and_score(99)
-    factories_1b, factories_2b = play_one_round_and_score(99)
+    factories_1a, factories_2a = play_one_round(99)
+    factories_1b, factories_2b = play_one_round(99)
 
     assert factories_1a == factories_1b
     assert factories_2a == factories_2b
 
 
 def test_game_without_seed_is_not_deterministic():
-    """Games without a seed produce different results (
-    with overwhelming probability)."""
     game_a = Game()
     game_a.setup_round()
-    factories_a = [list(f) for f in game_a.state.factories]
+    factories_a = [list(f) for f in game_a.factories]
 
     game_b = Game()
     game_b.setup_round()
-    factories_b = [list(f) for f in game_b.state.factories]
+    factories_b = [list(f) for f in game_b.factories]
 
-    # Run 5 times to make flakiness astronomically unlikely
     different = factories_a != factories_b
     if not different:
         for _ in range(4):
             g = Game()
             g.setup_round()
-            if [list(f) for f in g.state.factories] != factories_a:
+            if [list(f) for f in g.factories] != factories_a:
                 different = True
                 break
     assert different
+
+
+# endregion

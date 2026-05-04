@@ -1,7 +1,6 @@
 # agents/alphabeta.py
 import math
 from engine.game import Game, Move
-from engine.scoring import earned_score_unclamped
 from agents.base import Agent
 
 _POLICY_TEMPERATURE = 1.0
@@ -64,10 +63,10 @@ class AlphaBetaAgent(Agent):
         self._root_move_scores = []
         legal = game.legal_moves()
         depth = self._effective_depth(game)
-        root_player = game.state.current_player
+        root_player_index = game.current_player_index
 
         self._root_move_scores = self._score_all_root_moves(
-            game, legal, depth, root_player
+            game, legal, depth, root_player_index
         )
 
         return max(self._root_move_scores, key=lambda pair: pair[1])[0]
@@ -89,7 +88,7 @@ class AlphaBetaAgent(Agent):
         game: Game,
         legal: list[Move],
         depth: int,
-        root_player: int,
+        root_player_index: int,
     ) -> list[tuple[Move, float]]:
         """Score every root move independently with a full alpha-beta window.
 
@@ -105,31 +104,22 @@ class AlphaBetaAgent(Agent):
                 game,
                 move,
                 depth,
-                root_player,
+                root_player_index,
                 float("-inf"),
                 float("inf"),
             )
             scored.append((move, score))
         return scored
 
-    def _immediate_score(self, game: Game, move: Move, root_player: int) -> float:
-        moving_player = game.state.current_player
-        before = earned_score_unclamped(game.state.players[moving_player])
-        child = game.clone()
-        child.make_move(move)
-        after = earned_score_unclamped(child.state.players[moving_player])
-        delta = after - before
-        return delta if moving_player == root_player else -delta
-
-    def _move_order_key(self, move: Move, game: Game, root_player: int) -> float:
-        moving_player = game.state.current_player
+    def _move_order_key(self, move: Move, game: Game, root_player_index: int) -> float:
+        moving_player_index = game.current_player_index
         if move.destination == -2:
-            return -10.0 if moving_player == root_player else 10.0
+            return -10.0 if moving_player_index == root_player_index else 10.0
         capacity = move.destination + 1
-        line = game.state.players[moving_player].pattern_lines[move.destination]
+        line = game.current_player.pattern_lines[move.destination]
         fills_line = len(line) + 1 >= capacity
         if fills_line:
-            return 5.0 if moving_player == root_player else -5.0
+            return 5.0 if moving_player_index == root_player_index else -5.0
         return 0.0
 
     def _alphabeta(
@@ -137,19 +127,19 @@ class AlphaBetaAgent(Agent):
         game: Game,
         move: Move,
         depth: int,
-        root_player: int,
+        root_player_index: int,
         alpha: float,
         beta: float,
     ) -> float:
         self._nodes += 1
-        moving_player = game.state.current_player
-        before = earned_score_unclamped(game.state.players[moving_player])
+        moving_player_index = game.current_player_index
+        before = game.current_player.earned
 
         child = game.clone()
         child.make_move(move)
-        after = earned_score_unclamped(child.state.players[moving_player])
+        after = child.players[moving_player_index].earned
         delta = after - before
-        immediate = delta if moving_player == root_player else -delta
+        immediate = delta if moving_player_index == root_player_index else -delta
 
         round_ended = child.advance(skip_setup=True)
 
@@ -160,12 +150,12 @@ class AlphaBetaAgent(Agent):
         if not legal:
             return immediate
 
-        next_player = child.state.current_player
-        maximizing = next_player == root_player
+        next_player_index = child.current_player_index
+        maximizing = next_player_index == root_player_index
 
         ordered = sorted(
             legal,
-            key=lambda m: self._move_order_key(m, child, root_player),
+            key=lambda m: self._move_order_key(m, child, root_player_index),
             reverse=maximizing,
         )
 
@@ -176,7 +166,7 @@ class AlphaBetaAgent(Agent):
                     child,
                     m,
                     depth - 1,
-                    root_player,
+                    root_player_index,
                     alpha - immediate,
                     beta - immediate,
                 )
@@ -192,7 +182,7 @@ class AlphaBetaAgent(Agent):
                     child,
                     m,
                     depth - 1,
-                    root_player,
+                    root_player_index,
                     alpha - immediate,
                     beta - immediate,
                 )

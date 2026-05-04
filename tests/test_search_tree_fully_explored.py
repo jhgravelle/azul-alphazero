@@ -24,12 +24,12 @@ def _uniform_pv(game, legal):
 def _build_two_move_position() -> Game:
     """The hand-crafted 2-move end-of-round position from test_inspector_minimax."""
     game = Game()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.center.extend([Tile.BLACK, Tile.BLACK, Tile.WHITE, Tile.WHITE])
+    game.center.clear()
+    game.center.extend([Tile.BLACK, Tile.BLACK, Tile.WHITE, Tile.WHITE])
 
-    p1 = game.state.players[0]
+    p1 = game.players[0]
     p1.pattern_lines[0] = [Tile.WHITE]
     p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]
     p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
@@ -37,8 +37,11 @@ def _build_two_move_position() -> Game:
     p1.pattern_lines[4] = []
     p1.floor_line = []
     p1.wall = [[None] * 5 for _ in range(5)]
+    p1._update_pending()
+    p1._update_penalty()
+    p1._update_bonus()
 
-    p2 = game.state.players[1]
+    p2 = game.players[1]
     p2.pattern_lines[0] = [Tile.WHITE]
     p2.pattern_lines[1] = [Tile.BLACK]
     p2.pattern_lines[2] = [Tile.RED, Tile.RED]
@@ -46,9 +49,12 @@ def _build_two_move_position() -> Game:
     p2.pattern_lines[4] = []
     p2.floor_line = [Tile.FIRST_PLAYER]
     p2.wall = [[None] * 5 for _ in range(5)]
+    p2._update_pending()
+    p2._update_penalty()
+    p2._update_bonus()
 
-    game.state.current_player = 0
-    game.state.round = 1
+    game.current_player_index = 0
+    game.round = 1
     return game
 
 

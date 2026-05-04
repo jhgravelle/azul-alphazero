@@ -1,7 +1,6 @@
 # agents/minimax.py
 
 from engine.game import Game, Move
-from engine.scoring import earned_score_unclamped
 from agents.base import Agent
 
 
@@ -33,32 +32,32 @@ class MinimaxAgent(Agent):
     def choose_move(self, game: Game) -> Move:
         self._nodes = 0
         legal = game.legal_moves()
-        root_player = game.state.current_player
+        root_player_index = game.current_player_index
         depth = self._effective_depth(game)
         best_move = legal[0]
         best_score = float("-inf")
-        self._nodes = 0  # reset counter
         for move in legal:
-            score = self._minimax(game, move, depth, root_player)
+            score = self._minimax(game, move, depth, root_player_index)
             if score > best_score:
                 best_score = score
                 best_move = move
-        # print(f"  depth={depth} legal={len(legal)} nodes={self._nodes}")
         return best_move
 
-    def _minimax(self, game: Game, move: Move, depth: int, root_player: int) -> float:
+    def _minimax(
+        self, game: Game, move: Move, depth: int, root_player_index: int
+    ) -> float:
         self._nodes += 1
-        moving_player = game.state.current_player
-        before = earned_score_unclamped(game.state.players[moving_player])
+        moving_player_index = game.current_player_index
+        before = game.players[moving_player_index].earned
 
         child = game.clone()
         child.make_move(move)
-
-        after = earned_score_unclamped(child.state.players[moving_player])
+        after = child.players[moving_player_index].earned
         delta = after - before
-        immediate = delta if moving_player == root_player else -delta
+        immediate = delta if moving_player_index == root_player_index else -delta
 
         round_ended = child.advance(skip_setup=True)
+
         if child.is_game_over() or round_ended or depth <= 1:
             return immediate
 
@@ -66,9 +65,13 @@ class MinimaxAgent(Agent):
         if not legal:
             return immediate
 
-        next_player = child.state.current_player
-        if next_player == root_player:
-            best = max(self._minimax(child, m, depth - 1, root_player) for m in legal)
+        next_player_index = child.current_player_index
+        if next_player_index == root_player_index:
+            best = max(
+                self._minimax(child, m, depth - 1, root_player_index) for m in legal
+            )
         else:
-            best = min(self._minimax(child, m, depth - 1, root_player) for m in legal)
+            best = min(
+                self._minimax(child, m, depth - 1, root_player_index) for m in legal
+            )
         return immediate + best

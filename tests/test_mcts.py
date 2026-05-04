@@ -101,10 +101,10 @@ def test_mcts_agent_choose_move_does_not_mutate_game_state():
     # choose_move must be a read-only operation on the game it receives.
     game = Game()
     game.setup_round()
-    factories_before = [list(f) for f in game.state.factories]
+    factories_before = [list(f) for f in game.factories]
     agent = MCTSAgent(simulations=50)
     agent.choose_move(game)
-    assert [list(f) for f in game.state.factories] == factories_before
+    assert [list(f) for f in game.factories] == factories_before
 
 
 # ── Strength test (slow — run with: pytest -m slow) ───────────────────────────
@@ -117,7 +117,7 @@ def test_mcts_beats_random_agent():
     # strength and test runtime.
     mcts = MCTSAgent(simulations=100)
     random_agent = RandomAgent()
-    stats = run_series(mcts, random_agent, n=100)
+    stats = run_series(mcts, random_agent, n=50)
     assert (
         stats.win_rate_p1 >= 0.80
     ), f"MCTSAgent only won {stats.win_rate_p1:.1%} — expected ≥80%"

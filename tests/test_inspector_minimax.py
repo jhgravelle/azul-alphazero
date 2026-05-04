@@ -28,13 +28,11 @@ def _build_position() -> Game:
     """Construct the two-move end-of-round position directly on game state."""
     game = Game()
 
-    # Clear factories and center
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
+    game.center.clear()
 
-    # Center: 2 BLACK, 2 WHITE
-    game.state.center.extend(
+    game.center.extend(
         [
             Tile.BLACK,
             Tile.BLACK,
@@ -43,40 +41,33 @@ def _build_position() -> Game:
         ]
     )
 
-    # P1: lines 1-4 full, line 5 empty, floor empty
-    p1 = game.state.players[0]
-    p1.pattern_lines[0] = [Tile.WHITE]  # line 1 full
-    p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]  # line 2 full
-    p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]  # line 3 full
-    p1.pattern_lines[3] = [
-        Tile.YELLOW,
-        Tile.YELLOW,
-        Tile.YELLOW,
-        Tile.YELLOW,
-    ]  # line 4 full
-    p1.pattern_lines[4] = []  # line 5 empty
+    p1 = game.players[0]
+    p1.pattern_lines[0] = [Tile.WHITE]
+    p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]
+    p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
+    p1.pattern_lines[3] = [Tile.YELLOW, Tile.YELLOW, Tile.YELLOW, Tile.YELLOW]
+    p1.pattern_lines[4] = []
     p1.floor_line = []
+    p1._update_pending()
+    p1._update_penalty()
+    p1._update_bonus()
 
-    # P2: line 1 full, line 2 has 1 black, lines 3-4 partial, line 5 empty
-    # floor has FIRST_PLAYER tile
-    p2 = game.state.players[1]
-    p2.pattern_lines[0] = [Tile.WHITE]  # line 1 full
-    p2.pattern_lines[1] = [Tile.BLACK]  # line 2 needs 1 more
-    p2.pattern_lines[2] = [Tile.RED, Tile.RED]  # line 3 needs 1 more
-    p2.pattern_lines[3] = [Tile.BLUE, Tile.BLUE]  # line 4 needs 2 more
-    p2.pattern_lines[4] = []  # line 5 empty
+    p2 = game.players[1]
+    p2.pattern_lines[0] = [Tile.WHITE]
+    p2.pattern_lines[1] = [Tile.BLACK]
+    p2.pattern_lines[2] = [Tile.RED, Tile.RED]
+    p2.pattern_lines[3] = [Tile.BLUE, Tile.BLUE]
+    p2.pattern_lines[4] = []
     p2.floor_line = [Tile.FIRST_PLAYER]
+    p2._update_pending()
+    p2._update_penalty()
+    p2._update_bonus()
 
-    # Walls: all empty (round not yet scored)
-    for player in game.state.players:
+    for player in game.players:
         player.wall = [[None] * 5 for _ in range(5)]
 
-    # Scores: P1 earned 5, P2 earned 0 (set as base scores)
-    # p1.score = 5
-    # p2.score = 0
-
-    game.state.current_player = 0
-    game.state.round = 1
+    game.current_player_index = 0
+    game.round = 1
 
     return game
 

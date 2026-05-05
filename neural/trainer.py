@@ -370,14 +370,14 @@ def _default_matchups() -> list[MatchupSpec]:
         return GreedyAgent()
 
     def make_easy() -> AlphaBetaAgent:
-        return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
+        return AlphaBetaAgent(depths=(1, 1, 3), thresholds=(20, 10))
 
     return [
         (make_random, make_easy, 0.10),
-        (make_efficient, make_easy, 0.10),
-        (make_cautious, make_easy, 0.15),
-        (make_greedy, make_easy, 0.20),
-        (make_easy, make_easy, 0.45),
+        (make_efficient, make_easy, 0.20),
+        (make_cautious, make_easy, 0.30),
+        (make_greedy, make_easy, 0.40),
+        (make_easy, make_easy, 0.00),
     ]
 
 

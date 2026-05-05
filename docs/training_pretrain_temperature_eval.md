@@ -97,7 +97,14 @@ move_prob[source][tile][dest] = source_prob[source] × tile_prob[tile] × dest_p
 
 ### 2.2 Move Resolution Logic
 
-**Given a sampled (source_type, tile, destination):**
+> **Implementation note:** MCTS continues to explore full `Move(source, tile, destination)` objects.
+> The 3-head architecture is used only for computing **priors** (initial probabilities) for each
+> legal move — not for move selection from visit counts. Move resolution is therefore not needed.
+> Move selection (`_pick_move`) still samples from flat visit-count distributions; only the
+> temperature rule (section 1.2) was added there.
+
+**Original design** (not implemented — see note above): sample `(source_type, tile, dest)` independently
+from 3-head marginals, then resolve:
 
 ```python
 # 1. Determine which actual sources have this tile
@@ -115,8 +122,6 @@ if factory_sources:
 
 # 4. No valid move (shouldn't happen in legal move generation)
 ```
-
-**MCTS behavior:** Explores all valid (source_type, tile, destination) combinations, resolving each to a full move via above logic.
 
 ### 2.3 Value Head Simplification
 
@@ -154,14 +159,12 @@ if factory_sources:
    - Update policy target handling for 3-head format
 
 4. **neural/search_tree.py** (MCTS)
-   - Add move_count parameter to `_pick_move()`
-   - Implement temperature rule (25-move cutoff)
-   - Update policy sampling to use 3-head format
-   - Implement move resolution (source_type + tile + dest → full move)
+   - Implement temperature rule in `_pick_move()` using `root.game.turn` (no API change needed)
+   - Update `make_policy_value_fn` / `make_batch_policy_value_fn` for 3-head prior computation
+   - ~~Implement move resolution~~ — not needed; MCTS explores full moves, 3-head used for priors only
 
 5. **agents/alphazero.py** (self-play agent)
-   - Thread move_count through game loop
-   - Pass move_count to SearchTree
+   - ~~Thread move_count through game loop~~ — not needed; `_pick_move` reads `root.game.turn` directly
 
 6. **scripts/train.py** (main training loop)
    - Add `--pretrain` flag
@@ -205,17 +208,19 @@ def forward(self, encoding: torch.Tensor) -> tuple[...]:
 
 ### Step 2: Add Helper Functions to encoder.py
 
-**Convert between 3-head and flat formats:**
+**Actual implementations (names differ from original sketch):**
 ```python
-def policy_3head_to_flat(source_probs, tile_probs, dest_probs) -> torch.Tensor:
-    """Convert (2, 5, 6) head outputs to (210,) flat policy."""
-    # Multiply probabilities: flat[s][t][d] = source_probs[s] * tile_probs[t] * dest_probs[d]
-    pass
+def priors_from_3head(src_logits, tile_logits, dst_logits, legal, game) -> list[float]:
+    """Compute normalized per-move priors from 3-head logits.
+    prior[move] = softmax(src)[src_type] × softmax(tile)[t] × softmax(dst)[d],
+    renormalized over legal moves. src_type: 0=center, 1=factory.
+    """
 
-def flat_to_policy_3head(flat_policy) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Convert (210,) flat policy back to 3-head format (approximately)."""
-    # For MCTS visit-count aggregation: marginalize to per-head probabilities
-    pass
+def flat_policy_to_3head_targets(flat_policy: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    """Marginalize flat MCTS visit distribution (B, 210) to 3-head targets.
+    Uses reshape to (B, NUM_SOURCES=7, BOARD_SIZE=5, NUM_DESTINATIONS=6) then sum.
+    Returns: src_targets (B,2), tile_targets (B,5), dst_targets (B,6).
+    """
 ```
 
 ### Step 3: Add `_pretrain_matchups()` to trainer.py
@@ -298,70 +303,34 @@ def add_root_exploration(self, policy: tuple[torch.Tensor, torch.Tensor, torch.T
     self.root_policy = (source_probs, tile_probs, dest_probs)
 ```
 
-Update `_pick_move()` to accept move_count and implement temperature rule:
+Update `_pick_move()` to implement temperature rule via `root.game.turn`:
 ```python
-def _pick_move(self, move_count: int) -> Move:
-    """Pick move based on visit counts, with temperature rule."""
-    # Calculate temperature: high for first 25 moves, low after
-    temperature = EXPLORATION_TEMP if move_count < EXPLORATION_MOVES else DETERMINISTIC_TEMP
-    
-    # Sample from each head's visit distribution
-    source_visits = [child.visit_count for child in self.children if child.source_type == s]
-    tile_visits = [child.visit_count for child in self.children if child.tile == t]
-    dest_visits = [child.visit_count for child in self.children if child.destination == d]
-    
-    # Apply softmax with temperature to visits
-    source_type = sample_softmax(source_visits, temperature)
-    tile = sample_softmax(tile_visits, temperature)
-    destination = sample_softmax(dest_visits, temperature)
-    
-    # Resolve to full move
-    return resolve_move(source_type, tile, destination)
+def _pick_move(self, root: AZNode) -> Move:
+    # temperature == 0.0 → argmax (unchanged)
+    if self.temperature == 0.0:
+        return max(root.children, key=lambda c: c.visits).move
+
+    # 25-move temperature rule: high-T for exploration, low-T for endgame
+    move_count = root.game.turn
+    temperature = (
+        EXPLORATION_TEMP if move_count < EXPLORATION_MOVES else DETERMINISTIC_TEMP
+    )
+    visits = torch.tensor(
+        [c.visits ** (1.0 / temperature) for c in root.children], dtype=torch.float32
+    )
+    probs = visits / visits.sum()
+    return root.children[int(torch.multinomial(probs, 1).item())].move
 ```
 
-Add move resolution:
-```python
-def resolve_move(source_type: int, tile: Tile, destination: Destination) -> Move:
-    """Resolve (source_type, tile, destination) to full Move."""
-    sources_with_tile = [s for s in self.game.available_sources() if tile in s]
-    
-    if source_type == CENTER and CENTER in sources_with_tile:
-        return Move(source=CENTER, tile=tile, destination=destination)
-    
-    factory_sources = [s for s in sources_with_tile if s != CENTER]
-    if factory_sources:
-        source = factory_sources[0]  # in-order selection
-        return Move(source=source, tile=tile, destination=destination)
-    
-    raise ValueError(f"No valid source for tile {tile}")
-```
+> **Implementation note:** No move resolution or independent head sampling is performed in
+> `_pick_move`. Move selection is still from the flat visit-count distribution over full moves.
+> The `root.game.turn` attribute (incremented by `game.make_move`) provides the move count
+> without any API changes to `SearchTree` or `AlphaZeroAgent`.
 
-### Step 6: Add Move Count Tracking to AlphaZeroAgent
+### Step 6: ~~Add Move Count Tracking to AlphaZeroAgent~~ (not needed)
 
-**Modify `agents/alphazero.py`:**
-```python
-def _play_game(self, ...) -> list[...]:
-    move_count = 0
-    while not game.is_over() and move_count < 100:
-        # ... get current player ...
-        if current_player is self:
-            move = self.pick_move(game, move_count)  # pass move_count
-        else:
-            move = opponent.pick_move(game)
-        
-        game.make_move(move)
-        move_count += 1
-        # ... record history ...
-```
-
-Update SearchTree call:
-```python
-def pick_move(self, game: Game, move_count: int = 0) -> Move:
-    tree = SearchTree(game, ...)
-    for _ in range(self.simulations):
-        tree.search(...)
-    return tree._pick_move(move_count)  # pass move_count
-```
+> **Implementation note:** `agents/alphazero.py` was not modified. `_pick_move` reads
+> `root.game.turn` directly — no `move_count` parameter threading required.
 
 ### Step 7: Add Pretrain Constants and Flag to train.py
 
@@ -543,8 +512,8 @@ Check training loss logs:
 | `neural/model.py` | Split policy head (3 heads), keep value_abs |
 | `neural/encoder.py` | Add 3-head ↔ flat conversion helpers |
 | `neural/trainer.py` | Add `_pretrain_matchups()`, update loss, thread move_count |
-| `neural/search_tree.py` | Add temperature rule, move resolution, 3-head policy sampling |
-| `agents/alphazero.py` | Thread move_count through game loop |
+| `neural/search_tree.py` | Temperature rule via `game.turn`; 3-head prior computation (no move resolution) |
+| `agents/alphazero.py` | No changes needed |
 | `scripts/train.py` | Add `--pretrain`, plateau detection, main loop branching, mirror eval |
 
 ---
@@ -566,12 +535,18 @@ Check training loss logs:
 
 ## Known Implementation Details
 
-1. **Move count tracking:** Pass `game.turn` through AlphaZeroAgent → SearchTree pipeline
+1. **Move count tracking:** `_pick_move` reads `root.game.turn` directly — no API changes to
+   `AlphaZeroAgent` or `SearchTree` needed. `game.turn` is incremented by `game.make_move`.
 
-2. **Source resolution:** When (source_type, tile, dest) is sampled, look up actual sources with that tile, prioritize center
+2. **3-head is priors-only:** MCTS explores full `Move` objects. The 3-head architecture is used
+   only to compute prior probabilities for each legal move via `priors_from_3head()`. Move
+   selection from visit counts uses the flat distribution (flat visit sampling, temperature rule).
 
-3. **Policy target generation:** MCTS visits aggregated to 3 heads (marginalizing over unused dimensions)
+3. **Policy target generation:** `flat_policy_to_3head_targets()` marginalizes flat MCTS visit
+   distribution (B, 210) to 3-head targets by reshaping to (B, 7, 5, 6) and summing axes.
 
-4. **Seed propagation:** Verify `Game(seed=S)` works for self-play eval
+4. **Seed propagation:** `Game(seed=S)` confirmed working — already used by
+   `collect_mirror_heuristic_games`. Mirror eval in `evaluate()` uses the same mechanism.
 
-5. **Loss computation:** value_abs still computed for logging, but coefficient is 0 in total loss
+5. **Loss computation:** value_abs computed for logging but excluded from `combined_value`.
+   Loss = `policy_loss + 0.3×value_win + 1.0×value_diff`.

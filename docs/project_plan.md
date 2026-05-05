@@ -3,7 +3,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-05-05
-> Status: Phase 8 in progress. 8i complete — encoding v3 (spatial 8→4 channels, flat 8→53 values). All 488 non-engine tests passing. Existing checkpoints are incompatible (conv_local and flat_proj weight shapes changed). Next: 8h inspector serialization redesign or fresh training run with v3.
+> Status: Phase 8 in progress. 8j complete — encoding v3 redesigned as pure MLP (flat 123 values, no spatial conv). All tests passing. Existing checkpoints are incompatible (removed conv layers entirely). Next: fresh training run with v3 or inspector serialization redesign.
 
 ---
 
@@ -92,8 +92,8 @@ azul-alphazero/
 │   ├── render.js
 │   └── style.css
 ├── neural/
-│   ├── encoder.py         # Spatial + flat encoding (v3: spatial (4,5,5), flat 53)
-│   ├── model.py           # Multi-kernel spatial branch (180k params) — shrink experiment
+│   ├── encoder.py         # Flat MLP encoding (v3: 123-value vector, no spatial conv)
+│   ├── model.py           # MLP-only architecture (ResBlocks, policy + 3× value heads)
 │   ├── replay.py          # Circular replay buffer, three value targets per example
 │   ├── search_tree.py     # SearchTree: MCTS, background worker, subtree reuse
 │   ├── trainer.py         # compute_loss, Trainer, target functions, data collection
@@ -264,42 +264,35 @@ All three heads converge cleanly without factory fingerprinting.
 | `neural/trainer.py` | Already implemented; ensure used in all data collection |
 | Documentation | Add mirror games as standard practice for all matchups |
 
-#### 8i — Encoding v3 ✅
+#### 8i — Encoding v3: Pure MLP ✅
 
-**Motivation:** Current encoding mixes non-spatial data into the spatial tensor where conv2d cannot use it effectively.
+**Motivation:** Spatial convolution on only 4 channels was learning spurious patterns instead of rule-determined game structure (walls are vertical, rows are horizontal, completions are patterns). With MLP, the network can directly learn which spatial features matter without conv overfitting.
 
-**Spatial tensor: `(4, 5, 5)`** — down from `(14, 5, 5)`
+**Architecture:** Single flat vector (123 values) fed to MLP trunk + policy/value heads. No spatial branch.
 
-| Channel | Content |
-|---|---|
-| 0 | My wall filled |
-| 1 | My pattern line fill ratio |
-| 2 | Opponent wall filled |
-| 3 | Opponent pattern line fill ratio |
+**Flat vector layout:**
 
-**Flat vector: 53 values**
-
-| Offset | Count | Name | Encoding |
+| Indices | Count | Content | Normalization |
 |---|---|---|---|
-| 0 | 1 | My official score | ÷ 100 |
-| 1 | 1 | Opponent official score | ÷ 100 |
-| 2 | 1 | My earned | ÷ 100 |
-| 3 | 1 | Opponent earned | ÷ 100 |
-| 4 | 1 | My floor penalty | ÷ 14 |
-| 5 | 1 | Opponent floor penalty | ÷ 14 |
-| 6 | 1 | I hold first-player token | 0 or 1 |
-| 7 | 1 | Opponent holds FP token | 0 or 1 |
-| 8 | 5 | My row completion | weighted ÷ ((row+1)×5) per row |
-| 13 | 5 | Opponent row completion | weighted ÷ ((row+1)×5) per row |
-| 18 | 5 | My col completion | weighted ÷ 15 per col |
-| 23 | 5 | Opponent col completion | weighted ÷ 15 per col |
-| 28 | 5 | My color completion | weighted ÷ 15 per color |
-| 33 | 5 | Opponent color completion | weighted ÷ 15 per color |
-| 38 | 5 | Tiles available by color | count ÷ 20 |
-| 43 | 5 | Sources with color | count ÷ 5 |
-| 48 | 5 | Bag count by color | count ÷ 20 |
+| 0–24 | 25 | My wall (flattened 5×5) | Binary: 0 or 1 |
+| 25–49 | 25 | Opponent wall (flattened 5×5) | Binary: 0 or 1 |
+| 50–74 | 25 | My pattern line fills (flattened 5×5) | Ratio: 0.0–1.0 per cell |
+| 75–99 | 25 | Opponent pattern fills (flattened 5×5) | Ratio: 0.0–1.0 per cell |
+| 100–101 | 2 | Official scores (me, opponent) | ÷ 100 |
+| 102–103 | 2 | Earned scores (me, opponent) | ÷ 100 |
+| 104–105 | 2 | Floor penalties (me, opponent) | ÷ 14 |
+| 106–107 | 2 | First-player tokens (me, opponent) | Binary: 0 or 1 |
+| 108–112 | 5 | Tiles available by color | count ÷ 20 |
+| 113–117 | 5 | Sources with that color | count ÷ 5 |
+| 118–122 | 5 | Bag tile count by color | count ÷ 20 |
 
-Net input: 4×5×5 spatial (100 values) + 53 flat = 153 total, down from 208.
+**Total: 123 values**
+
+**Design rationale:**
+- Wall patterns (vertical completions, adjacent tiles) emerge naturally from MLP learning wall positions
+- Row/col/color completions removed — network computes from actual wall state
+- No conv bias/overfitting — simpler to debug and generalize
+- ~60% parameter reduction vs prior spatial conv architecture (~150k params → ~90k)
 
 #### 8j — Training Pipeline Phase 1 + Phase 2
 

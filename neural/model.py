@@ -1,15 +1,15 @@
 # neural/model.py
-"""AzulNet — shrunk version for testing factory overfitting hypothesis.
+"""AzulNet — multi-kernel spatial branch + v3 encoding.
 
-Key changes from v2:
-- Spatial: 8→10→32 instead of 8→64→128 (2.5× fewer spatial params)
-- Multi-kernel approach: local 5×5 (10 ch) + row 1×5 (4 ch) + col 5×1 (4 ch)
-  = 18 channels instead of 128
-- Bottleneck: Linear(450 → 256) instead of Linear(3200 → 256) (7× fewer params)
-- Overall model: ~180k params vs ~1.5M (12× smaller)
+Spatial branch (v3 encoding: 4 channels):
+- Local 5×5 kernel: sees entire board (10 ch)
+- Row 1×5 kernel: sees entire rows (4 ch)
+- Col 5×1 kernel: sees entire columns (4 ch)
+- Concatenated: 18 channels → Linear(450, hidden_dim)
 
-This tests whether the original model's overfitting to factory state comes from
-the huge spatial bottleneck having capacity to memorize factory patterns.
+Flat branch (v3 encoding: 53 values):
+- Scores, completion stats, tile availability, bag counts
+- Linear(53, hidden_dim // 2)
 """
 
 import torch
@@ -56,7 +56,7 @@ class AzulNet(nn.Module):
         self.num_blocks = num_blocks
 
         # ── Spatial branch — multi-kernel approach ────────────────────────
-        # Input: (batch, 8, 5, 5)
+        # Input: (batch, 4, 5, 5)
         # Three parallel convolutions with different receptive fields:
 
         # Local 5×5 kernel: sees entire board at once, learns global patterns
@@ -114,8 +114,8 @@ class AzulNet(nn.Module):
 
     def forward(
         self,
-        spatial: torch.Tensor,  # (batch, 8, 5, 5)
-        flat: torch.Tensor,  # (batch, FLAT_SIZE)
+        spatial: torch.Tensor,  # (batch, 4, 5, 5)
+        flat: torch.Tensor,  # (batch, FLAT_SIZE=53)
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run a forward pass.
 
@@ -125,7 +125,7 @@ class AzulNet(nn.Module):
             value_diff: (batch, 1) score-differential prediction in (-1, 1)
             value_abs:  (batch, 1) absolute-score prediction in (-1, 1)
         """
-        # Spatial branch — three parallel kernels
+        # Spatial branch — three parallel kernels; input is (batch, 4, 5, 5)
         s_local = self.relu(
             self.norm_local(self.conv_local(spatial))
         )  # (batch, 10, 5, 5)

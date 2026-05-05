@@ -3,7 +3,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-05-05
-> Status: Phase 8 in progress. 8f complete — engine rewrite done, dead files deleted, all tests passing. Active experiment: AzulNet 12x shrink (multi-kernel spatial, 180k params) to test factory overfitting hypothesis. Next: 8h inspector serialization redesign.
+> Status: Phase 8 in progress. 8i complete — encoding v3 (spatial 8→4 channels, flat 8→53 values). All 488 non-engine tests passing. Existing checkpoints are incompatible (conv_local and flat_proj weight shapes changed). Next: 8h inspector serialization redesign or fresh training run with v3.
 
 ---
 
@@ -264,7 +264,7 @@ All three heads converge cleanly without factory fingerprinting.
 | `neural/trainer.py` | Already implemented; ensure used in all data collection |
 | Documentation | Add mirror games as standard practice for all matchups |
 
-#### 8i — Encoding v3
+#### 8i — Encoding v3 ✅
 
 **Motivation:** Current encoding mixes non-spatial data into the spatial tensor where conv2d cannot use it effectively.
 
@@ -611,6 +611,7 @@ logits, value_win, _value_diff, _value_abs = net(spatial, flat)
 | 2026-05-04 | **MCTSAgent 3.5× speedup:** `clone()` replaces `deepcopy`, round-boundary rollouts, 200 sims default. |
 | 2026-05-05 | **Mirror games discovery:** Value head overfitting to factory state resolved by using mirrored game pairs (identical bag seed, sides swapped) in all agent vs agent collections. Testing shows `value_win`, `value_diff`, `value_abs` stds all < 0.041 on turn 1 (clean calibration). Added 8q phase documenting solution. Recommended for all future data collection. |
 | 2026-05-05 | **Model shrinking experiment:** Tested 706k-param shrunk model (2.1× smaller than original 1.5M). Bottleneck reduced from 819k to 115k params. Without mirror games, shrunk model overfit worse (std +17×). With mirror games, shrunk model achieves same tight calibration as larger model. Indicates overfitting was encoder + data correlation, not parameter count. Further shrinking to 350k params proposed for phase 8q. |
+| 2026-05-05 | **Encoding v3 (8i):** Spatial (8,5,5) → (4,5,5) — dropped bonus-proximity, bag, source-dist channels; kept wall + pattern for both players. Flat 8 → 53 — added row/col/color completion (post-placement wall), tiles-available, sources-with-color, bag-count per color. Earned divisor changed 50→100. All 488 non-engine tests passing. Existing checkpoints incompatible. |
 | 2026-04-25 | Inspector agent selector, policy priors, visit fractions. Minimax value fixed. Double policy_value_fn call eliminated. Copy Tree includes agent header. Inspector UI todos logged. |
 | 2026-05-02 | tests/engine/test_player.py added — 100% public interface coverage. Test subfolder structure introduced. |
 | 2026-05-02 | Project plan and instructions overhauled. Encoding v3 designed. Engine rewrite drafted. Virtual loss bug identified as top priority. Inspector serialization redesign fully specified. |

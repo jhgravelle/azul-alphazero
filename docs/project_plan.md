@@ -3,7 +3,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-05-05
-> Status: Phase 8 in progress. 8j complete — encoding v3 redesigned as pure MLP (flat 123 values, no spatial conv). Fixed test suite and trainer consistency with v3 flat encoding. Updated model.py, trainer.py, and all test files to use single flat encoding tensor (123 values) instead of spatial+flat. All tests now compatible with v3 design. Next: fresh training run with v3 or inspector serialization redesign.
+> Status: Phase 8 in progress. 8r complete — training v2 pipeline: 3-head policy, 25-move temperature rule, mirror eval, pretrain mode, value_abs removed from loss. All 619 non-slow tests passing. Next: fresh training run with `--pretrain` flag, or inspector serialization redesign (8h).
 
 ---
 
@@ -335,7 +335,7 @@ Note: easy = `depths=(1,1,3)` (weakened from `(2,3,7)` for experiment). Easy-vs-
 **Value heads:**
 - `value_diff` — primary PUCT signal
 - `value_win` — auxiliary, weight 0.3
-- `value_abs` — weight 0.1; candidate for removal
+- `value_abs` — diagnostic only; excluded from training loss (see 8r)
 
 **Promotion bar:** Beat `alphabeta_hard` at ≥55% win rate with ≥1500 eval simulations.
 
@@ -344,6 +344,37 @@ Note: easy = `depths=(1,1,3)` (weakened from `(2,3,7)` for experiment). Easy-vs-
 2. Beat Cautious ≥60%
 3. Beat AlphaBeta easy ≥55%
 4. Beat AlphaBeta hard ≥55% — deployable
+
+#### 8r — Training v2: 3-Head Policy + Temperature + Mirror Eval + Pretrain ✅
+
+**Changes:**
+
+**1. Three-head policy** — `policy_head` (flat 210) replaced by three independent heads:
+- `source_head` (2): center vs factory
+- `tile_head` (5): tile color
+- `destination_head` (6): pattern line + floor
+
+Move priors = softmax(src) × softmax(tile) × softmax(dst), renormalized over legal moves.
+Training targets: flat MCTS visit distribution (210) marginalized to per-head soft targets via
+`flat_policy_to_3head_targets()` in `encoder.py`.
+
+**2. Temperature exploration (25-move rule)** — `_pick_move` reads `root.game.turn` and applies:
+- Moves 0–24: `EXPLORATION_TEMP = 1.0` (stochastic)
+- Moves 25+: `DETERMINISTIC_TEMP = 0.1` (sharp)
+
+`temperature == 0.0` still means argmax. No API changes to `AlphaZeroAgent`.
+
+**3. Mirror eval** — `evaluate()` plays each seed twice (sides swapped) using `Game(seed=S)`.
+Total eval games = `num_games × 2`. Early-exit thresholds scale accordingly.
+
+**4. Pretrain mode** (`--pretrain` flag) — fills buffer with weak mirrored heuristic games
+(`_pretrain_matchups()`: random/efficient/cautious/greedy vs AlphaBeta easy), trains until loss
+plateaus, auto-switches to self-play. Saves `gen_0000.pt` at transition.
+
+**5. Value simplification** — `value_abs` excluded from training loss. Combined value loss:
+`0.3×value_win_loss + 1.0×value_diff_loss`. `value_abs` still computed and logged.
+
+**Breaking change:** checkpoint format incompatible with pre-8r checkpoints (policy head renamed).
 
 #### 8k — Elo Ladder
 
@@ -528,11 +559,18 @@ UI difficulty levels:
 
 ## Multi-head Value Network
 
-`AzulNet.forward(spatial, flat)` returns `(logits, value_win, value_diff, value_abs)`.
+`AzulNet.forward(encoding)` returns `((src_logits, tile_logits, dst_logits), value_win, value_diff, value_abs)`.
 
 ```python
-logits, value_win, _value_diff, _value_abs = net(spatial, flat)
+(src_logits, tile_logits, dst_logits), value_win, value_diff, value_abs = net(encoding)
 ```
+
+Policy is factored into three independent heads (center vs factory, tile color, destination). Priors
+per legal move = softmax(src)[src_type] × softmax(tile)[t] × softmax(dst)[d], renormalized.
+Training targets marginalize flat MCTS visit distribution to per-head soft targets.
+
+`value_abs` is computed and logged but excluded from the training loss. Loss formula:
+`policy_loss + 0.3×value_win_loss + 1.0×value_diff_loss`.
 
 ---
 
@@ -599,6 +637,7 @@ logits, value_win, _value_diff, _value_abs = net(spatial, flat)
 
 | Date | Change |
 |---|---|
+| 2026-05-05 | **Training v2 (8r) complete:** 3-head policy (source×tile×dest), 25-move temperature rule, mirror eval, `--pretrain` mode with plateau detection, `value_abs` removed from training loss. 619 non-slow tests passing. Checkpoint format incompatible with pre-8r. |
 | 2026-05-05 | **8f cleanup complete:** Deleted `engine/board.py`, `engine/scoring.py`, `engine/game_state.py` and their test files. Moved `tests/test_game.py` → `tests/engine/test_game.py`. 625 tests passing. |
 | 2026-05-05 | **AzulNet 12x shrink experiment:** Replaced 2-conv spatial branch (1.5M params) with multi-kernel design — local 5×5 (10ch) + row 1×5 (4ch) + col 5×1 (4ch) = 18ch, ~180k params. Bottleneck: Linear(450→256) vs prior Linear(3200→256). Trainer matchups rebalanced: easy-vs-easy dropped (0.45→0.00), weight shifted to greedy/cautious/efficient. AlphaBeta weakened to `depths=(1,1,3)` for experiment. Fixed `sample_policy.py`: `game.state.current_player` → `game.current_player`. |
 | 2026-05-04 | **MCTSAgent 3.5× speedup:** `clone()` replaces `deepcopy`, round-boundary rollouts, 200 sims default. |

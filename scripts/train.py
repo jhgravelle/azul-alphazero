@@ -400,13 +400,13 @@ def main() -> None:
     parser.add_argument(
         "--iterations",
         type=int,
-        default=30,
+        default=20,
         help="number of generate->train->eval cycles (default 30)",
     )
     parser.add_argument(
         "--games-per-iter",
         type=int,
-        default=25,
+        default=100,
         help="self-play games per iteration (default 25)",
     )
     parser.add_argument(
@@ -424,19 +424,19 @@ def main() -> None:
     parser.add_argument(
         "--eval-simulations",
         type=int,
-        default=25,
+        default=40,
         help="MCTS simulations per move during evaluation (default 25)",
     )
     parser.add_argument(
         "--eval-games",
         type=int,
-        default=40,
+        default=100,
         help="games for new-vs-old evaluation (default 40)",
     )
     parser.add_argument(
         "--win-threshold",
         type=float,
-        default=0.52,
+        default=0.55,
         help="new model win rate required to replace old (default 0.52)",
     )
     parser.add_argument(
@@ -514,7 +514,7 @@ def main() -> None:
     parser.add_argument(
         "--random-eval-interval",
         type=int,
-        default=0,
+        default=10,
         help="evaluate vs random every N iterations (0 = never, default 0)",
     )
     parser.add_argument(

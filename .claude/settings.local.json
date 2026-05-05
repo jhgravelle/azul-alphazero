@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -m pytest tests/ --tb=line -q)",
-      "Bash(python -m pytest tests/test_game.py tests/test_player.py tests/test_agent.py tests/test_mcts.py tests/test_zobrist.py --tb=no -q)"
-    ]
-  }
-}

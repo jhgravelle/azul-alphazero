@@ -25,12 +25,12 @@ def test_alphabeta_returns_legal_move():
 
 def test_alphabeta_does_not_mutate_game():
     game = _make_game()
-    original_player = game.state.current_player
-    original_center = list(game.state.center)
+    original_player = game.current_player
+    original_center = list(game.center)
     agent = _make_agent(3)
     agent.choose_move(game)
-    assert game.state.current_player == original_player
-    assert game.state.center == original_center
+    assert game.current_player == original_player
+    assert game.center == original_center
 
 
 def test_alphabeta_completes_game():

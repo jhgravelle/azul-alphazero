@@ -79,15 +79,12 @@ def test_greedy_agent_prefers_partial_line_without_biasing_color_selection():
     game.setup_round()
     agent = GreedyAgent()
 
-    player = game.state.players[game.state.current_player]
-    # Put BLUE on row 2 (capacity 3, so not full)
+    player = game.current_player
     player.pattern_lines[2] = [Tile.BLUE]
-
-    game.state.center.append(Tile.BLUE)
+    game.center.append(Tile.BLUE)
 
     moves = [agent.choose_move(game) for _ in range(100)]
 
-    # Among blue moves, majority should go to row 2
     blue_moves = [m for m in moves if m.tile == Tile.BLUE and m.destination >= 0]
     if blue_moves:
         partial_picks = sum(1 for m in blue_moves if m.destination == 2)
@@ -96,7 +93,6 @@ def test_greedy_agent_prefers_partial_line_without_biasing_color_selection():
             f"got {partial_picks}/{len(blue_moves)}"
         )
 
-    # But BLUE should not dominate color selection overall
     non_floor = [m for m in moves if m.destination != -2]
     blue_non_floor = [m for m in non_floor if m.tile == Tile.BLUE]
     if non_floor:
@@ -178,15 +174,13 @@ def test_cautious_policy_distribution_excludes_floor_when_alternatives_exist():
 
     game = Game()
     game.setup_round()
-    # Fresh game has plenty of non-floor options
     dist = CautiousAgent().policy_distribution(game)
     for move, _ in dist:
         assert move.destination != FLOOR
 
 
 def test_cautious_policy_distribution_is_uniform_over_non_floor():
-    """Each non-floor move gets equal probability, and that probability
-    equals 1/(number of non-floor moves) — not 1/(total legal moves)."""
+    """Each non-floor move gets equal probability."""
     from agents.cautious import CautiousAgent
     from agents.move_filters import non_floor_moves
 
@@ -215,24 +209,13 @@ def test_cautious_policy_distribution_covers_all_non_floor_legal_moves():
 
 
 def test_cautious_policy_distribution_falls_back_to_floor_when_forced():
-    """When non_floor_moves would return all moves (floor-only fallback),
-    the distribution reflects that fallback.
-
-    Rather than engineering a fully-forced floor state (which is fragile to
-    set up), we verify the function respects the non_floor_moves filter: if
-    non_floor_moves returns the full legal set (fallback case), so does the
-    distribution.
-    """
+    """Distribution matches the non_floor_moves filter size."""
     from agents.cautious import CautiousAgent
     from agents.move_filters import non_floor_moves
 
     game = Game()
     game.setup_round()
-    legal = game.legal_moves()
-    filtered = non_floor_moves(legal)
-    # In a fresh game there are non-floor moves, so filtered is a subset.
-    # This test verifies the distribution matches filtered's size regardless
-    # of whether filtering actually reduced the set.
+    filtered = non_floor_moves(game.legal_moves())
     dist = CautiousAgent().policy_distribution(game)
     assert len(dist) == len(filtered)
 
@@ -265,8 +248,7 @@ def test_efficient_policy_distribution_uniform_over_candidates():
 
 
 def test_efficient_policy_distribution_falls_back_to_all_legal_moves():
-    """In a fresh game, all pattern lines are empty — no 'preferred' moves
-    exist, so distribution should cover all legal moves."""
+    """In a fresh game, distribution covers all legal moves."""
     from agents.efficient import EfficientAgent
 
     game = Game()
@@ -276,37 +258,30 @@ def test_efficient_policy_distribution_falls_back_to_all_legal_moves():
 
 
 def test_efficient_policy_distribution_prefers_partial_lines_when_available():
-    """With a partial pattern line matching an available color, the
-    distribution should only include moves to that partial line (not all
-    legal moves)."""
+    """With a partial pattern line matching an available color, distribution
+    only includes moves to that partial line."""
     from agents.efficient import EfficientAgent
-    from engine.constants import Tile
 
     game = Game()
     game.setup_round()
-    # Engineer a partial line: put BLUE on row 2
-    player = game.state.players[game.state.current_player]
+    player = game.current_player
     player.pattern_lines[2] = [Tile.BLUE]
-    # Ensure there's BLUE in the center so BLUE moves are legal
-    game.state.center.append(Tile.BLUE)
+    game.center.append(Tile.BLUE)
     dist = EfficientAgent().policy_distribution(game)
-    # Every move in the distribution should target a non-empty pattern line
     for move, _ in dist:
         assert move.destination >= 0
         assert len(player.pattern_lines[move.destination]) > 0
 
 
 def test_efficient_policy_distribution_covers_all_preferred_moves():
-    """When partial lines exist, every legal move targeting a partial line
-    should appear in the distribution."""
+    """Every legal move targeting a partial line appears in the distribution."""
     from agents.efficient import EfficientAgent
-    from engine.constants import Tile
 
     game = Game()
     game.setup_round()
-    player = game.state.players[game.state.current_player]
+    player = game.current_player
     player.pattern_lines[2] = [Tile.BLUE]
-    game.state.center.append(Tile.BLUE)
+    game.center.append(Tile.BLUE)
     legal = game.legal_moves()
     expected_preferred = [
         m
@@ -337,7 +312,6 @@ def test_greedy_policy_distribution_sums_to_one():
 def test_greedy_policy_distribution_excludes_floor_when_alternatives_exist():
     """No floor moves appear when non-floor moves are available."""
     from agents.greedy import GreedyAgent
-    from engine.game import FLOOR
 
     game = Game()
     game.setup_round()
@@ -355,7 +329,6 @@ def test_greedy_policy_distribution_weights_each_color_equally():
     game.setup_round()
     dist = GreedyAgent().policy_distribution(game)
     num_colors = len({m.tile for m in non_floor_moves(game.legal_moves())})
-    # Sum probability per color
     color_totals: dict = {}
     for move, prob in dist:
         color_totals[move.tile] = color_totals.get(move.tile, 0.0) + prob
@@ -372,7 +345,6 @@ def test_greedy_policy_distribution_uniform_within_each_color():
     game = Game()
     game.setup_round()
     dist = GreedyAgent().policy_distribution(game)
-    # Group probabilities by color
     by_color: dict = {}
     for move, prob in dist:
         by_color.setdefault(move.tile, []).append(prob)
@@ -386,16 +358,14 @@ def test_greedy_policy_distribution_uniform_within_each_color():
 
 def test_greedy_policy_distribution_prefers_partial_lines_within_color():
     """With a partial line for BLUE, only BLUE moves to that partial line
-    should be present in BLUE's distribution slice (not BLUE moves to
-    other destinations)."""
+    should appear in BLUE's distribution slice."""
     from agents.greedy import GreedyAgent
-    from engine.constants import Tile
 
     game = Game()
     game.setup_round()
-    player = game.state.players[game.state.current_player]
+    player = game.current_player
     player.pattern_lines[2] = [Tile.BLUE]
-    game.state.center.append(Tile.BLUE)
+    game.center.append(Tile.BLUE)
     dist = GreedyAgent().policy_distribution(game)
     blue_moves = [m for m, _ in dist if m.tile == Tile.BLUE]
     for m in blue_moves:

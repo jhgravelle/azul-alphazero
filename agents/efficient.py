@@ -36,7 +36,7 @@ class EfficientAgent(Agent):
     def _candidates(game: Game) -> list[Move]:
         """Return the moves this agent would sample from."""
         moves = game.legal_moves()
-        player = game.state.players[game.state.current_player]
+        player = game.current_player
         preferred = [
             m
             for m in moves

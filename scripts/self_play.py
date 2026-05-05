@@ -1,5 +1,4 @@
 # scripts/self_play.py
-
 """Self-play harness — runs N games between two agents and logs statistics."""
 
 import argparse
@@ -27,19 +26,8 @@ AGENT_REGISTRY = {
 }
 
 
-# ── Result dataclasses ─────────────────────────────────────────────────────
-
-
 @dataclass
 class GameResult:
-    """The outcome of a single game.
-
-    Attributes:
-        winner: Index of the winning player (0 or 1), or None for a tie.
-        scores: Final scores for each player.
-        rounds: Number of rounds played.
-    """
-
     winner: int | None
     scores: list[int]
     rounds: int
@@ -47,18 +35,6 @@ class GameResult:
 
 @dataclass
 class SeriesStats:
-    """Aggregated statistics across a series of games.
-
-    Attributes:
-        total_games: Number of games played.
-        win_rate_p1: Fraction of games won by player 1.
-        win_rate_p2: Fraction of games won by player 2.
-        tie_rate: Fraction of games that ended in a tie.
-        avg_score_p1: Average final score for player 1.
-        avg_score_p2: Average final score for player 2.
-        avg_rounds: Average number of rounds per game.
-    """
-
     total_games: int
     win_rate_p1: float
     win_rate_p2: float
@@ -68,60 +44,30 @@ class SeriesStats:
     avg_rounds: float
 
 
-# ── Core functions ─────────────────────────────────────────────────────────
-
-
 def run_game(p1: Agent, p2: Agent) -> GameResult:
-    """Play one complete game between two agents and return the result.
-
-    Args:
-        p1: Agent for player 0.
-        p2: Agent for player 1.
-
-    Returns:
-        A GameResult with winner, scores, and round count.
-    """
     agents = [p1, p2]
     game = Game()
     game.setup_round()
 
-    while not game.is_game_over():
-        # Play out all moves in the current round
-        while game.legal_moves():
-            current = game.state.current_player
-            move = agents[current].choose_move(game)
-            game.make_move(move)
+    while True:
+        if not game.legal_moves():
+            break
+        current = game.current_player_index
+        move = agents[current].choose_move(game)
+        game.make_move(move)
+        game.advance()
+        if game.is_game_over():
+            break
 
-        game.score_round()
-
-        if not game.is_game_over():
-            game.setup_round()
-
-    game.score_game()
-
-    scores = [p.score for p in game.state.players]
+    scores = [p.score for p in game.players]
     max_score = max(scores)
     winners = [i for i, s in enumerate(scores) if s == max_score]
     winner = winners[0] if len(winners) == 1 else None
 
-    return GameResult(
-        winner=winner,
-        scores=scores,
-        rounds=game.state.round,
-    )
+    return GameResult(winner=winner, scores=scores, rounds=game.round)
 
 
 def run_series(p1: Agent, p2: Agent, n: int) -> SeriesStats:
-    """Run N games between two agents and return aggregated statistics.
-
-    Args:
-        p1: Agent for player 0.
-        p2: Agent for player 1.
-        n: Number of games to play.
-
-    Returns:
-        A SeriesStats summarising the series.
-    """
     results = []
     last_update = time.time()
 
@@ -155,11 +101,7 @@ def run_series(p1: Agent, p2: Agent, n: int) -> SeriesStats:
     )
 
 
-# ── CLI ────────────────────────────────────────────────────────────────────
-
-
 def _build_agent(name: str) -> Agent:
-    """Instantiate an agent by name, raising a clear error if unknown."""
     if name not in AGENT_REGISTRY:
         known = ", ".join(AGENT_REGISTRY)
         print(f"Unknown agent {name!r}. Known agents: {known}", file=sys.stderr)
@@ -168,7 +110,6 @@ def _build_agent(name: str) -> Agent:
 
 
 def _configure_logging(log_file: str) -> None:
-    """Set up logging to both stdout and a file."""
     fmt = "%(asctime)s  %(message)s"
     logging.basicConfig(
         level=logging.INFO,
@@ -181,20 +122,11 @@ def _configure_logging(log_file: str) -> None:
 
 
 def main() -> None:
-    """Entry point for the self-play CLI."""
     parser = argparse.ArgumentParser(description="Run Azul self-play games.")
-    parser.add_argument(
-        "--games", type=int, default=100, help="Number of games to play (default: 100)"
-    )
-    parser.add_argument(
-        "--p1", default="random", help="Agent for player 1 (default: random)"
-    )
-    parser.add_argument(
-        "--p2", default="random", help="Agent for player 2 (default: random)"
-    )
-    parser.add_argument(
-        "--log", default="self_play.log", help="Log file path (default: self_play.log)"
-    )
+    parser.add_argument("--games", type=int, default=100)
+    parser.add_argument("--p1", default="random")
+    parser.add_argument("--p2", default="random")
+    parser.add_argument("--log", default="self_play.log")
     args = parser.parse_args()
 
     _configure_logging(args.log)
@@ -203,7 +135,6 @@ def main() -> None:
     p2 = _build_agent(args.p2)
 
     logger.info("Starting %d games: %s vs %s", args.games, args.p1, args.p2)
-
     stats = run_series(p1, p2, n=args.games)
 
     logger.info("Results after %d games:", stats.total_games)

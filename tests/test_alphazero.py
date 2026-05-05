@@ -68,9 +68,9 @@ def test_alphazero_returns_legal_move():
 
 def test_alphazero_choose_move_does_not_mutate_game():
     game = fresh_game()
-    factories_before = [list(f) for f in game.state.factories]
+    factories_before = [list(f) for f in game.factories]
     fresh_agent(simulations=10).choose_move(game)
-    assert [list(f) for f in game.state.factories] == factories_before
+    assert [list(f) for f in game.factories] == factories_before
 
 
 def test_alphazero_choose_move_with_external_tree():

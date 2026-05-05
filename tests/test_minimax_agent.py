@@ -1,6 +1,5 @@
 # tests/test_minimax_agent.py
 from engine.game import Game
-from engine.scoring import earned_score_unclamped
 from agents.minimax import MinimaxAgent
 
 
@@ -31,12 +30,12 @@ def test_minimax_agent_depth_1_picks_legal_move():
 
 def test_minimax_agent_does_not_mutate_game():
     game = _make_game()
-    original_player = game.state.current_player
-    original_center = list(game.state.center)
+    original_player_index = game.current_player_index
+    original_center = list(game.center)
     agent = _make_agent(2)
     agent.choose_move(game)
-    assert game.state.current_player == original_player
-    assert game.state.center == original_center
+    assert game.current_player_index == original_player_index
+    assert game.center == original_center
 
 
 def test_minimax_agent_completes_game():
@@ -66,12 +65,8 @@ def test_minimax_agent_avoids_floor():
         child_non_floor.make_move(non_floor[0])
         child_floor = game.clone()
         child_floor.make_move(floor_moves[0])
-        score_non_floor = earned_score_unclamped(
-            child_non_floor.state.players[game.state.current_player]
-        )
-        score_floor = earned_score_unclamped(
-            child_floor.state.players[game.state.current_player]
-        )
+        score_non_floor = child_non_floor.players[game.current_player_index].earned
+        score_floor = child_floor.players[game.current_player_index].earned
         if score_non_floor >= score_floor:
             assert move.destination != -2
 

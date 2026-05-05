@@ -23,11 +23,12 @@ def _record_full_game() -> GameRecord:
     recorder.start_round(game)
 
     while not game.is_game_over():
-        move = agents[game.state.current_player].choose_move(game)
-        recorder.record_move(move, player_index=game.state.current_player)
+        move = agents[game.current_player_index].choose_move(game)
+        recorder.record_move(move, player_index=game.current_player_index)
         game.make_move(move)
         round_ended = game.advance(skip_setup=True)
         if round_ended and not game.is_game_over():
+            print(f"center before setup: {game.center}")  # temporary debug
             game.setup_round()
             recorder.start_round(game)
 
@@ -48,16 +49,16 @@ def test_replay_to_move_zero_is_initial_state():
     game = replay_to_move(record, 0)
 
     # Factories should be filled (5 factories × 4 tiles = 20 tiles placed)
-    total_factory_tiles = sum(len(f) for f in game.state.factories)
+    total_factory_tiles = sum(len(f) for f in game.factories)
     assert total_factory_tiles == 20
 
     # No moves made yet — all pattern lines empty
-    for player in game.state.players:
+    for player in game.players:
         for line in player.pattern_lines:
             assert len(line) == 0
 
     # Round 1
-    assert game.state.round == 1
+    assert game.round == 1
 
 
 def test_replay_to_move_one_matches_first_recorded_move():
@@ -71,9 +72,9 @@ def test_replay_to_move_one_matches_first_recorded_move():
     # OR the destination pattern line should have tiles — at least one player
     # board has changed.
     total_pattern_tiles = sum(
-        len(line) for player in game.state.players for line in player.pattern_lines
+        len(line) for player in game.players for line in player.pattern_lines
     )
-    total_floor_tiles = sum(len(player.floor_line) for player in game.state.players)
+    total_floor_tiles = sum(len(player.floor_line) for player in game.players)
     assert total_pattern_tiles + total_floor_tiles > 0
 
 
@@ -100,7 +101,7 @@ def test_replay_to_move_incremental_matches_jump():
     # So they should agree at index `mid`.
     turn = computed_turns[mid]
 
-    for player_idx, player in enumerate(game_jump.state.players):
+    for player_idx, player in enumerate(game_jump.players):
         expected_score = turn["boards"][player_idx]["score"]
         assert player.score == expected_score, (
             f"Player {player_idx} score mismatch at move {mid}: "
@@ -115,7 +116,7 @@ def test_replay_to_move_final_matches_final_scores():
 
     game = replay_to_move(record, total)
 
-    for i, player in enumerate(game.state.players):
+    for i, player in enumerate(game.players):
         assert (
             player.score == record.final_scores[i]
         ), f"Player {i}: got {player.score}, expected {record.final_scores[i]}"
@@ -133,8 +134,8 @@ def test_replay_to_move_preserves_round_boundaries():
 
     # After the last move of round 1, round scoring + setup has happened,
     # so we should be in round 2 with factories filled.
-    assert game.state.round == 2
-    total_factory_tiles = sum(len(f) for f in game.state.factories)
+    assert game.round == 2
+    total_factory_tiles = sum(len(f) for f in game.factories)
     assert total_factory_tiles == 20
 
 

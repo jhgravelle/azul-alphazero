@@ -35,7 +35,13 @@ TILES_PER_FACTORY = 4  # number of tiles placed in each factory at the start of 
 FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3]
 BONUS_ROW = 2  # points for completing a row on the wall
 BONUS_COLUMN = 7  # points for completing a column on the wall
-BONUS_COLOR = 10  # points for placing all 5 tiles of a color on the wall
+BONUS_TILE = 10  # points for placing all 5 tiles of a color on the wall
+
+CENTER = -1  # sentinel source: tiles from the center
+FLOOR = -2  # sentinel destination: tiles go to the floor line
+CAPACITY: list[int] = [
+    row + 1 for row in range(BOARD_SIZE)
+]  # max tiles per pattern line row
 
 # --- Wall pattern ---
 
@@ -64,3 +70,35 @@ COLUMN_FOR_TILE_IN_ROW: dict[Tile, list[int]] = {
     tile: [WALL_PATTERN[row].index(tile) for row in range(BOARD_SIZE)]
     for tile in COLOR_TILES
 }
+
+# --- Cell groups for bonus scoring and completion progress ---
+
+CELLS_BY_ROW: list[list[tuple[int, int]]] = [
+    [(row, col) for col in range(BOARD_SIZE)] for row in range(BOARD_SIZE)
+]
+CELLS_BY_COLUMN: list[list[tuple[int, int]]] = [
+    [(row, col) for row in range(BOARD_SIZE)] for col in range(BOARD_SIZE)
+]
+CELLS_BY_TILE: list[list[tuple[int, int]]] = [
+    [(row, WALL_PATTERN[row].index(tile)) for row in range(BOARD_SIZE)]
+    for tile in COLOR_TILES
+]
+
+# --- Display ---
+
+BOARD_SEPARATOR = "|"
+MOVE_SOURCE_CENTER = "C"  # center pool source in move strings
+MOVE_DEST_FLOOR = "F"  # floor destination in move strings
+MOVE_MARKER_NORMAL = "-"  # no first-player tile taken
+MOVE_MARKER_FIRST_PLAYER = "+"  # first-player tile also taken
+MOVE_MARKER_UNKNOWN = "?"  # move not yet executed (count=0)
+CHAR_TILE: dict[str, Tile | None] = {
+    "B": Tile.BLUE,
+    "Y": Tile.YELLOW,
+    "R": Tile.RED,
+    "K": Tile.BLACK,
+    "W": Tile.WHITE,
+    "F": Tile.FIRST_PLAYER,
+    ".": None,
+}
+TILE_CHAR: dict[Tile | None, str] = {tile: char for char, tile in CHAR_TILE.items()}

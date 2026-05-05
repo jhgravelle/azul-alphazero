@@ -238,7 +238,7 @@ def main() -> None:
         succeeded += 1
 
         if not args.summary_only:
-            cur = game.state.current_player
+            cur = game.current_player
             print(
                 f"\n[{sample_idx + 1:03d}] turn={args.turn} player={cur} "
                 f"legal={len(legal)}  "

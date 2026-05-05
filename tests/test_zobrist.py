@@ -55,7 +55,7 @@ def test_hash_changes_when_pattern_line_changes():
     table = make_table()
     g = fresh_game()
     h_before = table.hash_state(g)
-    g.state.players[0].pattern_lines[0] = [Tile.BLUE]
+    g.players[0].pattern_lines[0] = [Tile.BLUE]
     assert table.hash_state(g) != h_before
 
 
@@ -63,7 +63,7 @@ def test_hash_changes_when_floor_changes():
     table = make_table()
     g = fresh_game()
     h_before = table.hash_state(g)
-    g.state.players[0].floor_line = [Tile.RED]
+    g.players[0].floor_line = [Tile.RED]
     assert table.hash_state(g) != h_before
 
 
@@ -71,7 +71,7 @@ def test_hash_changes_when_factory_changes():
     table = make_table()
     g = fresh_game()
     h_before = table.hash_state(g)
-    g.state.factories[0] = []
+    g.factories[0] = []
     assert table.hash_state(g) != h_before
 
 
@@ -79,7 +79,7 @@ def test_hash_changes_when_center_changes():
     table = make_table()
     g = fresh_game()
     h_before = table.hash_state(g)
-    g.state.center.append(Tile.BLUE)
+    g.center.append(Tile.BLUE)
     assert table.hash_state(g) != h_before
 
 
@@ -87,7 +87,7 @@ def test_hash_changes_when_current_player_changes():
     table = make_table()
     g = fresh_game()
     h_before = table.hash_state(g)
-    g.state.current_player = 1 - g.state.current_player
+    g.current_player_index = 1 - g.current_player_index
     assert table.hash_state(g) != h_before
 
 
@@ -95,10 +95,10 @@ def test_hash_changes_when_first_player_token_moves():
     table = make_table()
     g = fresh_game()
     # Ensure FP token is in center
-    if Tile.FIRST_PLAYER not in g.state.center:
-        g.state.center.append(Tile.FIRST_PLAYER)
+    if Tile.FIRST_PLAYER not in g.center:
+        g.center.append(Tile.FIRST_PLAYER)
     h_before = table.hash_state(g)
-    g.state.center.remove(Tile.FIRST_PLAYER)
+    g.center.remove(Tile.FIRST_PLAYER)
     assert table.hash_state(g) != h_before
 
 
@@ -110,7 +110,7 @@ def test_hash_unchanged_when_wall_changes():
     table = make_table()
     g = fresh_game()
     h_before = table.hash_state(g)
-    g.state.players[0].wall[0][0] = Tile.BLUE
+    g.players[0].wall[0][0] = Tile.BLUE
     assert table.hash_state(g) == h_before
 
 
@@ -119,7 +119,7 @@ def test_hash_unchanged_when_score_changes():
     table = make_table()
     g = fresh_game()
     h_before = table.hash_state(g)
-    g.state.players[0].score = 99
+    g.players[0].score = 99
     assert table.hash_state(g) == h_before
 
 
@@ -131,15 +131,15 @@ def test_hash_distinguishes_which_player_has_tiles():
     table = make_table()
     g1 = fresh_game()
     g2 = fresh_game()
-    g1.state.players[0].pattern_lines[0] = [Tile.BLUE]
-    g2.state.players[1].pattern_lines[0] = [Tile.BLUE]
+    g1.players[0].pattern_lines[0] = [Tile.BLUE]
+    g2.players[1].pattern_lines[0] = [Tile.BLUE]
     # Clear factories to isolate the difference
-    for f in g1.state.factories:
+    for f in g1.factories:
         f.clear()
-    for f in g2.state.factories:
+    for f in g2.factories:
         f.clear()
-    g1.state.center.clear()
-    g2.state.center.clear()
+    g1.center.clear()
+    g2.center.clear()
     assert table.hash_state(g1) != table.hash_state(g2)
 
 
@@ -150,12 +150,12 @@ def test_diagnostic_black_only_position():
     from neural.search_tree import SearchTree, _move_str
 
     game = Game()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.center.extend([Tile.BLACK])
+    game.center.clear()
+    game.center.extend([Tile.BLACK])
 
-    p1 = game.state.players[0]
+    p1 = game.players[0]
     p1.pattern_lines[0] = []  # row 1 empty
     p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]
     p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
@@ -170,7 +170,7 @@ def test_diagnostic_black_only_position():
     p1.floor_line = [Tile.FIRST_PLAYER]
     p1.wall = [[None] * 5 for _ in range(5)]
 
-    game.state.current_player = 0
+    game.current_player_index = 0
 
     legal = game.legal_moves()
     print(f"\nLegal moves: {[_move_str(m) for m in legal]}")
@@ -188,12 +188,12 @@ def test_diagnostic_hash_collisions():
     from neural.search_tree import _move_str, _ZOBRIST
 
     game = Game()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.center.extend([Tile.BLACK])
+    game.center.clear()
+    game.center.extend([Tile.BLACK])
 
-    p1 = game.state.players[0]
+    p1 = game.players[0]
     p1.pattern_lines[0] = []
     p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]
     p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
@@ -201,7 +201,7 @@ def test_diagnostic_hash_collisions():
     p1.pattern_lines[4] = [Tile.YELLOW] * 5
     p1.floor_line = [Tile.FIRST_PLAYER]
     p1.wall = [[None] * 5 for _ in range(5)]
-    game.state.current_player = 0
+    game.current_player_index = 0
 
     legal = game.legal_moves()
     for move in legal:
@@ -210,7 +210,7 @@ def test_diagnostic_hash_collisions():
         h = _ZOBRIST.hash_state(g)
         print(
             f"{_move_str(move):30s} hash={h:#018x} "
-            f"current_player={g.state.current_player}"
+            f"current_player={g.current_player_index}"
         )
 
 
@@ -244,12 +244,12 @@ def test_diagnostic_floor_after_moves():
     from neural.search_tree import _move_str
 
     game = Game()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.center.extend([Tile.BLACK])
+    game.center.clear()
+    game.center.extend([Tile.BLACK])
 
-    p1 = game.state.players[0]
+    p1 = game.players[0]
     p1.pattern_lines[0] = []
     p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]
     p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
@@ -257,14 +257,14 @@ def test_diagnostic_floor_after_moves():
     p1.pattern_lines[4] = [Tile.YELLOW] * 5
     p1.floor_line = [Tile.FIRST_PLAYER]
     p1.wall = [[None] * 5 for _ in range(5)]
-    game.state.current_player = 0
+    game.current_player_index = 0
 
     for move in game.legal_moves():
         g = game.clone()
         g.make_move(move)
         print(
             f"{_move_str(move):25s} "
-            f"floor={[t.name for t in g.state.players[0].floor_line]}"
+            f"floor={[t.name for t in g.players[0].floor_line]}"
         )
 
 
@@ -275,11 +275,11 @@ def test_diagnostic_component_hashes():
     from neural.zobrist import _MAX_FLOOR, _MAX_CENTER_COUNT
 
     game = Game()
-    for factory in game.state.factories:
+    for factory in game.factories:
         factory.clear()
-    game.state.center.clear()
-    game.state.center.extend([Tile.BLACK])
-    p1 = game.state.players[0]
+    game.center.clear()
+    game.center.extend([Tile.BLACK])
+    p1 = game.players[0]
     p1.pattern_lines[0] = []
     p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]
     p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
@@ -287,18 +287,18 @@ def test_diagnostic_component_hashes():
     p1.pattern_lines[4] = [Tile.YELLOW] * 5
     p1.floor_line = []
     p1.wall = [[None] * 5 for _ in range(5)]
-    game.state.current_player = 0
+    game.current_player_index = 0
 
     num_colors = len(COLOR_TILES)
 
     for move in game.legal_moves():
         g = game.clone()
         g.make_move(move)
-        board = g.state.players[0]
+        board = g.players[0]
         print(f"\n{_move_str(move)}:")
 
-        h_player = _ZOBRIST._current_player[g.state.current_player]
-        print(f"  current_player={g.state.current_player} h={h_player:#018x}")
+        h_player = _ZOBRIST._current_player[g.current_player_index]
+        print(f"  current_player={g.current_player_index} h={h_player:#018x}")
 
         h_pattern = 0
         for row in range(BOARD_SIZE):
@@ -326,7 +326,7 @@ def test_diagnostic_component_hashes():
 
         h_center = 0
         for cidx, color in enumerate(COLOR_TILES):
-            cnt = min(g.state.center.count(color), _MAX_CENTER_COUNT - 1)
+            cnt = min(g.center.count(color), _MAX_CENTER_COUNT - 1)
             if cnt > 0:
                 h_center ^= _ZOBRIST._center[cidx][cnt]
         print(f"  center h={h_center:#018x}")

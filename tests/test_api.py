@@ -75,8 +75,8 @@ def test_tied_game_reports_no_winner(client):
     game = Game()
     game.setup_round()
     # Both players start at 0 — a freshly set up game is always tied
-    game.state.players[0].score = 10
-    game.state.players[1].score = 10
+    game.players[0].score = 10
+    game.players[1].score = 10
     response = _build_response(game)
     assert response.winner is None
 
@@ -397,7 +397,7 @@ def test_undo_in_human_vs_bot_skips_back_to_human_turn(client):
     client.post("/agent-move")
 
     # It should now be the human's turn again (player 0).
-    assert main._game.state.current_player == 0
+    assert main._game.current_player_index == 0
 
     # One undo should jump back over the bot move to the human's turn.
     response = client.post("/undo")
@@ -634,7 +634,7 @@ def test_setup_start_clears_all_factories(client):
     from api import main
 
     # Put some tiles in a factory manually.
-    main._game.state.factories[0] = [main._game.state.bag.pop() for _ in range(4)]
+    main._game.factories[0] = [main._game.bag.pop() for _ in range(4)]
 
     client.post("/setup-factories/start")
     state = client.get("/state").json()
@@ -673,7 +673,7 @@ def test_place_tile_adds_to_first_factory(client):
 
     client.post("/setup-factories/start")
     # Find a color that's in the bag.
-    color = next(t for t in main._game.state.bag).name
+    color = next(t for t in main._game.bag).name
     client.post("/setup-factories/place", json={"color": color})
     state = client.get("/state").json()
     assert color in state["factories"][0]
@@ -683,17 +683,17 @@ def test_place_tile_draws_from_bag(client):
     from api import main
 
     client.post("/setup-factories/start")
-    bag_before = len(main._game.state.bag)
-    color = next(t for t in main._game.state.bag).name
+    bag_before = len(main._game.bag)
+    color = next(t for t in main._game.bag).name
     client.post("/setup-factories/place", json={"color": color})
-    assert len(main._game.state.bag) == bag_before - 1
+    assert len(main._game.bag) == bag_before - 1
 
 
 def test_place_tile_advances_cursor(client):
     from api import main
 
     client.post("/setup-factories/start")
-    color = next(t for t in main._game.state.bag).name
+    color = next(t for t in main._game.bag).name
     response = client.post("/setup-factories/place", json={"color": color})
     assert response.json()["factory_cursor"] == 1
 
@@ -703,7 +703,7 @@ def test_place_four_tiles_fills_first_factory_and_advances_to_second(client):
 
     client.post("/setup-factories/start")
     for _ in range(4):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
     state = client.get("/state").json()
     assert len(state["factories"][0]) == 4
@@ -714,7 +714,7 @@ def test_place_tile_updates_bag_counts(client):
     from api import main
 
     client.post("/setup-factories/start")
-    color = next(t for t in main._game.state.bag).name
+    color = next(t for t in main._game.bag).name
     bag_before = client.get("/state").json()["bag_counts"][color]
     client.post("/setup-factories/place", json={"color": color})
     bag_after = client.get("/state").json()["bag_counts"][color]
@@ -727,8 +727,8 @@ def test_place_tile_refills_bag_from_discard_when_color_missing(client):
 
     client.post("/setup-factories/start")
     # Leave only YELLOW in the bag; put everything else (including BLUE) in discard.
-    main._game.state.bag = [Tile.YELLOW]
-    main._game.state.discard = [Tile.BLUE] * 10
+    main._game.bag = [Tile.YELLOW]
+    main._game.discard = [Tile.BLUE] * 10
 
     # Requesting BLUE triggers a refill from discard before drawing.
     response = client.post("/setup-factories/place", json={"color": "BLUE"})
@@ -745,7 +745,7 @@ def test_place_tile_returns_400_for_unknown_color(client):
 def test_place_tile_returns_400_when_not_in_setup_mode(client):
     from api import main
 
-    color = next(t for t in main._game.state.bag).name
+    color = next(t for t in main._game.bag).name
     response = client.post("/setup-factories/place", json={"color": color})
     assert response.status_code == 400
 
@@ -757,19 +757,19 @@ def test_remove_tile_returns_it_to_bag(client):
     from api import main
 
     client.post("/setup-factories/start")
-    color = next(t for t in main._game.state.bag).name
+    color = next(t for t in main._game.bag).name
     client.post("/setup-factories/place", json={"color": color})
-    bag_after_place = len(main._game.state.bag)
+    bag_after_place = len(main._game.bag)
 
     client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
-    assert len(main._game.state.bag) == bag_after_place + 1
+    assert len(main._game.bag) == bag_after_place + 1
 
 
 def test_remove_tile_empties_that_slot(client):
     from api import main
 
     client.post("/setup-factories/start")
-    color = next(t for t in main._game.state.bag).name
+    color = next(t for t in main._game.bag).name
     client.post("/setup-factories/place", json={"color": color})
 
     client.post("/setup-factories/remove", json={"factory": 0, "slot": 0})
@@ -783,7 +783,7 @@ def test_remove_tile_sets_cursor_to_removed_slot(client):
     client.post("/setup-factories/start")
     # Place two tiles so cursor is at 2.
     for _ in range(2):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     # Remove the first tile — cursor should jump back to slot 0.
@@ -809,14 +809,14 @@ def test_restart_returns_all_tiles_to_bag(client):
     from api import main
 
     client.post("/setup-factories/start")
-    bag_at_start = len(main._game.state.bag)
+    bag_at_start = len(main._game.bag)
 
     for _ in range(4):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     client.post("/setup-factories/restart")
-    assert len(main._game.state.bag) == bag_at_start
+    assert len(main._game.bag) == bag_at_start
 
 
 def test_restart_clears_all_factories(client):
@@ -824,7 +824,7 @@ def test_restart_clears_all_factories(client):
 
     client.post("/setup-factories/start")
     for _ in range(4):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     client.post("/setup-factories/restart")
@@ -838,7 +838,7 @@ def test_restart_resets_cursor_to_zero(client):
 
     client.post("/setup-factories/start")
     for _ in range(4):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     response = client.post("/setup-factories/restart")
@@ -877,7 +877,7 @@ def test_random_with_some_tiles_already_placed(client):
     client.post("/setup-factories/start")
     # Place two tiles manually first.
     for _ in range(2):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     client.post("/setup-factories/random")
@@ -899,9 +899,9 @@ def test_commit_exits_setup_mode(client):
 
     client.post("/setup-factories/start")
     # Fill all factories.
-    num_factories = len(main._game.state.factories)
+    num_factories = len(main._game.factories)
     for _ in range(num_factories * 4):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     response = client.post("/setup-factories/commit")
@@ -915,7 +915,7 @@ def test_commit_returns_400_when_factories_not_full(client):
     from api import main
 
     for _ in range(3):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     response = client.post("/setup-factories/commit")
@@ -949,7 +949,7 @@ def test_total_tiles_conserved_after_place_and_remove(client):
     from api import main
 
     def total_tiles():
-        g = main._game.state
+        g = main._game
         in_bag = len(g.bag)
         in_discard = len(g.discard)
         in_factories = sum(len(f) for f in g.factories)
@@ -960,7 +960,7 @@ def test_total_tiles_conserved_after_place_and_remove(client):
 
     # Place 4 tiles.
     for _ in range(4):
-        color = next(t for t in main._game.state.bag).name
+        color = next(t for t in main._game.bag).name
         client.post("/setup-factories/place", json={"color": color})
 
     assert total_tiles() == before
@@ -979,11 +979,11 @@ def test_place_rejected_when_cursor_is_past_end(client):
 
     # Advance cursor past all slots without filling factories
     # (simulates state after random fill where cursor == total_slots).
-    main._factory_cursor = len(main._game.state.factories) * 4
+    main._factory_cursor = len(main._game.factories) * 4
 
     # place should reject — cursor is past the end and factories are NOT full,
     # so the restart-on-full branch does not trigger.
-    color = next(t for t in main._game.state.bag).name
+    color = next(t for t in main._game.bag).name
     response = client.post("/setup-factories/place", json={"color": color})
     assert response.status_code == 400
 
@@ -993,14 +993,14 @@ def test_total_tiles_conserved_after_restart(client):
     from api import main
 
     def total_tiles():
-        g = main._game.state
+        g = main._game
         in_bag = len(g.bag)
         in_discard = len(g.discard)
         in_factories = sum(len(f) for f in g.factories)
         return in_bag + in_discard + in_factories
 
     client.post("/setup-factories/start")
-    bag_at_start = len(main._game.state.bag)
+    bag_at_start = len(main._game.bag)
     before = total_tiles()
 
     # Fill all factories via random.
@@ -1012,7 +1012,7 @@ def test_total_tiles_conserved_after_restart(client):
     client.post("/setup-factories/restart")
 
     assert total_tiles() == before
-    assert len(main._game.state.bag) == bag_at_start
+    assert len(main._game.bag) == bag_at_start
 
 
 def test_total_tiles_conserved_after_clicking_placed_tile_when_full(client):
@@ -1020,7 +1020,7 @@ def test_total_tiles_conserved_after_clicking_placed_tile_when_full(client):
     from api import main
 
     def total_tiles():
-        g = main._game.state
+        g = main._game
         return len(g.bag) + len(g.discard) + sum(len(f) for f in g.factories)
 
     client.post("/setup-factories/start")
@@ -1046,14 +1046,14 @@ def test_restart_shuffles_bag(client):
     client.post("/setup-factories/random")  # fill all factories
 
     # Capture state before restart.
-    g = main._game.state
+    g = main._game
     tiles_in_factories = [t for f in g.factories for t in f]
     tiles_in_bag = list(g.bag)
     all_tiles_sorted = sorted(t.name for t in tiles_in_factories + tiles_in_bag)
     unshuffled_order = tiles_in_factories + tiles_in_bag
 
     client.post("/setup-factories/restart")
-    bag_after = list(main._game.state.bag)
+    bag_after = list(main._game.bag)
 
     # All tiles returned to bag.
     assert sorted(t.name for t in bag_after) == all_tiles_sorted
@@ -1125,8 +1125,8 @@ def test_from_snapshot_loads_factories_and_center(client):
     from engine.constants import Tile
 
     # Put a known tile in factory 0 of the current game.
-    main._game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
-    main._game.state.center = [Tile.FIRST_PLAYER]
+    main._game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.YELLOW]
+    main._game.center = [Tile.FIRST_PLAYER]
 
     snapshot = _make_snapshot(main._game)
     response = client.post("/hypothetical/from-snapshot", json=snapshot)
@@ -1140,8 +1140,8 @@ def test_from_snapshot_loads_board_states(client):
     """Player scores and walls should reflect the snapshot."""
     from api import main
 
-    main._game.state.players[0].score = 7
-    main._game.state.players[1].score = 3
+    main._game.players[0].score = 7
+    main._game.players[1].score = 3
 
     snapshot = _make_snapshot(main._game)
     response = client.post("/hypothetical/from-snapshot", json=snapshot)
@@ -1195,7 +1195,7 @@ def test_discard_after_from_snapshot_restores_original_game(client):
     import copy
 
     modified = copy.deepcopy(main._game)
-    modified.state.factories[0] = [Tile.RED, Tile.RED, Tile.RED, Tile.RED]
+    modified.factories[0] = [Tile.RED, Tile.RED, Tile.RED, Tile.RED]
     snapshot = _make_snapshot(modified)
 
     client.post("/hypothetical/from-snapshot", json=snapshot)
@@ -1211,8 +1211,8 @@ def test_discard_after_from_snapshot_restores_original_game(client):
 def _make_snapshot(game) -> dict:
     """Build a minimal from-snapshot payload from a live Game object."""
     return {
-        "factories": [[t.name for t in f] for f in game.state.factories],
-        "center": [t.name for t in game.state.center],
+        "factories": [[t.name for t in f] for f in game.factories],
+        "center": [t.name for t in game.center],
         "boards": [
             {
                 "score": p.score,
@@ -1223,7 +1223,7 @@ def _make_snapshot(game) -> dict:
                 "pattern_lines": [[t.name for t in line] for line in p.pattern_lines],
                 "floor_line": [t.name for t in p.floor_line],
             }
-            for p in game.state.players
+            for p in game.players
         ],
     }
 
@@ -1233,7 +1233,7 @@ def test_round_ends_and_api_starts_next_round_automatically(client):
     next round without requiring any extra call."""
     from api import main
 
-    round_before = main._game.state.round
+    round_before = main._game.round
 
     # Play until the round turns over.
     for _ in range(500):
@@ -1310,10 +1310,10 @@ def test_entering_factory_setup_refills_bag_when_empty(client):
 
     # Simulate the start-of-round-6 state: bag fully drained into discard.
     game = main._game
-    game.state.discard.extend(game.state.bag)
-    game.state.bag.clear()
-    assert len(game.state.bag) == 0
-    assert len(game.state.discard) > 0
+    game.discard.extend(game.bag)
+    game.bag.clear()
+    assert len(game.bag) == 0
+    assert len(game.discard) > 0
 
     main._enter_factory_setup()
 

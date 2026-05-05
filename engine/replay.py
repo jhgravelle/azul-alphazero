@@ -31,21 +31,7 @@ from engine.game_recorder import GameRecord
 
 
 def replay_to_move(record: GameRecord, move_index: int) -> Game:
-    """Reconstruct a live Game from a GameRecord at a flat move index.
-
-    Args:
-        record:     A fully loaded GameRecord.
-        move_index: How many moves to replay (0 = initial state).
-
-    Returns:
-        A Game object whose state reflects exactly move_index moves played.
-        If move_index falls at a round boundary, setup_round() has already
-        been called so the returned game has factories filled and is ready
-        to play.
-
-    Raises:
-        ValueError: if move_index is negative or exceeds total moves.
-    """
+    """Reconstruct a live Game from a GameRecord at a flat move index."""
     total_moves = sum(len(r.moves) for r in record.rounds)
 
     if move_index < 0 or move_index > total_moves:
@@ -61,8 +47,6 @@ def replay_to_move(record: GameRecord, move_index: int) -> Game:
         game.setup_round(factories=explicit_factories)
 
         if moves_replayed == move_index:
-            # Reached the target before playing any move this round —
-            # return with factories already filled.
             return game
 
         for move_record in round_record.moves:
@@ -75,15 +59,23 @@ def replay_to_move(record: GameRecord, move_index: int) -> Game:
             moves_replayed += 1
 
             if moves_replayed == move_index:
-                # If this move ended the round, set up the next round so the
-                # returned game is always in a playable state.
-                game.advance(skip_setup=True)
-                _setup_next_round(record, game, moves_replayed, total_moves)
+                if game.is_round_over():
+                    game._score_round()
+                    if game.is_game_over():
+                        game._score_game()
+                    else:
+                        _setup_next_round(record, game, moves_replayed, total_moves)
                 return game
 
-            game.advance()
+            # Not the target — advance fully so round scoring happens
+            if game.is_round_over():
+                game._score_round()
+                if game.is_game_over():
+                    return game
+                # Next iteration of outer loop calls setup_round with recorded factories
+            else:
+                game.next_player()
 
-    # move_index == total_moves: all moves replayed, game not yet scored.
     return game
 
 

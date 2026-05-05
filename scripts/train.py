@@ -37,7 +37,6 @@ from neural.trainer import (
 from agents.greedy import GreedyAgent
 from agents.random import RandomAgent
 from engine.game import Game
-from engine.scoring import earned_score_unclamped
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
@@ -156,15 +155,11 @@ def load_checkpoint(net: AzulNet, path: str) -> None:
 
 
 def _compute_game_scores(game: Game) -> list[int]:
-    """Return earned_score_unclamped minus clamped_points for each player.
+    """Return each player's earned score (unclamped, includes pending and penalty).
 
-    Unclamped so floor penalties below zero carry meaning. Minus
-    clamped_points so score-clamping artifacts don't inflate the target.
+    Uses player.earned so floor penalties below zero carry meaning.
     """
-    return [
-        earned_score_unclamped(player) - player.clamped_points
-        for player in game.state.players
-    ]
+    return [player.earned for player in game.players]
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -221,7 +216,7 @@ def evaluate(
 
         moves = 0
         history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-        prev_round = game.state.round
+        prev_round = game.round
 
         recorder: GameRecorder | None = None
         if record and i == 0:
@@ -233,12 +228,12 @@ def evaluate(
                 player_types=["alphazero", "alphazero"],
             )
             recorder.start_round(game)
-        last_round = game.state.round
+        last_round = game.round
 
         while not game.is_game_over() and moves < _MAX_MOVES:
             if not game.legal_moves():
                 break
-            current = game.state.current_player
+            current = game.current_player_index
 
             if buf is not None:
                 spatial, flat = encode_state(game)
@@ -253,11 +248,11 @@ def evaluate(
             if recorder is not None:
                 recorder.record_move(move, player_index=current)
 
-            prev_round = game.state.round
+            prev_round = game.round
             game.make_move(move)
             game.advance()
 
-            if game.state.round != prev_round:
+            if game.round != prev_round:
                 for agent in agents:
                     agent.reset_tree(game)
             elif not game.is_game_over():
@@ -267,9 +262,9 @@ def evaluate(
             if (
                 recorder is not None
                 and not game.is_game_over()
-                and game.state.round != last_round
+                and game.round != last_round
             ):
-                last_round = game.state.round
+                last_round = game.round
                 recorder.start_round(game)
 
             moves += 1
@@ -295,7 +290,7 @@ def evaluate(
                 va = total_score_value(scores, player_idx)
                 buf.push(spatial, flat, policy_vec, vw, vd, va)
         else:
-            scores = [p.score for p in game.state.players]
+            scores = [p.score for p in game.players]
 
         games_played += 1
 
@@ -347,7 +342,7 @@ def evaluate_vs_random(
         while not game.is_game_over() and moves < _MAX_MOVES:
             if not game.legal_moves():
                 break
-            current = game.state.current_player
+            current = game.current_player_index
             is_az = (current == 0) == az_is_p0
             if is_az:
                 tree = SearchTree(
@@ -361,7 +356,7 @@ def evaluate_vs_random(
             game.make_move(move)
             game.advance()
             moves += 1
-        scores = [p.score for p in game.state.players]
+        scores = [p.score for p in game.players]
         if scores[0] == scores[1]:
             wins += 0.5
         elif (scores[0] > scores[1]) == az_is_p0:

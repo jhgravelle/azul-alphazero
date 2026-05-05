@@ -114,9 +114,9 @@ def test_aznode_not_terminal_mid_game():
 
 def test_aznode_round_boundary_when_all_sources_empty():
     g = fresh_game()
-    for f in g.state.factories:
+    for f in g.factories:
         f.clear()
-    g.state.center.clear()
+    g.center.clear()
     assert AZNode(game=g).is_round_boundary
 
 
@@ -164,9 +164,9 @@ def test_choose_move_returns_legal_move():
 def test_choose_move_does_not_mutate_game():
     tree = make_tree(simulations=10)
     game = fresh_game()
-    factories_before = [list(f) for f in game.state.factories]
+    factories_before = [list(f) for f in game.factories]
     tree.choose_move(game)
-    assert [list(f) for f in game.state.factories] == factories_before
+    assert [list(f) for f in game.factories] == factories_before
 
 
 def test_choose_move_twice_returns_legal_moves():
@@ -250,8 +250,8 @@ def test_canonical_moves_fewer_than_legal_when_factories_identical():
     game = Game()
     game.setup_round()
     # Force two factories to be identical
-    game.state.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.RED]
-    game.state.factories[1] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.RED]
+    game.factories[0] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.RED]
+    game.factories[1] = [Tile.BLUE, Tile.BLUE, Tile.RED, Tile.RED]
     legal = game.legal_moves()
     canonical = tree._canonical_moves(game)
     assert len(canonical) < len(legal)
@@ -264,11 +264,11 @@ def test_canonical_moves_equal_when_all_factories_distinct():
     game.setup_round()
     # Force all factories to be distinct
     colors = COLOR_TILES
-    game.state.factories[0] = [colors[0]] * 4
-    game.state.factories[1] = [colors[1]] * 4
-    game.state.factories[2] = [colors[2]] * 4
-    game.state.factories[3] = [colors[3]] * 4
-    game.state.factories[4] = [colors[4]] * 4
+    game.factories[0] = [colors[0]] * 4
+    game.factories[1] = [colors[1]] * 4
+    game.factories[2] = [colors[2]] * 4
+    game.factories[3] = [colors[3]] * 4
+    game.factories[4] = [colors[4]] * 4
     legal = game.legal_moves()
     canonical = tree._canonical_moves(game)
     assert len(canonical) == len(legal)
@@ -279,7 +279,7 @@ def test_canonical_moves_always_includes_center_moves():
     tree = make_tree()
     game = Game()
     game.setup_round()
-    game.state.center.append(Tile.BLUE)
+    game.center.append(Tile.BLUE)
     canonical = tree._canonical_moves(game)
     center_moves = [m for m in canonical if m.source == CENTER]
     legal_center = [m for m in game.legal_moves() if m.source == CENTER]
@@ -292,9 +292,9 @@ def test_canonical_moves_always_includes_center_moves():
 def test_evaluate_round_boundary_returns_float():
     tree = make_tree()
     g = fresh_game()
-    for f in g.state.factories:
+    for f in g.factories:
         f.clear()
-    g.state.center.clear()
+    g.center.clear()
     node = AZNode(game=g)
     result = tree._evaluate(node)
     assert isinstance(result, float)
@@ -303,9 +303,9 @@ def test_evaluate_round_boundary_returns_float():
 def test_evaluate_round_boundary_in_range():
     tree = make_tree()
     g = fresh_game()
-    for f in g.state.factories:
+    for f in g.factories:
         f.clear()
-    g.state.center.clear()
+    g.center.clear()
     node = AZNode(game=g)
     result = tree._evaluate(node)
     assert -1.0 <= result <= 1.0
@@ -363,9 +363,9 @@ def test_batched_choose_move_does_not_mutate_game():
         batch_size=4,
         temperature=0.0,
     )
-    factories_before = [list(f) for f in game.state.factories]
+    factories_before = [list(f) for f in game.factories]
     tree.choose_move(game)
-    assert [list(f) for f in game.state.factories] == factories_before
+    assert [list(f) for f in game.factories] == factories_before
 
 
 def test_batched_get_policy_targets_sums_to_one():
@@ -577,14 +577,14 @@ def test_terminal_value_positive_for_winning_player():
     tree = SearchTree(policy_value_fn=dummy_fn, simulations=1)
 
     # Rig scores so current player (0) is winning
-    game.state.players[0].score = 40
-    game.state.players[1].score = 20
-    game.state.current_player = 0
+    game.players[0].score = 40
+    game.players[1].score = 20
+    game.current_player_index = 0
 
     val = tree._terminal_value(game)
     assert val > 0, f"Winning player should get positive terminal value, got {val}"
 
     # Flip — now current player is losing
-    game.state.current_player = 1
+    game.current_player_index = 1
     val = tree._terminal_value(game)
     assert val < 0, f"Losing player should get negative terminal value, got {val}"

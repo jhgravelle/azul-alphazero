@@ -1,26 +1,5 @@
 # neural/search_tree.py
-"""Game-owned MCTS search tree with transposition table and subtree reuse.
-
-The SearchTree owns:
-    - The Zobrist table (one instance, reused across rounds)
-    - The transposition table (hash → AZNode)
-    - The root node (advances as moves are made)
-
-Agents are stateless policy/value providers. The tree handles all
-MCTS bookkeeping: selection, expansion, backpropagation, subtree reuse.
-
-Factory canonicalization
-------------------------
-When expanding a node, factories with identical tile multisets are treated
-as a single source. This collapses redundant branches without changing the
-game engine.
-
-Round boundaries as leaf nodes
--------------------------------
-When a simulation reaches the end of a round (all factories and center
-empty, round not yet scored), it stops and evaluates with the value head
-rather than crossing into the next round's random factory setup.
-"""
+"""Game-owned MCTS search tree with transposition table and subtree reuse."""
 
 from __future__ import annotations
 
@@ -31,13 +10,11 @@ from dataclasses import dataclass, field
 from typing import Callable
 import torch
 from engine.game import Game, Move, CENTER
-from engine.scoring import earned_score, earned_score_unclamped
 from neural.model import AzulNet
 from neural.zobrist import ZobristTable
 
 _PUCT_C = 1.5
 
-# Shared Zobrist table — one instance for the lifetime of the process.
 _ZOBRIST = ZobristTable()
 
 
@@ -45,12 +22,6 @@ def make_policy_value_fn(
     net: "AzulNet",
     device: "torch.device | None" = None,
 ) -> "PolicyValueFn":
-    """Build a policy/value function backed by an AzulNet.
-
-    This is the standard way to create a PolicyValueFn for AlphaZeroAgent.
-    A uniform/zero function is available for testing by passing net=None
-    via the existing make_policy_value_fn in test_search_tree.py.
-    """
     import torch
     import torch.nn.functional as F
     from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -64,8 +35,6 @@ def make_policy_value_fn(
         flat = flat.unsqueeze(0).to(device)
         net.eval()
         with torch.no_grad():
-            # PUCT uses the absolute-score head; win/loss and diff are
-            # training-only auxiliaries ignored here.
             logits, _value_win, value_diff, _value_abs = net(spatial, flat)
         value = value_diff
         if not legal:
@@ -101,7 +70,6 @@ class AZNode:
 
     children: list[AZNode] = field(default_factory=list)
 
-    # None = not yet expanded; [] = fully expanded
     _untried_moves: list[Move] | None = None
     _untried_priors: list[float] | None = None
     _explored: bool = False
@@ -117,16 +85,8 @@ class AZNode:
 
     @property
     def is_round_boundary(self) -> bool:
-        """True when all tiles have been taken but the round is not yet scored.
-
-        This is a leaf node — we evaluate here rather than crossing into the
-        next round's random factory setup.
-        """
-        state = self.game.state
-        factories_empty = all(len(f) == 0 for f in state.factories)
-        non_fp_center = [t for t in state.center if t.name != "FIRST_PLAYER"]
-        center_empty = len(non_fp_center) == 0
-        return factories_empty and center_empty and not self.game.is_game_over()
+        """True when all tiles have been taken but the round is not yet scored."""
+        return self.game.is_round_over() and not self.game.is_game_over()
 
     @property
     def is_fully_expanded(self) -> bool:
@@ -166,14 +126,9 @@ class AZNode:
         return q + u
 
 
-# ── Policy/value callable type ────────────────────────────────────────────────
+# ── Policy/value callable types ───────────────────────────────────────────────
 
-# A function that takes a Game and a list of legal moves, and returns
-# (priors, value) where priors is a list of floats parallel to legal_moves.
 PolicyValueFn = Callable[[Game, list[Move]], tuple[list[float], float]]
-
-# A batched variant: takes a list of (game, legal_moves) pairs and returns
-# a parallel list of (priors, value) results — one net forward pass for all.
 BatchPolicyValueFn = Callable[
     [list[tuple[Game, list[Move]]]],
     list[tuple[list[float], float]],
@@ -184,12 +139,6 @@ def make_batch_policy_value_fn(
     net: "AzulNet",
     device: "torch.device | None" = None,
 ) -> "BatchPolicyValueFn":
-    """Build a batched policy/value function backed by an AzulNet.
-
-    Encodes all positions in the batch, runs a single forward pass, and
-    returns (priors, value) for each position.  Use this together with
-    SearchTree(batch_policy_value_fn=...) to enable batched MCTS.
-    """
     import torch
     import torch.nn.functional as F
     from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -210,13 +159,11 @@ def make_batch_policy_value_fn(
             spatials.append(spatial)
             flats.append(flat)
 
-        spatial_t = torch.stack(spatials).to(device)  # (B, 12, 5, 6)
-        flat_t = torch.stack(flats).to(device)  # (B, 47)
+        spatial_t = torch.stack(spatials).to(device)
+        flat_t = torch.stack(flats).to(device)
 
         net.eval()
         with torch.no_grad():
-            # PUCT uses the absolute-score head; win/loss and diff are
-            # training-only auxiliaries ignored here.
             logits_b, _wins_b, values_b, _abs_b = net(spatial_t, flat_t)
 
         results: list[tuple[list[float], float]] = []
@@ -243,14 +190,6 @@ def make_batch_policy_value_fn(
 
 
 class SearchTree:
-    """MCTS search tree with transposition table and subtree reuse.
-
-    Args:
-        policy_value_fn: Callable that returns (priors, value) for a position.
-        simulations:     Number of MCTS simulations per move.
-        temperature:     Move selection temperature. 0.0 = greedy (most visits).
-    """
-
     def __init__(
         self,
         policy_value_fn: PolicyValueFn,
@@ -271,22 +210,18 @@ class SearchTree:
         self._stable_batches: int = 0
         self._last_top_k: list[int] = []
         self._root: AZNode | None = None
-        # Transposition table: zobrist_hash → AZNode
         self._table: dict[int, AZNode] = {}
-        # Lock for tree mutations in batched/multi-threaded mode
         self._lock = threading.Lock()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
     def reset(self, game: Game) -> None:
-        """Start a fresh tree for a new round. Call at the start of each round."""
         self._table = {}
         self._root = self._make_node(game.clone(), parent=None, move=None, prior=0.0)
         self._stable_batches = 0
         self._last_top_k = []
 
     def choose_move(self, game: Game) -> Move:
-        """Run simulations from the current root and return the best move."""
         if self._root is None:
             self.reset(game)
         assert self._root is not None
@@ -304,8 +239,6 @@ class SearchTree:
                 new_root = child
                 break
 
-        # Discard the child if it was treated as a boundary/terminal during
-        # simulation (fully expanded but no children = never actually explored).
         if (
             new_root is not None
             and new_root.children == []
@@ -317,7 +250,6 @@ class SearchTree:
             new_game = self._root.game.clone()
             new_game.make_move(move)
             new_game.advance()
-            # Remove any stale transposition entry before making a new node
             old_hash = _ZOBRIST.hash_state(new_game)
             self._table.pop(old_hash, None)
             new_root = self._make_node(new_game, parent=None, move=move, prior=0.0)
@@ -331,7 +263,6 @@ class SearchTree:
         self._root = new_root
 
     def get_policy_targets(self, game: Game) -> tuple[Move, list[tuple[Move, float]]]:
-        """Run simulations and return (chosen_move, [(move, visit_fraction)])."""
         if self._root is None:
             self.reset(game)
         assert self._root is not None
@@ -363,20 +294,6 @@ class SearchTree:
                 self._backpropagate(node, value)
 
     def _run_batched_simulations(self) -> None:
-        """Run simulations in batches with virtual loss for diverse leaf selection.
-
-        Phase 1 — Select batch_size leaves sequentially under the lock, applying
-                   virtual loss to each path so later selections diverge.
-        Phase 2 — Evaluate all leaves in a single batched net forward pass
-                   (no lock held — this is the expensive GPU step).
-        Phase 3 — Undo virtual loss, expand leaves with returned priors, and
-                   backpropagate values, each under the lock.
-
-        n_threads controls the ThreadPoolExecutor used for Phase 3 backprop;
-        for the current simple implementation Phase 1 is sequential (the lock
-        serialises selection) and Phase 2 is always single-threaded (one GPU
-        call).  True parallel selection is a future improvement.
-        """
         assert self._root is not None
         assert self.batch_policy_value_fn is not None
 
@@ -385,7 +302,6 @@ class SearchTree:
             batch_n = min(self.batch_size, remaining)
             remaining -= batch_n
 
-            # ── Phase 1: select leaves under lock ─────────────────────────
             leaves_and_legals: list[tuple[AZNode, list[Move]]] = []
             for _ in range(batch_n):
                 with self._lock:
@@ -396,12 +312,10 @@ class SearchTree:
                         legal = self._canonical_moves(node.game)
                     leaves_and_legals.append((node, legal))
 
-            # ── Phase 2: batch evaluate (no lock) ─────────────────────────
             batch_results = self.batch_policy_value_fn(
                 [(node.game, legal) for node, legal in leaves_and_legals]
             )
 
-            # ── Phase 3: expand + backpropagate under lock ─────────────────
             def _backprop_one(
                 node: AZNode,
                 legal: list[Move],
@@ -415,7 +329,6 @@ class SearchTree:
                     if node.is_terminal:
                         value = self._terminal_value(node.game)
                     elif node._untried_moves is None:
-                        # First visit — expand with priors from batch
                         if legal:
                             node._untried_moves = list(legal)
                             node._untried_priors = list(priors)
@@ -432,25 +345,17 @@ class SearchTree:
                     )
                 ]
                 for f in futs:
-                    f.result()  # propagate any exceptions
+                    f.result()
 
     # ── Virtual loss helpers ───────────────────────────────────────────────
 
     def _select_vl(self, root: AZNode) -> AZNode:
-        """Like _select but applies +1 virtual loss to every node on the path.
-
-        Called under self._lock.  Virtual loss makes the chosen path look
-        pessimistic to subsequent selections in the same batch, encouraging
-        diversity without full thread synchronisation.
-        """
         node = root
         while not node.is_terminal and not node.is_round_boundary:
             if node._untried_moves is None:
-                # Unexpanded leaf — stop here
                 node.virtual_loss += 1
                 return node
             if node._untried_moves:
-                # Expand one new child (priors already set on parent)
                 move = node._untried_moves.pop()
                 prior = node._untried_priors.pop()  # type: ignore[union-attr]
                 child_game = node.game.clone()
@@ -461,22 +366,18 @@ class SearchTree:
                 node.virtual_loss += 1
                 child.virtual_loss += 1
                 return child
-            # Fully expanded — pick best PUCT child
             eligible = [c for c in node.children if not c._fully_explored]
             if not eligible:
                 node._explored = True
                 node.virtual_loss += 1
                 return node
             node.virtual_loss += 1
-            node = max(eligible, key=lambda c: c.puct_score(node.visits))
+            parent_visits = node.visits + node.virtual_loss
+            node = max(eligible, key=lambda c: c.puct_score(parent_visits))
         node.virtual_loss += 1
         return node
 
     def _undo_vl(self, node: AZNode) -> None:
-        """Walk up the parent chain removing one virtual loss from each node.
-
-        Called under self._lock after backpropagation is complete.
-        """
         current: AZNode | None = node
         while current is not None:
             if current.virtual_loss > 0:
@@ -486,24 +387,18 @@ class SearchTree:
     # ── Tree operations ────────────────────────────────────────────────────
 
     def _select(self, node: AZNode) -> AZNode:
-        """Descend the tree, creating one new child when an untried move exists."""
         while not node.is_terminal and not node.is_round_boundary:
             if node._untried_moves is None:
-                return node  # not yet expanded
+                return node
             if node._untried_moves:
-                # Create one new child from the next untried move
                 move = node._untried_moves.pop()
                 prior = node._untried_priors.pop()  # type: ignore[union-attr]
-
                 child_game = node.game.clone()
                 child_game.make_move(move)
                 child_game.next_player()
-                # Do NOT score round — round boundary = leaf node
-
                 child = self._make_node(child_game, parent=node, move=move, prior=prior)
                 node.children.append(child)
                 return child
-            # Fully expanded — pick best PUCT child
             eligible = [c for c in node.children if not c._fully_explored]
             if not eligible:
                 node._explored = True
@@ -512,12 +407,6 @@ class SearchTree:
         return node
 
     def _ensure_expanded(self, node: AZNode) -> float | None:
-        """Expand a node if not already expanded.
-
-        Returns the value from the policy_value_fn call if expansion
-        happened, so _evaluate can reuse it without a second call.
-        Returns None if the node was already expanded or is a leaf.
-        """
         if node._untried_moves is not None:
             return None
         if node.is_terminal or node.is_round_boundary:
@@ -537,12 +426,6 @@ class SearchTree:
         return value
 
     def _evaluate(self, node: AZNode) -> float:
-        """Return a value estimate for node, calling policy_value_fn at most once.
-
-        If _ensure_expanded already called policy_value_fn during this
-        evaluation (first visit to an unexpanded node), reuse that value
-        rather than calling again.
-        """
         if node.is_terminal:
             return self._terminal_value(node.game)
         if node.is_round_boundary:
@@ -553,11 +436,9 @@ class SearchTree:
                 node.net_value_diff = value
             return value
         if node._untried_moves is None:
-            # First visit — expand and return the value from that call.
             value = self._ensure_expanded(node)
             if value is not None:
                 return value
-        # Already expanded — call policy_value_fn for the value only.
         _, value = self.policy_value_fn(node.game, self._canonical_moves(node.game))
         if node.net_value_diff is None:
             node.net_value_diff = value
@@ -569,7 +450,7 @@ class SearchTree:
             current.visits += 1
             current.total_value += value
             value = -value
-            c = current  # narrowed to AZNode
+            c = current
             c._check_and_mark_explored()
             current = current.parent
 
@@ -594,29 +475,18 @@ class SearchTree:
         return node
 
     def _prune(self, node: AZNode) -> None:
-        """Recursively remove a subtree from the transposition table."""
         self._table.pop(node.zobrist_hash, None)
         for child in node.children:
             self._prune(child)
 
     def _canonical_moves(self, game: Game) -> list[Move]:
-        """Return legal moves with duplicate-factory moves collapsed.
-
-        If two factories have identical tile multisets, only moves from the
-        first (by sorted order) are included. This reduces redundant branches
-        without changing the game engine.
-        """
         legal = game.legal_moves()
         if not legal:
             return legal
 
-        # Build a map from factory_idx → canonical factory_idx
-        # Two factories are identical if their sorted tile lists match.
-        factories = game.state.factories
-        seen: dict[tuple, int] = {}  # multiset_key → first factory_idx with that key
-        canonical: dict[int, int] = {}  # factory_idx → canonical_factory_idx
-
-        for f_idx, factory in enumerate(factories):
+        seen: dict[tuple, int] = {}
+        canonical: dict[int, int] = {}
+        for f_idx, factory in enumerate(game.factories):
             key = tuple(sorted(t.name for t in factory))
             if key in seen:
                 canonical[f_idx] = seen[key]
@@ -624,18 +494,15 @@ class SearchTree:
                 seen[key] = f_idx
                 canonical[f_idx] = f_idx
 
-        # Keep only moves from canonical factories (or CENTER)
         result = []
         for move in legal:
             if move.source == CENTER:
                 result.append(move)
             elif canonical.get(move.source, move.source) == move.source:
                 result.append(move)
-
         return result
 
     def _pick_move(self, root: AZNode) -> Move:
-        """Select a move from root's children based on temperature."""
         if not root.children:
             legal = root.game.legal_moves()
             if not legal:
@@ -658,48 +525,39 @@ class SearchTree:
         return chosen
 
     def _terminal_value(self, game: Game) -> float:
-        scores = [earned_score(p) - p.clamped_points for p in game.state.players]
-        idx = game.state.current_player
-        diff = (scores[idx] - scores[1 - idx]) / 20.0
+        idx = game.current_player_index
+        my_earned = game.players[idx].earned
+        opp_earned = game.players[1 - idx].earned
+        diff = (my_earned - opp_earned) / 20.0
         return max(-1.0, min(1.0, diff))
 
     def _minimax_value(
-        self, node: "AZNode", depth: int = 0, root_player: int | None = None
+        self, node: AZNode, depth: int = 0, root_player: int | None = None
     ) -> float:
         if root_player is None:
-            root_player = node.game.state.current_player
+            root_player = node.game.current_player_index
 
         if not node.children or node.is_round_boundary or node.is_terminal:
-            # _terminal_value returns from current_player's perspective.
-            # Convert to root_player's perspective.
             leaf_val = (
                 node.q_value if node.visits > 0 else self._terminal_value(node.game)
             )
-            leaf_player = node.game.state.current_player
-            if leaf_player == root_player:
-                return leaf_val
-            else:
-                return -leaf_val
+            leaf_player = node.game.current_player_index
+            return leaf_val if leaf_player == root_player else -leaf_val
 
         visited = [c for c in node.children if c.visits > 0]
         if not visited:
-            leaf_player = node.game.state.current_player
-            if leaf_player == root_player:
-                return node.q_value
-            else:
-                return -node.q_value
+            leaf_player = node.game.current_player_index
+            return node.q_value if leaf_player == root_player else -node.q_value
 
-        if node.game.state.current_player == root_player:
-            # Root player's turn — maximise
+        if node.game.current_player_index == root_player:
             return max(self._minimax_value(c, depth + 1, root_player) for c in visited)
         else:
-            # Opponent's turn — minimise root player's value
             return min(self._minimax_value(c, depth + 1, root_player) for c in visited)
 
     def serialize(self, max_depth: int = 4, top_k: int = 200) -> dict:
         if self._root is None:
             return self._empty_node_dict()
-        root_player = self._root.game.state.current_player
+        root_player = self._root.game.current_player_index
         return self._serialize_node(
             self._root,
             depth=0,
@@ -714,15 +572,12 @@ class SearchTree:
         return self._root._fully_explored
 
     def record_batch_stability(self, top_k: int = 5) -> None:
-        """Called after each batch. Updates the consecutive-stable-batch
-        counter by comparing the current top-k ranking to the previous one.
-        """
         if self._root is not None:
             self._is_subtree_explored(self._root)
 
         if self._root is None or not self._root.children:
             self._stable_batches = 0
-            self._last_top_k: list[int] = []
+            self._last_top_k = []
             return
 
         visited = [c for c in self._root.children if c.visits > 0]
@@ -736,7 +591,7 @@ class SearchTree:
             self._stable_batches = 0
         self._last_top_k = current
 
-    def _is_subtree_explored(self, node: "AZNode") -> bool:
+    def _is_subtree_explored(self, node: AZNode) -> bool:
         if node._explored:
             return True
         if node.is_terminal or node.is_round_boundary:
@@ -765,26 +620,26 @@ class SearchTree:
 
     def _serialize_node(
         self,
-        node,
-        depth,
-        max_depth,
-        top_k,
-        root_player=None,
-        parent_game=None,
-        parent_visits=None,
-    ):
+        node: AZNode,
+        depth: int,
+        max_depth: int,
+        top_k: int,
+        root_player: int | None = None,
+        parent_game: Game | None = None,
+        parent_visits: int | None = None,
+    ) -> dict:
         if root_player is None:
-            root_player = node.game.state.current_player
+            root_player = node.game.current_player_index
         if parent_game is None:
             parent_game = node.game
 
         immediate = None
         if node.move is not None:
-            moving_player = parent_game.state.current_player
-            before = earned_score_unclamped(parent_game.state.players[moving_player])
-            after = earned_score_unclamped(node.game.state.players[moving_player])
+            moving_player_index = parent_game.current_player_index
+            before = parent_game.players[moving_player_index].earned
+            after = node.game.players[moving_player_index].earned
             delta = after - before
-            immediate = delta if moving_player == root_player else -delta
+            immediate = delta if moving_player_index == root_player else -delta
 
         children: list[dict] = []
         if depth < max_depth and node.children:
@@ -828,8 +683,8 @@ class SearchTree:
             if not valid_children:
                 cumulative_immediate = immediate
             else:
-                next_player = node.game.state.current_player
-                if next_player == root_player:
+                next_player_index = node.game.current_player_index
+                if next_player_index == root_player:
                     best = max(c["cumulative_immediate"] for c in valid_children)
                 else:
                     best = min(c["cumulative_immediate"] for c in valid_children)
@@ -843,7 +698,7 @@ class SearchTree:
             "cumulative_immediate": cumulative_immediate,
             "value_diff": float(
                 node.q_value
-                if node.game.state.current_player == root_player
+                if node.game.current_player_index == root_player
                 else -node.q_value
             ),
             "minimax_value": float(self._minimax_value(node, depth, root_player)),
@@ -854,7 +709,7 @@ class SearchTree:
             "net_value_diff": (
                 float(
                     node.net_value_diff
-                    if node.game.state.current_player == root_player
+                    if node.game.current_player_index == root_player
                     else -node.net_value_diff
                 )
                 if node.net_value_diff is not None
@@ -872,13 +727,6 @@ class SearchTree:
 
 
 def _move_str(move: Move) -> str:
-    """Human-readable move label for the inspector UI.
-
-    Format: 'F<n> <COLOR> → row <r>'  for factory sources
-            'CTR <COLOR> → row <r>'   for center
-            'F<n> <COLOR> → floor'    for floor destination
-            'CTR <COLOR> → floor'     for center + floor
-    """
     from engine.game import CENTER, FLOOR
 
     source = "CTR" if move.source == CENTER else f"F{move.source + 1}"

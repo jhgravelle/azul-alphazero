@@ -475,11 +475,11 @@ def collect_mirror_heuristic_games(
                 wins_by_p1 += 1
             else:
                 ties += 1
-            for player_idx, spatial, flat, policy_vec in history:
+            for player_idx, encoding, policy_vec in history:
                 vw = win_loss_value(scores, player_idx)
                 vd = score_differential_value(scores, player_idx)
                 va = total_score_value(scores, player_idx)
-                buf.push(spatial, flat, policy_vec, vw, vd, va)
+                buf.push(encoding, policy_vec, vw, vd, va)
 
         logger.debug(
             f"mirror pair {pair_num + 1}/{num_pairs} -- seed {game_seed} -- "
@@ -622,7 +622,7 @@ def _play_heuristic_game(
 # ── Parallel heuristic game collection ───────────────────────────────────────
 
 # A game record is a list of move records.
-# Each move record: (player_idx, spatial_list, flat_list, policy_list, vw, vd, va)
+# Each move record: (player_idx, encoding_list, policy_list, vw, vd, va)
 # All tensors are stored as plain Python lists to survive multiprocessing pickle.
 _MoveRecord = tuple[int, list, list, float, float, float]
 _GameRecord = list[_MoveRecord]

@@ -3,7 +3,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-05-05
-> Status: Phase 8 in progress. 8j complete — encoding v3 redesigned as pure MLP (flat 123 values, no spatial conv). All tests passing. Existing checkpoints are incompatible (removed conv layers entirely). Next: fresh training run with v3 or inspector serialization redesign.
+> Status: Phase 8 in progress. 8j complete — encoding v3 redesigned as pure MLP (flat 123 values, no spatial conv). Fixed test suite and trainer consistency with v3 flat encoding. Updated model.py, trainer.py, and all test files to use single flat encoding tensor (123 values) instead of spatial+flat. All tests now compatible with v3 design. Next: fresh training run with v3 or inspector serialization redesign.
 
 ---
 

@@ -708,7 +708,7 @@ def main() -> None:
             simulations=args.simulations,
             temperature=args.temperature,
             opponent=opponent,
-            device=DEVICE,
+            _device=DEVICE,
         )
         logger.info("replay buffer size: %d", len(buf))
 

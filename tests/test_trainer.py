@@ -4,7 +4,7 @@
 import torch
 import pytest
 
-from neural.encoder import SPATIAL_SHAPE, FLAT_SIZE, MOVE_SPACE_SIZE
+from neural.encoder import FLAT_SIZE, MOVE_SPACE_SIZE
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.trainer import (
@@ -31,25 +31,22 @@ def make_batch(
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
-    torch.Tensor,
 ]:
-    """Return a random (spatials, flats, policies, v_win, v_diff, v_abs) batch."""
-    spatials = torch.rand(batch_size, *SPATIAL_SHAPE)
-    flats = torch.rand(batch_size, FLAT_SIZE)
+    """Return a random (encodings, policies, v_win, v_diff, v_abs) batch."""
+    encodings = torch.rand(batch_size, FLAT_SIZE)
     raw = torch.rand(batch_size, MOVE_SPACE_SIZE)
     policies = raw / raw.sum(dim=-1, keepdim=True)
     values_win = torch.rand(batch_size, 1) * 2 - 1
     values_diff = torch.rand(batch_size, 1) * 2 - 1
     values_abs = torch.rand(batch_size, 1) * 2 - 1
-    return spatials, flats, policies, values_win, values_diff, values_abs
+    return encodings, policies, values_win, values_diff, values_abs
 
 
 def fill_buffer(buf: ReplayBuffer, n: int) -> None:
-    spatials, flats, policies, vw, vd, va = make_batch(n)
+    encodings, policies, vw, vd, va = make_batch(n)
     for i in range(n):
         buf.push(
-            spatials[i],
-            flats[i],
+            encodings[i],
             policies[i],
             vw[i, 0].item(),
             vd[i, 0].item(),
@@ -154,7 +151,7 @@ def test_collect_heuristic_games_policy_is_distribution_not_one_hot():
     entries in its policy vector."""
     buf = ReplayBuffer(capacity=10_000)
     collect_heuristic_games(buf, num_games=3)
-    _, _, policies, _, _, _ = buf.sample(min(len(buf), 50))
+    _, policies, _, _, _ = buf.sample(min(len(buf), 50))
     nonzero_counts = (policies > 0).sum(dim=1)
     multi_move_rows = (nonzero_counts > 1).sum().item()
     assert multi_move_rows > 0, (
@@ -167,7 +164,7 @@ def test_collect_heuristic_games_policy_sums_to_one():
     """Every policy target should sum to exactly 1.0."""
     buf = ReplayBuffer(capacity=10_000)
     collect_heuristic_games(buf, num_games=2)
-    _, _, policies, _, _, _ = buf.sample(min(len(buf), 30))
+    _, policies, _, _, _ = buf.sample(min(len(buf), 30))
     sums = policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
@@ -247,7 +244,7 @@ def test_collect_self_play_warmup_az_as_p1_records_nonzero_score():
             simulations=5,
             temperature=1.0,
             opponent=opponent,
-            device=torch.device("cpu"),
+            _device=torch.device("cpu"),
         )
     finally:
         game_module.Game.setup_round = original_setup
@@ -585,7 +582,7 @@ def test_collect_mirror_games_policy_sums_to_one():
 
     buf = ReplayBuffer(capacity=10_000)
     collect_mirror_heuristic_games(buf, num_pairs=2)
-    _, _, policies, _, _, _ = buf.sample(min(len(buf), 30))
+    _, policies, _, _, _ = buf.sample(min(len(buf), 30))
     sums = policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 

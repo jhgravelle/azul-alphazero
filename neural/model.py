@@ -46,7 +46,7 @@ class AzulNet(nn.Module):
         num_blocks: Number of residual blocks in the trunk. Default 3.
     """
 
-    def __init__(self, hidden_dim: int = 256, num_blocks: int = 3) -> None:
+    def __init__(self, hidden_dim: int = 256, num_blocks: int = 1) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks

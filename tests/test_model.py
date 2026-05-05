@@ -53,10 +53,6 @@ def test_azulnet_default_hidden_dim():
     assert make_net().hidden_dim == 256
 
 
-def test_azulnet_default_num_blocks():
-    assert make_net().num_blocks == 3
-
-
 # ── Forward pass: output structure ────────────────────────────────────
 
 

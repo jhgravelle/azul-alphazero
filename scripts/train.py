@@ -31,6 +31,7 @@ from neural.trainer import (
     win_loss_value,
     score_differential_value,
     collect_mirror_heuristic_games,
+    _pretrain_matchups,
 )
 
 # from agents.alphabeta import AlphaBetaAgent
@@ -42,6 +43,12 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
 LOG_DIR = Path("logs")
 _MAX_MOVES = 100
+
+# Pretrain mode constants (hardcoded — not runtime-editable)
+PRETRAIN_GAMES_PER_ITER = 100
+PRETRAIN_TRAINING_STEPS = 500
+PRETRAIN_MAX_ITERATIONS = 50
+PRETRAIN_PLATEAU_SKIP_EARLY = 2
 
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -176,6 +183,7 @@ def evaluate(
     iteration: int = 0,
     generation: int = 0,
 ) -> float:
+    import random as _random
     from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
     from neural.model import AzulNet as _AzulNet
     from agents.alphazero import AlphaZeroAgent
@@ -192,17 +200,25 @@ def evaluate(
     new_net_cpu = _to_cpu(new_net)
     old_net_cpu = _to_cpu(old_net)
 
-    wins_needed = math.ceil(num_games * win_threshold)
-    losses_allowed = num_games - wins_needed
+    # Mirror eval: each seed is played twice (sides swapped), so total = num_games * 2.
+    total_games = num_games * 2
+    wins_needed = math.ceil(total_games * win_threshold)
+    losses_allowed = total_games - wins_needed
 
     new_wins = 0.0
     losses = 0
     games_played = 0
 
-    for i in range(num_games):
-        game = Game()
+    def _play_one(
+        seed: int,
+        new_is_p0: bool,
+        game_label: str,
+        do_record: bool,
+    ) -> None:
+        nonlocal new_wins, losses, games_played
+
+        game = Game(seed=seed)
         game.setup_round()
-        new_is_p0 = i % 2 == 0
 
         nets_cpu = (
             [new_net_cpu, old_net_cpu] if new_is_p0 else [old_net_cpu, new_net_cpu]
@@ -219,7 +235,7 @@ def evaluate(
         prev_round = game.round
 
         recorder: GameRecorder | None = None
-        if record and i == 0:
+        if do_record:
             recorder = GameRecorder(
                 player_names=[
                     f"candidate (iter {iteration})",
@@ -271,7 +287,7 @@ def evaluate(
 
         if moves >= _MAX_MOVES:
             logger.warning(
-                f"eval game {i} hit move cap ({_MAX_MOVES}) -- scoring as tie"
+                f"eval {game_label} hit move cap ({_MAX_MOVES}) -- scoring as tie"
             )
 
         if recorder is not None:
@@ -305,24 +321,51 @@ def evaluate(
             losses += 1
 
         logger.info(
-            f"  eval game {i + 1}/{num_games} -- scores {scores} -- "
+            f"  eval {game_label} -- scores {scores} -- "
             f"{result} (new win rate so far: {new_wins / games_played:.0%})"
         )
 
+    first_record_done = False
+    for i in range(num_games):
+        seed = _random.randint(0, 2**31 - 1)
+
+        # Side A: new as p0
+        new_is_p0_a = i % 2 == 0
+        do_record = record and not first_record_done
+        _play_one(seed, new_is_p0_a, f"pair {i + 1}a/{num_games}", do_record)
+        if do_record:
+            first_record_done = True
+
         if new_wins >= wins_needed:
             logger.info(
-                f"  eval early pass after {games_played}/{num_games} games -- "
+                f"  eval early pass after {games_played}/{total_games} games -- "
                 f"{new_wins:.0f} wins >= {wins_needed} needed"
             )
             break
         if losses > losses_allowed:
             logger.info(
-                f"  eval early fail after {games_played}/{num_games} games -- "
+                f"  eval early fail after {games_played}/{total_games} games -- "
                 f"{losses} losses > {losses_allowed} allowed"
             )
             break
 
-    return new_wins / num_games
+        # Side B: sides swapped, same seed
+        _play_one(seed, not new_is_p0_a, f"pair {i + 1}b/{num_games}", False)
+
+        if new_wins >= wins_needed:
+            logger.info(
+                f"  eval early pass after {games_played}/{total_games} games -- "
+                f"{new_wins:.0f} wins >= {wins_needed} needed"
+            )
+            break
+        if losses > losses_allowed:
+            logger.info(
+                f"  eval early fail after {games_played}/{total_games} games -- "
+                f"{losses} losses > {losses_allowed} allowed"
+            )
+            break
+
+    return new_wins / games_played if games_played else 0.0
 
 
 def evaluate_vs_random(
@@ -573,6 +616,13 @@ def main() -> None:
         "identical factory sequences with sides swapped, forcing the value "
         "head to ignore factory fingerprints (default 0)",
     )
+    parser.add_argument(
+        "--pretrain",
+        action="store_true",
+        help="fill buffer with weak mirrored heuristic games, train until loss "
+        "plateaus, then auto-switch to normal AlphaZero self-play. Buffer "
+        "carries over to self-play phase.",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -601,6 +651,8 @@ def main() -> None:
     # alphabeta_opponent = AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
     recent_az_scores: list[float] = []
     iter_results: list[IterResult] = []
+    pretrain_done = not args.pretrain  # skip pretrain unless --pretrain flag given
+    prev_pretrain_loss: float | None = None
 
     if warmup_mode:
         logger.info(
@@ -695,6 +747,62 @@ def main() -> None:
         t0 = time.time()
         logger.info("-" * 60)
         logger.info("iteration %d / %d", iteration, args.iterations)
+
+        # ── 0. Pretrain phase (weak heuristics → self-play auto-switch) ──────
+        if not pretrain_done:
+            logger.info(
+                "pretrain iter %d -- collecting %d mirror pairs with weak heuristics",
+                iteration,
+                PRETRAIN_GAMES_PER_ITER,
+            )
+            collect_mirror_heuristic_games(
+                buf,
+                num_pairs=PRETRAIN_GAMES_PER_ITER,
+                matchups=_pretrain_matchups(),
+            )
+            logger.info("replay buffer size: %d", len(buf))
+
+            pretrain_loss_accum = _init_loss_accumulator()
+            for _ in range(PRETRAIN_TRAINING_STEPS):
+                losses = trainer.train_step(buf, diff_only=args.diff_only)
+                _accumulate_losses(pretrain_loss_accum, losses)
+            avg_pretrain_loss = pretrain_loss_accum["total"] / PRETRAIN_TRAINING_STEPS
+            logger.info(
+                "pretrain iter %d -- %s",
+                iteration,
+                _format_loss_line(pretrain_loss_accum, PRETRAIN_TRAINING_STEPS),
+            )
+
+            # Plateau detection: switch when loss increases after skip window
+            if iteration > PRETRAIN_PLATEAU_SKIP_EARLY:
+                if (
+                    prev_pretrain_loss is not None
+                    and avg_pretrain_loss > prev_pretrain_loss
+                ):
+                    logger.info(
+                        "pretrain plateau detected (loss %.4f > %.4f) -- "
+                        "saving checkpoint and switching to self-play",
+                        avg_pretrain_loss,
+                        prev_pretrain_loss,
+                    )
+                    save_checkpoint(net, generation=0)
+                    best_net = copy.deepcopy(net)
+                    pretrain_done = True
+            prev_pretrain_loss = avg_pretrain_loss
+
+            if iteration >= PRETRAIN_MAX_ITERATIONS:
+                logger.info(
+                    "pretrain max iterations (%d) reached -- switching to self-play",
+                    PRETRAIN_MAX_ITERATIONS,
+                )
+                save_checkpoint(net, generation=0)
+                best_net = copy.deepcopy(net)
+                pretrain_done = True
+
+            save_latest_checkpoint(net, args)
+            elapsed = time.time() - t0
+            logger.info("iteration time: %.1fs", elapsed)
+            continue  # skip self-play and eval during pretrain
 
         # ── 1. Self-play data generation ───────────────────────────────────
         opponent = greedy_opponent if warmup_mode else None

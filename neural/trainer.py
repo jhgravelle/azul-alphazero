@@ -14,7 +14,12 @@ from agents.base import Agent
 from engine.game import Game, FLOOR
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
-from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+from neural.encoder import (
+    encode_state,
+    encode_move,
+    MOVE_SPACE_SIZE,
+    flat_policy_to_3head_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +27,6 @@ _SCORE_DIFF_DIVISOR = 50.0  # matches encoder SCORE_DELTA_DIVISOR
 _TOTAL_SCORE_DIVISOR = 80.0
 _AUX_WEIGHT_WIN = 0.3
 _AUX_WEIGHT_DIFF = 1.0
-_AUX_WEIGHT_ABS = 0.1  # reduced from 0.3; candidate for removal
 
 
 def win_loss_value(scores: list[int], player_index: int) -> float:
@@ -92,32 +96,34 @@ def compute_loss(
         value:      combined value loss
         value_win:  MSE on win/loss target (0 if diff_only)
         value_diff: MSE on score-differential target (always active)
-        value_abs:  MSE on absolute-score target (0 if diff_only)
+        value_abs:  MSE on absolute-score target — diagnostic only, not in total
     """
-    logits, pred_win, pred_diff, pred_abs = net(encodings)
-    log_probs = F.log_softmax(logits, dim=1)
+    (src_logits, tile_logits, dst_logits), pred_win, pred_diff, pred_abs = net(
+        encodings
+    )
 
     if value_only or diff_only:
         policy_loss = torch.tensor(0.0, requires_grad=False)
     else:
-        policy_loss = -(policies * log_probs).sum(dim=1).mean()
+        src_tgt, tile_tgt, dst_tgt = flat_policy_to_3head_targets(policies)
+        policy_loss = (
+            -(src_tgt * F.log_softmax(src_logits, dim=1)).sum(dim=1).mean()
+            + -(tile_tgt * F.log_softmax(tile_logits, dim=1)).sum(dim=1).mean()
+            + -(dst_tgt * F.log_softmax(dst_logits, dim=1)).sum(dim=1).mean()
+        )
 
     loss_diff = F.mse_loss(pred_diff, values_diff)
+    # value_abs is always computed for logging but excluded from training loss
+    loss_abs = F.mse_loss(pred_abs, values_abs)
 
     if diff_only:
         # Only score differential — gives trunk a dense continuous training signal
         # without the noise of win/loss targets on early-training data.
         loss_win = torch.tensor(0.0, requires_grad=False)
-        loss_abs = torch.tensor(0.0, requires_grad=False)
         combined_value = loss_diff
     else:
         loss_win = F.mse_loss(pred_win, values_win)
-        loss_abs = F.mse_loss(pred_abs, values_abs)
-        combined_value = (
-            _AUX_WEIGHT_WIN * loss_win
-            + _AUX_WEIGHT_DIFF * loss_diff
-            + _AUX_WEIGHT_ABS * loss_abs
-        )
+        combined_value = _AUX_WEIGHT_WIN * loss_win + _AUX_WEIGHT_DIFF * loss_diff
 
     return {
         "total": policy_loss + combined_value,
@@ -332,6 +338,37 @@ def collect_self_play(
 #   ]
 
 MatchupSpec = tuple[Callable, Callable, float]
+
+
+def _pretrain_matchups() -> list[MatchupSpec]:
+    """Weak heuristics vs easy AlphaBeta for fast buffer initialization."""
+    from agents.alphabeta import AlphaBetaAgent
+    from agents.random import RandomAgent
+    from agents.efficient import EfficientAgent
+    from agents.cautious import CautiousAgent
+    from agents.greedy import GreedyAgent
+
+    def make_random() -> RandomAgent:
+        return RandomAgent()
+
+    def make_efficient() -> EfficientAgent:
+        return EfficientAgent()
+
+    def make_cautious() -> CautiousAgent:
+        return CautiousAgent()
+
+    def make_greedy() -> GreedyAgent:
+        return GreedyAgent()
+
+    def make_easy() -> AlphaBetaAgent:
+        return AlphaBetaAgent(depths=(1, 2, 3), thresholds=(20, 10))
+
+    return [
+        (make_random, make_easy, 0.25),
+        (make_efficient, make_easy, 0.25),
+        (make_cautious, make_easy, 0.25),
+        (make_greedy, make_easy, 0.25),
+    ]
 
 
 def _default_matchups() -> list[MatchupSpec]:

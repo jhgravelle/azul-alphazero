@@ -478,8 +478,8 @@ def test_batched_advance_root_has_no_parent():
     assert tree._root.parent is None
 
 
-def test_policy_value_fn_uses_value_abs():
-    """make_policy_value_fn should return value_abs, not value_win."""
+def test_policy_value_fn_uses_value_diff():
+    """make_policy_value_fn should return value_diff as the scalar value."""
     from unittest.mock import patch
     import torch
     from neural.search_tree import make_policy_value_fn
@@ -494,12 +494,15 @@ def test_policy_value_fn_uses_value_abs():
 
     sentinel_diff = 0.333
 
-    def fake_forward(self, spatial, flat):
-        b = spatial.shape[0]
+    def fake_forward(self, encoding):
+        b = encoding.shape[0]
+        src = torch.zeros(b, 2)
+        tile = torch.zeros(b, 5)
+        dst = torch.zeros(b, 6)
         return (
-            torch.zeros(b, 1526),
+            (src, tile, dst),
             torch.full((b, 1), 0.111),  # value_win
-            torch.full((b, 1), 0.333),  # value_diff
+            torch.full((b, 1), sentinel_diff),  # value_diff
             torch.full((b, 1), 0.777),  # value_abs
         )
 

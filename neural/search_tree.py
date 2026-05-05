@@ -17,14 +17,17 @@ _PUCT_C = 1.5
 
 _ZOBRIST = ZobristTable()
 
+EXPLORATION_MOVES = 25
+EXPLORATION_TEMP = 1.0
+DETERMINISTIC_TEMP = 0.1
+
 
 def make_policy_value_fn(
     net: "AzulNet",
     device: "torch.device | None" = None,
 ) -> "PolicyValueFn":
     import torch
-    import torch.nn.functional as F
-    from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+    from neural.encoder import encode_state, priors_from_3head
 
     if device is None:
         device = torch.device("cpu")
@@ -34,17 +37,22 @@ def make_policy_value_fn(
         encoding = encoding.unsqueeze(0).to(device)
         net.eval()
         with torch.no_grad():
-            logits, _value_win, value_diff, _value_abs = net(encoding)
+            (
+                (src_logits, tile_logits, dst_logits),
+                _value_win,
+                value_diff,
+                _value_abs,
+            ) = net(encoding)
         value = value_diff
         if not legal:
             return [], value.item()
-        logits = logits.squeeze(0)
-        mask = torch.full((MOVE_SPACE_SIZE,), float("-inf"), device=device)
-        for move in legal:
-            idx = encode_move(move, game)
-            mask[idx] = logits[idx]
-        probs = F.softmax(mask, dim=0)
-        priors = [probs[encode_move(m, game)].item() for m in legal]
+        priors = priors_from_3head(
+            src_logits.squeeze(0),
+            tile_logits.squeeze(0),
+            dst_logits.squeeze(0),
+            legal,
+            game,
+        )
         return priors, value.item()
 
     return fn
@@ -139,8 +147,7 @@ def make_batch_policy_value_fn(
     device: "torch.device | None" = None,
 ) -> "BatchPolicyValueFn":
     import torch
-    import torch.nn.functional as F
-    from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+    from neural.encoder import encode_state, priors_from_3head
 
     if device is None:
         device = torch.device("cpu")
@@ -160,7 +167,7 @@ def make_batch_policy_value_fn(
 
         net.eval()
         with torch.no_grad():
-            logits_b, _wins_b, values_b, _abs_b = net(encoding_t)
+            (src_b, tile_b, dst_b), _wins_b, values_b, _abs_b = net(encoding_t)
 
         results: list[tuple[list[float], float]] = []
         for i, (game, legal) in enumerate(batch):
@@ -168,13 +175,7 @@ def make_batch_policy_value_fn(
             if not legal:
                 results.append(([], value))
                 continue
-            logits = logits_b[i]
-            mask = torch.full((MOVE_SPACE_SIZE,), float("-inf"), device=device)
-            for move in legal:
-                idx = encode_move(move, game)
-                mask[idx] = logits[idx]
-            probs = F.softmax(mask, dim=0)
-            priors = [probs[encode_move(m, game)].item() for m in legal]
+            priors = priors_from_3head(src_b[i], tile_b[i], dst_b[i], legal, game)
             results.append((priors, value))
 
         return results
@@ -510,8 +511,13 @@ class SearchTree:
             best = max(root.children, key=lambda c: c.visits)
             assert best.move is not None
             return best.move
+        # 25-move temperature rule: high-T for exploration, low-T for endgame sharpness
+        move_count = root.game.turn
+        temperature = (
+            EXPLORATION_TEMP if move_count < EXPLORATION_MOVES else DETERMINISTIC_TEMP
+        )
         visits = torch.tensor(
-            [c.visits ** (1.0 / self.temperature) for c in root.children],
+            [c.visits ** (1.0 / temperature) for c in root.children],
             dtype=torch.float32,
         )
         probs = visits / visits.sum()

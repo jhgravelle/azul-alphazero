@@ -67,7 +67,7 @@ def test_push_overwrites_oldest_when_full():
     # 4th push overwrites first (value_win -1.0)
     buf.push(torch.full((FLAT_SIZE,), 3.0), p, 0.5, 0.5, 0.5)
     assert len(buf) == 3
-    _, _, _, values_win, _, _ = buf.sample(3)
+    _, _, values_win, _, _ = buf.sample(3)
     assert -1.0 not in values_win.tolist()
 
 

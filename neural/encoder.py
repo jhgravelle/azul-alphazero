@@ -40,6 +40,7 @@ MOVE_SPACE_SIZE = NUM_SOURCES * BOARD_SIZE * NUM_DESTINATIONS
 """
 
 import torch
+import torch.nn.functional as F
 
 from engine.constants import (
     BOARD_SIZE,
@@ -267,3 +268,57 @@ def decode_move(index: int, _game: Game) -> Move:
         tile=COLOR_TILES[color_idx],
         destination=_idx_to_dest(dest_idx),
     )
+
+
+def priors_from_3head(
+    src_logits: torch.Tensor,  # (2,)
+    tile_logits: torch.Tensor,  # (5,)
+    dst_logits: torch.Tensor,  # (6,)
+    legal: "list[Move]",
+    _game: "Game",
+) -> list[float]:
+    """Compute normalized per-move priors from 3-head policy logits.
+
+    Prior for a move = softmax(src)[src_type] × softmax(tile)[t] × softmax(dst)[d],
+    renormalized over legal moves so priors sum to 1.
+
+    src_type: 0 = center, 1 = factory
+    """
+    src_probs = F.softmax(src_logits, dim=0)
+    tile_probs = F.softmax(tile_logits, dim=0)
+    dst_probs = F.softmax(dst_logits, dim=0)
+
+    raw: list[float] = []
+    for move in legal:
+        src_type = 0 if move.source == CENTER else 1
+        t = COLOR_TILES.index(move.tile)
+        d = _dest_to_idx(move.destination)
+        raw.append(float(src_probs[src_type] * tile_probs[t] * dst_probs[d]))
+
+    total = sum(raw) or 1.0
+    return [p / total for p in raw]
+
+
+def flat_policy_to_3head_targets(
+    flat_policy: torch.Tensor,  # (B, MOVE_SPACE_SIZE)
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Marginalize flat MCTS visit distribution to 3-head training targets.
+
+    Returns:
+        src_targets:  (B, 2) — center vs factory marginal
+        tile_targets: (B, 5) — color marginal
+        dst_targets:  (B, 6) — destination marginal
+    """
+    B = flat_policy.shape[0]
+    # Reshape to (B, NUM_SOURCES=7, BOARD_SIZE=5, NUM_DESTINATIONS=6)
+    p3 = flat_policy.view(B, NUM_SOURCES, BOARD_SIZE, NUM_DESTINATIONS)
+
+    tile_targets = p3.sum(dim=1).sum(dim=2)  # (B, 5)
+    dst_targets = p3.sum(dim=1).sum(dim=1)  # (B, 6)
+
+    # Source type: index NUM_FACTORIES (=6) is center, 0..5 are factories
+    center_mass = p3[:, NUM_FACTORIES, :, :].sum(dim=(1, 2))  # (B,)
+    factory_mass = p3[:, :NUM_FACTORIES, :, :].sum(dim=(1, 2, 3))  # (B,)
+    src_targets = torch.stack([center_mass, factory_mass], dim=1)  # (B, 2)
+
+    return src_targets, tile_targets, dst_targets

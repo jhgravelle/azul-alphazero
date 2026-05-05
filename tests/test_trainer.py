@@ -492,15 +492,14 @@ def test_compute_loss_per_head_components_are_positive():
 
 
 def test_compute_loss_value_equals_weighted_sum():
-    """Combined value loss should equal the weighted sum of per-head losses."""
-    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
+    """Combined value loss = _AUX_WEIGHT_WIN * win + _AUX_WEIGHT_DIFF * diff.
+    value_abs is excluded from the training loss (diagnostic only)."""
+    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF
 
     net = AzulNet()
     result = compute_loss(net, *make_batch())
     expected = (
-        _AUX_WEIGHT_WIN * result["value_win"]
-        + _AUX_WEIGHT_DIFF * result["value_diff"]
-        + _AUX_WEIGHT_ABS * result["value_abs"]
+        _AUX_WEIGHT_WIN * result["value_win"] + _AUX_WEIGHT_DIFF * result["value_diff"]
     )
     assert torch.isclose(result["value"], expected)
 
@@ -525,19 +524,18 @@ def test_train_step_too_small_buffer_returns_all_value_keys():
     assert result["value_abs"] == 0.0
 
 
-def test_compute_loss_value_equals_weighted_sum_new_weights():
-    """Combined value loss = _AUX_WEIGHT_WIN·win
-    + _AUX_WEIGHT_DIFF·diff + _AUX_WEIGHT_ABS·abs."""
-    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
+def test_compute_loss_value_abs_is_diagnostic_only():
+    """value_abs computed but NOT included in combined value loss."""
+    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF
 
     net = AzulNet()
     result = compute_loss(net, *make_batch())
-    expected = (
-        _AUX_WEIGHT_WIN * result["value_win"]
-        + _AUX_WEIGHT_DIFF * result["value_diff"]
-        + _AUX_WEIGHT_ABS * result["value_abs"]
+    # value_abs is computed (nonzero) but absent from combined value
+    assert result["value_abs"].item() > 0.0
+    expected_without_abs = (
+        _AUX_WEIGHT_WIN * result["value_win"] + _AUX_WEIGHT_DIFF * result["value_diff"]
     )
-    assert torch.isclose(result["value"], expected)
+    assert torch.isclose(result["value"], expected_without_abs)
 
 
 # ── collect_mirror_heuristic_games ─────────────────────────────────────────

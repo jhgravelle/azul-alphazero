@@ -30,12 +30,11 @@ def make_policy_value_fn(
         device = torch.device("cpu")
 
     def fn(game: "Game", legal: "list[Move]") -> "tuple[list[float], float]":
-        spatial, flat = encode_state(game)
-        spatial = spatial.unsqueeze(0).to(device)
-        flat = flat.unsqueeze(0).to(device)
+        encoding = encode_state(game)
+        encoding = encoding.unsqueeze(0).to(device)
         net.eval()
         with torch.no_grad():
-            logits, _value_win, value_diff, _value_abs = net(spatial, flat)
+            logits, _value_win, value_diff, _value_abs = net(encoding)
         value = value_diff
         if not legal:
             return [], value.item()
@@ -152,19 +151,16 @@ def make_batch_policy_value_fn(
         if not batch:
             return []
 
-        spatials = []
-        flats = []
+        encodings = []
         for game, _ in batch:
-            spatial, flat = encode_state(game)
-            spatials.append(spatial)
-            flats.append(flat)
+            encoding = encode_state(game)
+            encodings.append(encoding)
 
-        spatial_t = torch.stack(spatials).to(device)
-        flat_t = torch.stack(flats).to(device)
+        encoding_t = torch.stack(encodings).to(device)
 
         net.eval()
         with torch.no_grad():
-            logits_b, _wins_b, values_b, _abs_b = net(spatial_t, flat_t)
+            logits_b, _wins_b, values_b, _abs_b = net(encoding_t)
 
         results: list[tuple[list[float], float]] = []
         for i, (game, legal) in enumerate(batch):

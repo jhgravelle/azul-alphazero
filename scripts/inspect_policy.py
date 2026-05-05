@@ -100,12 +100,11 @@ def _net_forward(
         value_diff:   scalar in (-1, 1) — score differential prediction
         value_abs:    scalar in (-1, 1) — absolute score prediction
     """
-    spatial, flat = encode_state(game)
-    spatial = spatial.unsqueeze(0)
-    flat = flat.unsqueeze(0)
+    encoding = encode_state(game)
+    encoding = encoding.unsqueeze(0)
     net.eval()
     with torch.no_grad():
-        logits, vw, vd, va = net(spatial, flat)
+        logits, vw, vd, va = net(encoding)
     value_win = vw.item()
     value_diff = vd.item()
     value_abs = va.item()
@@ -137,13 +136,13 @@ def _print_encoding(game: Game) -> None:
     from engine.scoring import earned_score_unclamped, score_floor_penalty
     from engine.constants import Tile
 
-    _, flat = encode_state(game)
+    encoding = encode_state(game)
     cur = game.state.current_player
     opp = 1 - cur
     my = game.state.players[cur]
     op = game.state.players[opp]
 
-    print(f"\nFlat encoding (current_player={cur}, FLAT_SIZE={flat.shape[0]}):")
+    print(f"\nFlat encoding (current_player={cur}, FLAT_SIZE={encoding.shape[0]}):")
     print(f"  {'Feature':<35} {'encoded':>8}  {'expected':>8}  match")
     print(f"  {'-'*35} {'-'*8}  {'-'*8}  -----")
 
@@ -153,42 +152,42 @@ def _print_encoding(game: Game) -> None:
 
     row(
         f"my_score (player {cur}) /100",
-        flat[OFF_MY_SCORE].item(),
+        encoding[OFF_MY_SCORE].item(),
         my.score / MAX_SCORE_DIVISOR,
     )
     row(
         f"opp_score (player {opp}) /100",
-        flat[OFF_OPP_SCORE].item(),
+        encoding[OFF_OPP_SCORE].item(),
         op.score / MAX_SCORE_DIVISOR,
     )
     row(
         f"my_earned (player {cur}) /50",
-        flat[OFF_MY_EARNED].item(),
+        encoding[OFF_MY_EARNED].item(),
         earned_score_unclamped(my) / EARNED_DIVISOR,
     )
     row(
         f"opp_earned (player {opp}) /50",
-        flat[OFF_OPP_EARNED].item(),
+        encoding[OFF_OPP_EARNED].item(),
         earned_score_unclamped(op) / EARNED_DIVISOR,
     )
     row(
         f"my_floor (player {cur}) /14",
-        flat[OFF_MY_FLOOR].item(),
+        encoding[OFF_MY_FLOOR].item(),
         score_floor_penalty(my.floor_line) / FLOOR_PENALTY_DIVISOR,
     )
     row(
         f"opp_floor (player {opp}) /14",
-        flat[OFF_OPP_FLOOR].item(),
+        encoding[OFF_OPP_FLOOR].item(),
         score_floor_penalty(op.floor_line) / FLOOR_PENALTY_DIVISOR,
     )
     row(
         f"my_fp_token (player {cur})",
-        flat[OFF_MY_FP_TOKEN].item(),
+        encoding[OFF_MY_FP_TOKEN].item(),
         1.0 if Tile.FIRST_PLAYER in my.floor_line else 0.0,
     )
     row(
         f"opp_fp_token (player {opp})",
-        flat[OFF_OPP_FP_TOKEN].item(),
+        encoding[OFF_OPP_FP_TOKEN].item(),
         1.0 if Tile.FIRST_PLAYER in op.floor_line else 0.0,
     )
 

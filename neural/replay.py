@@ -1,8 +1,7 @@
 """Experience replay buffer for AzulNet self-play training.
 
 Each experience stores:
-    spatial     — float32 tensor of shape SPATIAL_SHAPE = (12, 5, 6)
-    flat        — float32 tensor of shape (FLAT_SIZE,)
+    encoding    — float32 tensor of shape (FLAT_SIZE,) = (123,)
     policy      — float32 tensor of shape (MOVE_SPACE_SIZE,), MCTS visit distribution
     value_win   — float scalar in (-1, 1), win/loss outcome (primary target)
     value_diff  — float scalar in (-1, 1), normalized score differential (auxiliary)
@@ -12,7 +11,7 @@ The buffer is circular: once full, new experiences overwrite the oldest.
 """
 
 import torch
-from neural.encoder import SPATIAL_SHAPE, FLAT_SIZE, MOVE_SPACE_SIZE
+from neural.encoder import FLAT_SIZE, MOVE_SPACE_SIZE
 
 
 class ReplayBuffer:
@@ -24,8 +23,7 @@ class ReplayBuffer:
 
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
-        self._spatials = torch.zeros(capacity, *SPATIAL_SHAPE, dtype=torch.float32)
-        self._flats = torch.zeros(capacity, FLAT_SIZE, dtype=torch.float32)
+        self._encodings = torch.zeros(capacity, FLAT_SIZE, dtype=torch.float32)
         self._policies = torch.zeros(capacity, MOVE_SPACE_SIZE, dtype=torch.float32)
         self._values_win = torch.zeros(capacity, 1, dtype=torch.float32)
         self._values_diff = torch.zeros(capacity, 1, dtype=torch.float32)
@@ -44,16 +42,14 @@ class ReplayBuffer:
 
     def push(
         self,
-        spatial: torch.Tensor,  # (12, 5, 6)
-        flat: torch.Tensor,  # (FLAT_SIZE,)
+        encoding: torch.Tensor,  # (FLAT_SIZE,) = (123,)
         policy: torch.Tensor,  # (MOVE_SPACE_SIZE,)
         value_win: float,
         value_diff: float,
         value_abs: float,
     ) -> None:
         """Add one experience, overwriting the oldest if full."""
-        self._spatials[self._pos] = spatial
-        self._flats[self._pos] = flat
+        self._encodings[self._pos] = encoding
         self._policies[self._pos] = policy
         self._values_win[self._pos] = value_win
         self._values_diff[self._pos] = value_diff
@@ -67,13 +63,11 @@ class ReplayBuffer:
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
-        torch.Tensor,
     ]:
         """Sample a random batch without replacement.
 
         Returns:
-            spatials:     (batch, 12, 5, 6)
-            flats:        (batch, FLAT_SIZE)
+            encodings:    (batch, FLAT_SIZE) = (batch, 123)
             policies:     (batch, MOVE_SPACE_SIZE)
             values_win:   (batch, 1)
             values_diff:  (batch, 1)
@@ -86,8 +80,7 @@ class ReplayBuffer:
             )
         indices = torch.randperm(self._size)[:batch_size]
         return (
-            self._spatials[indices],
-            self._flats[indices],
+            self._encodings[indices],
             self._policies[indices],
             self._values_win[indices],
             self._values_diff[indices],

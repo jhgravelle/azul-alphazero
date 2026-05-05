@@ -2,54 +2,28 @@
 
 """Encodes Azul game states and moves as tensors for the neural network.
 
-Spatial tensor: shape (4, 5, 5)
+Encoding v3: Flat vector (123 values)
 ---------------------------------------------------------------------
-All channels use (row, wall_col) space where:
-  row      = pattern line row 0–4
-  wall_col = wall column 0–4
+Single flat vector with board state and game state combined.
 
-Channel layout:
-  0  My wall filled
-  1  My pattern line fill ratio
-  2  Opponent wall filled
-  3  Opponent pattern line fill ratio
+Wall & Pattern State (100 values):
+  0–24      My wall (flattened 5×5 grid, binary)
+  25–49     Opponent wall (flattened 5×5 grid, binary)
+  50–74     My pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
+  75–99     Opponent pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
 
-Channel details:
-
-  Wall filled (ch 0, 2):
-    1.0 if that wall cell is occupied, 0.0 otherwise.
-    Uses the current wall (post-round confirmations only).
-
-  Pattern line fill ratio (ch 1, 3):
-    For each row, exactly one wall_col is nonzero — the column that
-    corresponds to the committed color for that pattern line.
-    Value = filled_tiles / capacity (0.0 if line is empty or wall
-    cell already filled).
-
-Flat vector: shape (FLAT_SIZE,) = (53,)
----------------------------------------------------------------------
-Offset  Count  Name
-------  -----  ----
-  0       1    My official score / 100
-  1       1    Opponent official score / 100
-  2       1    My earned (unclamped) / 100
-  3       1    Opponent earned (unclamped) / 100
-  4       1    My floor penalty / 14   (negative, range [-1, 0])
-  5       1    Opponent floor penalty / 14
-  6       1    I hold first-player token (0 or 1)
-  7       1    Opponent holds first-player token (0 or 1)
-  8       5    My row completion per row r: filled_weighted / ((r+1)*5)
- 13       5    Opponent row completion
- 18       5    My col completion per col c: filled_weighted / 15
- 23       5    Opponent col completion
- 28       5    My color completion per color: filled_weighted / 15
- 33       5    Opponent color completion
- 38       5    Tiles available by color across all sources / 20
- 43       5    Sources with at least one tile of that color / 5
- 48       5    Bag tile count by color / 20
-
-Row/col/color completion uses the post-placement wall (full pattern lines
-treated as placed) so the network sees projected end-of-round wall state.
+Game State (23 values):
+  100       My official score / 100
+  101       Opponent official score / 100
+  102       My earned score / 100
+  103       Opponent earned score / 100
+  104       My floor penalty / 14
+  105       Opponent floor penalty / 14
+  106       I hold first-player token (0 or 1)
+  107       Opponent holds first-player token (0 or 1)
+  108–112   Tiles available by color (5 colors) / 20
+  113–117   Sources with that color (5 colors) / 5
+  118–122   Bag tile count by color (5 colors) / 20
 
 Move index layout
 -----------------------------------------------------
@@ -74,7 +48,6 @@ from engine.constants import (
     CUMULATIVE_FLOOR_PENALTIES,
     PLAYERS,
     TILES_PER_COLOR,
-    WALL_PATTERN,
     Tile,
 )
 from engine.game import Game, Move, CENTER, FLOOR
@@ -87,37 +60,29 @@ NUM_SOURCES: int = NUM_FACTORIES + 1  # factories + center
 NUM_DESTINATIONS: int = BOARD_SIZE + 1  # pattern lines + floor
 MOVE_SPACE_SIZE: int = NUM_SOURCES * BOARD_SIZE * NUM_DESTINATIONS
 
-# ── Spatial constants ──────────────────────────────────────────────────────
+# ── Encoding constants ────────────────────────────────────────────────────
 
 NUM_COLORS: int = len(COLOR_TILES)  # 5
-NUM_CHANNELS: int = 4
-SPATIAL_SHAPE: tuple = (NUM_CHANNELS, BOARD_SIZE, BOARD_SIZE)  # (4, 5, 5)
+BOARD_CELLS: int = BOARD_SIZE * BOARD_SIZE  # 25
 
-CH_MY_WALL: int = 0
-CH_MY_PATTERN: int = 1
-CH_OPP_WALL: int = 2
-CH_OPP_PATTERN: int = 3
+OFF_MY_WALL: int = 0  # 25 values
+OFF_OPP_WALL: int = 25  # 25 values
+OFF_MY_PATTERN: int = 50  # 25 values
+OFF_OPP_PATTERN: int = 75  # 25 values
 
-# ── Flat constants ─────────────────────────────────────────────────────────
+OFF_MY_SCORE: int = 100
+OFF_OPP_SCORE: int = 101
+OFF_MY_EARNED: int = 102
+OFF_OPP_EARNED: int = 103
+OFF_MY_FLOOR: int = 104
+OFF_OPP_FLOOR: int = 105
+OFF_MY_FP_TOKEN: int = 106
+OFF_OPP_FP_TOKEN: int = 107
+OFF_TILES_AVAILABLE: int = 108  # 5 values, COLOR_TILES order
+OFF_SOURCES_WITH_COLOR: int = 113  # 5 values
+OFF_BAG_COUNT: int = 118  # 5 values
 
-OFF_MY_SCORE: int = 0
-OFF_OPP_SCORE: int = 1
-OFF_MY_EARNED: int = 2
-OFF_OPP_EARNED: int = 3
-OFF_MY_FLOOR: int = 4
-OFF_OPP_FLOOR: int = 5
-OFF_MY_FP_TOKEN: int = 6
-OFF_OPP_FP_TOKEN: int = 7
-OFF_MY_ROW_COMPLETION: int = 8  # 5 values, rows 0–4
-OFF_OPP_ROW_COMPLETION: int = 13  # 5 values
-OFF_MY_COL_COMPLETION: int = 18  # 5 values, cols 0–4
-OFF_OPP_COL_COMPLETION: int = 23  # 5 values
-OFF_MY_COLOR_COMPLETION: int = 28  # 5 values, COLOR_TILES order
-OFF_OPP_COLOR_COMPLETION: int = 33  # 5 values
-OFF_TILES_AVAILABLE: int = 38  # 5 values, COLOR_TILES order
-OFF_SOURCES_WITH_COLOR: int = 43  # 5 values
-OFF_BAG_COUNT: int = 48  # 5 values
-FLAT_SIZE: int = 53
+FLAT_SIZE: int = 123
 
 # ── Normalization constants ────────────────────────────────────────────────
 
@@ -126,90 +91,33 @@ EARNED_DIVISOR: float = 100.0
 FLOOR_PENALTY_DIVISOR: float = 14.0
 MAX_BAG_TILES: float = float(TILES_PER_COLOR)  # 20
 MAX_SOURCES: float = 5.0
-_MAX_WEIGHTED_COL_COLOR: float = 15.0  # sum(1+2+3+4+5)
 
 # ── Internal helpers — wall geometry ──────────────────────────────────────
 
 
-def _build_color_for_wall_cell() -> list[list[Tile]]:
-    """Return color_for_wall_cell[row][wall_col] = Tile at that wall position."""
-    return [
-        [WALL_PATTERN[row][wall_col] for wall_col in range(BOARD_SIZE)]
-        for row in range(BOARD_SIZE)
-    ]
+# ── Internal helpers — board state encoders ───────────────────────────────
 
 
-_COLOR_FOR_WALL_CELL: list[list[Tile]] = _build_color_for_wall_cell()
-
-
-def _build_post_placement_wall(player: Player) -> list[list[Tile | None]]:
-    """Return a copy of the wall with all pending full pattern lines placed.
-
-    Simulates end-of-round tile placement in row order so that adjacency
-    scores are correct when pending placements are adjacent to each other.
-    Does not mutate player.wall.
-    """
-    wall: list[list[Tile | None]] = [row[:] for row in player.wall]
-    for row, line in enumerate(player.pattern_lines):
-        if len(line) < row + 1:
-            continue
-        tile = line[0]
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-        wall[row][col] = tile
-    return wall
-
-
-def _count_filled_in_rows(wall: list[list[Tile | None]]) -> list[int]:
-    """Return pattern-tile-weighted fill count for each wall row."""
-    return [
-        sum(
-            row + 1 for wall_col in range(BOARD_SIZE) if wall[row][wall_col] is not None
-        )
-        for row in range(BOARD_SIZE)
-    ]
-
-
-def _count_filled_in_cols(wall: list[list[Tile | None]]) -> list[int]:
-    """Return pattern-tile-weighted fill count for each wall column."""
-    return [
-        sum(row + 1 for row in range(BOARD_SIZE) if wall[row][wall_col] is not None)
-        for wall_col in range(BOARD_SIZE)
-    ]
-
-
-def _count_filled_per_color(wall: list[list[Tile | None]]) -> dict[Tile, int]:
-    """Return pattern-tile-weighted fill count for each color."""
-    counts: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
-    for row in range(BOARD_SIZE):
-        for wall_col in range(BOARD_SIZE):
-            if wall[row][wall_col] is not None:
-                color = _COLOR_FOR_WALL_CELL[row][wall_col]
-                counts[color] += row + 1
-    return counts
-
-
-# ── Internal helpers — channel encoders ───────────────────────────────────
-
-
-def _encode_wall_filled(
-    spatial: torch.Tensor,
-    channel: int,
+def _encode_wall_flattened(
+    encoding: torch.Tensor,
+    offset: int,
     wall: list[list[Tile | None]],
 ) -> None:
-    """Write 1.0 for each occupied wall cell into the given channel."""
+    """Write 1.0 for each occupied wall cell into flattened positions."""
     for row in range(BOARD_SIZE):
         for wall_col in range(BOARD_SIZE):
             if wall[row][wall_col] is not None:
-                spatial[channel, row, wall_col] = 1.0
+                flat_idx = row * BOARD_SIZE + wall_col
+                encoding[offset + flat_idx] = 1.0
 
 
-def _encode_pattern_line_fill_ratio(
-    spatial: torch.Tensor,
-    channel: int,
+def _encode_pattern_line_fill_ratio_flattened(
+    encoding: torch.Tensor,
+    offset: int,
     player: Player,
     wall: list[list[Tile | None]],
 ) -> None:
-    """Write pattern line fill ratio into the committed color's wall column."""
+    """Write pattern line fill ratio into flattened positions."""
     for row in range(BOARD_SIZE):
         line = player.pattern_lines[row]
         if not line:
@@ -220,7 +128,8 @@ def _encode_pattern_line_fill_ratio(
             continue
         capacity = row + 1
         fill_ratio = len(line) / capacity
-        spatial[channel, row, wall_col] = fill_ratio
+        flat_idx = row * BOARD_SIZE + wall_col
+        encoding[offset + flat_idx] = fill_ratio
 
 
 # ── Internal helpers — flat encoders ──────────────────────────────────────
@@ -260,39 +169,6 @@ def _encode_flat_first_player_tokens(
     """Write first-player token flags for each player."""
     flat[OFF_MY_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in my_player.floor_line else 0.0
     flat[OFF_OPP_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in opp_player.floor_line else 0.0
-
-
-def _encode_flat_row_completion(
-    flat: torch.Tensor,
-    offset: int,
-    wall: list[list[Tile | None]],
-) -> None:
-    """Write row completion fraction for each row using post-placement wall."""
-    filled = _count_filled_in_rows(wall)
-    for row in range(BOARD_SIZE):
-        flat[offset + row] = filled[row] / ((row + 1) * BOARD_SIZE)
-
-
-def _encode_flat_col_completion(
-    flat: torch.Tensor,
-    offset: int,
-    wall: list[list[Tile | None]],
-) -> None:
-    """Write column completion fraction for each column using post-placement wall."""
-    filled = _count_filled_in_cols(wall)
-    for col in range(BOARD_SIZE):
-        flat[offset + col] = filled[col] / _MAX_WEIGHTED_COL_COLOR
-
-
-def _encode_flat_color_completion(
-    flat: torch.Tensor,
-    offset: int,
-    wall: list[list[Tile | None]],
-) -> None:
-    """Write color completion fraction for each color using post-placement wall."""
-    filled = _count_filled_per_color(wall)
-    for color_idx, color in enumerate(COLOR_TILES):
-        flat[offset + color_idx] = filled[color] / _MAX_WEIGHTED_COL_COLOR
 
 
 def _encode_flat_game_tiles(flat: torch.Tensor, game: Game) -> None:
@@ -336,46 +212,41 @@ def _idx_to_dest(idx: int) -> int:
 # ── Public API ─────────────────────────────────────────────────────────────
 
 
-def encode_state(game: Game) -> tuple[torch.Tensor, torch.Tensor]:
-    """Encode a Game into (spatial, flat) tensors.
+def encode_state(game: Game) -> torch.Tensor:
+    """Encode a Game into a flat vector of 123 values.
 
-    spatial : float32 tensor of shape SPATIAL_SHAPE = (4, 5, 5)
-    flat    : float32 tensor of shape (FLAT_SIZE,) = (53,)
+    Returns float32 tensor of shape (123,) containing:
+      0–24:   My wall (flattened)
+      25–49:  Opponent wall (flattened)
+      50–74:  My pattern line fills (flattened)
+      75–99:  Opponent pattern line fills (flattened)
+      100–122: Game state (scores, penalties, tokens, tiles, bag)
     """
     current_player_index = game.current_player_index
     opponent_index = 1 - current_player_index
     my_player = game.players[current_player_index]
     opp_player = game.players[opponent_index]
 
-    my_post_wall = _build_post_placement_wall(my_player)
-    opp_post_wall = _build_post_placement_wall(opp_player)
+    encoding = torch.zeros(FLAT_SIZE, dtype=torch.float32)
 
-    spatial = torch.zeros(SPATIAL_SHAPE, dtype=torch.float32)
-
-    _encode_wall_filled(spatial, CH_MY_WALL, my_player.wall)
-    _encode_pattern_line_fill_ratio(spatial, CH_MY_PATTERN, my_player, my_player.wall)
-    _encode_wall_filled(spatial, CH_OPP_WALL, opp_player.wall)
-    _encode_pattern_line_fill_ratio(
-        spatial, CH_OPP_PATTERN, opp_player, opp_player.wall
+    _encode_wall_flattened(encoding, OFF_MY_WALL, my_player.wall)
+    _encode_wall_flattened(encoding, OFF_OPP_WALL, opp_player.wall)
+    _encode_pattern_line_fill_ratio_flattened(
+        encoding, OFF_MY_PATTERN, my_player, my_player.wall
+    )
+    _encode_pattern_line_fill_ratio_flattened(
+        encoding, OFF_OPP_PATTERN, opp_player, opp_player.wall
     )
 
-    flat = torch.zeros(FLAT_SIZE, dtype=torch.float32)
+    _encode_flat_scores(encoding, my_player, opp_player)
+    _encode_flat_floor_penalties(encoding, my_player, opp_player)
+    _encode_flat_first_player_tokens(encoding, my_player, opp_player)
+    _encode_flat_game_tiles(encoding, game)
 
-    _encode_flat_scores(flat, my_player, opp_player)
-    _encode_flat_floor_penalties(flat, my_player, opp_player)
-    _encode_flat_first_player_tokens(flat, my_player, opp_player)
-    _encode_flat_row_completion(flat, OFF_MY_ROW_COMPLETION, my_post_wall)
-    _encode_flat_row_completion(flat, OFF_OPP_ROW_COMPLETION, opp_post_wall)
-    _encode_flat_col_completion(flat, OFF_MY_COL_COMPLETION, my_post_wall)
-    _encode_flat_col_completion(flat, OFF_OPP_COL_COMPLETION, opp_post_wall)
-    _encode_flat_color_completion(flat, OFF_MY_COLOR_COMPLETION, my_post_wall)
-    _encode_flat_color_completion(flat, OFF_OPP_COLOR_COMPLETION, opp_post_wall)
-    _encode_flat_game_tiles(flat, game)
-
-    return spatial, flat
+    return encoding
 
 
-def encode_move(move: Move, game: Game) -> int:
+def encode_move(move: Move, _game: Game) -> int:
     """Encode a Move as a unique integer index in [0, MOVE_SPACE_SIZE)."""
     source_idx = _source_to_idx(move.source)
     color_idx = COLOR_TILES.index(move.tile)
@@ -387,7 +258,7 @@ def encode_move(move: Move, game: Game) -> int:
     )
 
 
-def decode_move(index: int, game: Game) -> Move:
+def decode_move(index: int, _game: Game) -> Move:
     """Decode an integer index back into a Move."""
     source_idx, remainder = divmod(index, BOARD_SIZE * NUM_DESTINATIONS)
     color_idx, dest_idx = divmod(remainder, NUM_DESTINATIONS)

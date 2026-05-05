@@ -92,7 +92,7 @@ azul-alphazero/
 │   ├── render.js
 │   └── style.css
 ├── neural/
-│   ├── encoder.py         # Spatial + flat encoding (v2 current, v3 planned)
+│   ├── encoder.py         # Spatial + flat encoding (v3: spatial (4,5,5), flat 53)
 │   ├── model.py           # Multi-kernel spatial branch (180k params) — shrink experiment
 │   ├── replay.py          # Circular replay buffer, three value targets per example
 │   ├── search_tree.py     # SearchTree: MCTS, background worker, subtree reuse

@@ -69,8 +69,7 @@ def total_score_value(scores: list[int], player_index: int) -> float:
 
 def compute_loss(
     net: AzulNet,
-    spatials: torch.Tensor,  # (B, 14, 5, 6)
-    flats: torch.Tensor,  # (B, FLAT_SIZE)
+    encodings: torch.Tensor,  # (B, FLAT_SIZE) = (B, 123)
     policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE)
     values_win: torch.Tensor,  # (B, 1)
     values_diff: torch.Tensor,  # (B, 1)
@@ -95,7 +94,7 @@ def compute_loss(
         value_diff: MSE on score-differential target (always active)
         value_abs:  MSE on absolute-score target (0 if diff_only)
     """
-    logits, pred_win, pred_diff, pred_abs = net(spatials, flats)
+    logits, pred_win, pred_diff, pred_abs = net(encodings)
     log_probs = F.log_softmax(logits, dim=1)
 
     if value_only or diff_only:
@@ -165,9 +164,8 @@ class Trainer:
                 "value_diff": 0.0,
                 "value_abs": 0.0,
             }
-        spatials, flats, policies, vw, vd, va = buf.sample(self.batch_size)
-        spatials = spatials.to(self.device)
-        flats = flats.to(self.device)
+        encodings, policies, vw, vd, va = buf.sample(self.batch_size)
+        encodings = encodings.to(self.device)
         policies = policies.to(self.device)
         vw = vw.to(self.device)
         vd = vd.to(self.device)
@@ -176,8 +174,7 @@ class Trainer:
         self.optimizer.zero_grad()
         loss_dict = compute_loss(
             self.net,
-            spatials,
-            flats,
+            encodings,
             policies,
             vw,
             vd,
@@ -212,7 +209,7 @@ def collect_self_play(
     simulations: int = 100,
     temperature: float = 1.0,
     opponent: Agent | None = None,
-    device: torch.device = torch.device("cpu"),
+    _device: torch.device = torch.device("cpu"),
 ) -> list[float]:
     """Play num_games games and push training examples into buf."""
     from engine.game import Game
@@ -246,7 +243,7 @@ def collect_self_play(
             az_player = None
             agents = [az_agent, az_agent]
 
-        history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
 
         while True:
             if not game.legal_moves():
@@ -254,7 +251,7 @@ def collect_self_play(
             current_player = game.current_player_index
             is_az_turn = az_player is None or current_player == az_player
 
-            spatial, flat = encode_state(game)
+            encoding = encode_state(game)
 
             if is_az_turn:
                 move, policy_pairs = az_agent.get_policy_targets(game)
@@ -285,7 +282,7 @@ def collect_self_play(
                 for m, prob in policy_pairs:
                     policy_vec[encode_move(m, game)] = prob
 
-            history.append((current_player, spatial, flat, policy_vec))
+            history.append((current_player, encoding, policy_vec))
 
             prev_round = game.round
             game.make_move(move)
@@ -301,11 +298,11 @@ def collect_self_play(
 
         scores = _compute_game_scores(game)
 
-        for player_idx, spatial, flat, policy_vec in history:
+        for player_idx, encoding, policy_vec in history:
             vw = win_loss_value(scores, player_idx)
             vd = score_differential_value(scores, player_idx)
             va = total_score_value(scores, player_idx)
-            buf.push(spatial, flat, policy_vec, vw, vd, va)
+            buf.push(encoding, policy_vec, vw, vd, va)
 
         az_score = scores[az_player] if az_player is not None else max(scores)
         az_scores.append(az_score)
@@ -557,11 +554,11 @@ def collect_heuristic_games(
         else:
             ties += 1
 
-        for player_idx, spatial, flat, policy_vec in history:
+        for player_idx, encoding, policy_vec in history:
             vw = win_loss_value(scores, player_idx)
             vd = score_differential_value(scores, player_idx)
             va = total_score_value(scores, player_idx)
-            buf.push(spatial, flat, policy_vec, vw, vd, va)
+            buf.push(encoding, policy_vec, vw, vd, va)
 
         logger.debug(
             f"heuristic game {game_num + 1}/{num_games} -- "
@@ -588,22 +585,22 @@ def collect_heuristic_games(
 def _play_heuristic_game(
     game: "Game",
     agents: list[Agent],
-) -> list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]]:
+) -> list[tuple[int, torch.Tensor, torch.Tensor]]:
     """Play a single heuristic game to completion, collecting history.
 
-    Each history entry is (player_index, spatial, flat, policy_vec) where
+    Each history entry is (player_index, encoding, policy_vec) where
     policy_vec comes from the acting agent's policy_distribution method.
 
     For AlphaBeta agents, policy_distribution returns a softmax over root
     move scores. choose_move must be called first to populate the cache.
     """
-    history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+    history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
 
     while True:
         if not game.legal_moves():
             break
         current_player = game.current_player_index
-        spatial, flat = encode_state(game)
+        encoding = encode_state(game)
 
         agent = agents[current_player]
         move = agent.choose_move(game)
@@ -612,7 +609,7 @@ def _play_heuristic_game(
         for m, prob in policy_pairs:
             policy_vec[encode_move(m, game)] = prob
 
-        history.append((current_player, spatial, flat, policy_vec))
+        history.append((current_player, encoding, policy_vec))
         game.make_move(move)
         game.advance()
 
@@ -627,7 +624,7 @@ def _play_heuristic_game(
 # A game record is a list of move records.
 # Each move record: (player_idx, spatial_list, flat_list, policy_list, vw, vd, va)
 # All tensors are stored as plain Python lists to survive multiprocessing pickle.
-_MoveRecord = tuple[int, list, list, list, float, float, float]
+_MoveRecord = tuple[int, list, list, float, float, float]
 _GameRecord = list[_MoveRecord]
 
 
@@ -707,15 +704,14 @@ def _worker_play_games(
             ties += 1
 
         game_record: _GameRecord = []
-        for player_idx, spatial, flat, policy_vec in history:
+        for player_idx, encoding, policy_vec in history:
             vw = win_loss_value(scores, player_idx)
             vd = score_differential_value(scores, player_idx)
             va = total_score_value(scores, player_idx)
             game_record.append(
                 (
                     player_idx,
-                    spatial.tolist(),
-                    flat.tolist(),
+                    encoding.tolist(),
                     policy_vec.tolist(),
                     vw,
                     vd,
@@ -820,11 +816,10 @@ def collect_heuristic_games_parallel(
         for key in total_stats:
             total_stats[key] += stats[key]
         for game_record in game_records:
-            for player_idx, spatial_l, flat_l, policy_l, vw, vd, va in game_record:
-                spatial = torch.tensor(spatial_l, dtype=torch.float32)
-                flat = torch.tensor(flat_l, dtype=torch.float32)
+            for _player_idx, encoding_l, policy_l, vw, vd, va in game_record:
+                encoding = torch.tensor(encoding_l, dtype=torch.float32)
                 policy_vec = torch.tensor(policy_l, dtype=torch.float32)
-                buf.push(spatial, flat, policy_vec, vw, vd, va)
+                buf.push(encoding, policy_vec, vw, vd, va)
             if game_record:
                 all_scores.append(vw)  # last move's vw as a proxy
 

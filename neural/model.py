@@ -1,15 +1,10 @@
 # neural/model.py
-"""AzulNet — multi-kernel spatial branch + v3 encoding.
+"""AzulNet — flat MLP architecture with v3 encoding (123 values).
 
-Spatial branch (v3 encoding: 4 channels):
-- Local 5×5 kernel: sees entire board (10 ch)
-- Row 1×5 kernel: sees entire rows (4 ch)
-- Col 5×1 kernel: sees entire columns (4 ch)
-- Concatenated: 18 channels → Linear(450, hidden_dim)
-
-Flat branch (v3 encoding: 53 values):
-- Scores, completion stats, tile availability, bag counts
-- Linear(53, hidden_dim // 2)
+v3 encoding combines all board state and game state into a single flat vector:
+- Wall and pattern fills: 100 values (flattened 5×5 grids)
+- Game state: 23 values (scores, penalties, tokens, inventory, bag)
+- Total input: 123 values → MLP trunk → policy + value heads
 """
 
 import torch
@@ -18,7 +13,6 @@ import torch.nn as nn
 from neural.encoder import (
     FLAT_SIZE,
     MOVE_SPACE_SIZE,
-    NUM_CHANNELS,
 )
 
 __all__ = ["ResBlock", "AzulNet", "MOVE_SPACE_SIZE"]
@@ -43,7 +37,7 @@ class ResBlock(nn.Module):
 
 
 class AzulNet(nn.Module):
-    """Shrunk policy + value network for Azul.
+    """Policy + value network for Azul with flat encoding.
 
     Args:
         hidden_dim: Width of the trunk and residual blocks. Default 256.
@@ -55,46 +49,14 @@ class AzulNet(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
 
-        # ── Spatial branch — multi-kernel approach ────────────────────────
-        # Input: (batch, 4, 5, 5)
-        # Three parallel convolutions with different receptive fields:
-
-        # Local 5×5 kernel: sees entire board at once, learns global patterns
-        self.conv_local = nn.Conv2d(NUM_CHANNELS, 10, kernel_size=5, padding=2)
-        self.norm_local = nn.LayerNorm([10, 5, 5])
-
-        # Row kernel 1×5: sees entire rows
-        self.conv_row = nn.Conv2d(NUM_CHANNELS, 4, kernel_size=(1, 5), padding=(0, 2))
-
-        # Column kernel 5×1: sees entire columns
-        self.conv_col = nn.Conv2d(NUM_CHANNELS, 4, kernel_size=(5, 1), padding=(2, 0))
-
-        self.relu = nn.ReLU()
-
-        # Concatenated spatial channels: 10 + 4 + 4 = 18
-        spatial_flat_size = 18 * 5 * 5  # 450
-
-        # Project spatial features to hidden_dim
-        self.spatial_proj = nn.Sequential(
-            nn.Linear(spatial_flat_size, hidden_dim),
+        # ── Input projection ───────────────────────────────────────────────
+        self.input_proj = nn.Sequential(
+            nn.Linear(FLAT_SIZE, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
         )
 
-        # ── Flat branch ────────────────────────────────────────────────────
-        flat_hidden = hidden_dim // 2
-        self.flat_proj = nn.Sequential(
-            nn.Linear(FLAT_SIZE, flat_hidden),
-            nn.LayerNorm(flat_hidden),
-            nn.ReLU(),
-        )
-
-        # ── Merged trunk ───────────────────────────────────────────────────
-        self.merge = nn.Sequential(
-            nn.Linear(hidden_dim + flat_hidden, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-        )
+        # ── Trunk ──────────────────────────────────────────────────────────
         self.blocks = nn.Sequential(*[ResBlock(hidden_dim) for _ in range(num_blocks)])
 
         # ── Heads ──────────────────────────────────────────────────────────
@@ -114,10 +76,12 @@ class AzulNet(nn.Module):
 
     def forward(
         self,
-        spatial: torch.Tensor,  # (batch, 4, 5, 5)
-        flat: torch.Tensor,  # (batch, FLAT_SIZE=53)
+        encoding: torch.Tensor,  # (batch, FLAT_SIZE=123)
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run a forward pass.
+
+        Args:
+            encoding: (batch, 123) tensor with board and game state
 
         Returns:
             policy:     (batch, MOVE_SPACE_SIZE) raw logits
@@ -125,24 +89,8 @@ class AzulNet(nn.Module):
             value_diff: (batch, 1) score-differential prediction in (-1, 1)
             value_abs:  (batch, 1) absolute-score prediction in (-1, 1)
         """
-        # Spatial branch — three parallel kernels; input is (batch, 4, 5, 5)
-        s_local = self.relu(
-            self.norm_local(self.conv_local(spatial))
-        )  # (batch, 10, 5, 5)
-        s_row = self.relu(self.conv_row(spatial))  # (batch, 4, 5, 5)
-        s_col = self.relu(self.conv_col(spatial))  # (batch, 4, 5, 5)
-
-        # Concatenate all spatial features
-        s = torch.cat([s_local, s_row, s_col], dim=1)  # (batch, 18, 5, 5)
-
-        # Project to hidden dimension
-        s = self.spatial_proj(s.flatten(start_dim=1))  # (batch, hidden_dim)
-
-        # Flat branch
-        f = self.flat_proj(flat)  # (batch, hidden_dim // 2)
-
-        # Merge and trunk
-        trunk = self.blocks(self.merge(torch.cat([s, f], dim=1)))
+        # Project input to hidden dimension and apply trunk
+        trunk = self.blocks(self.input_proj(encoding))
 
         return (
             self.policy_head(trunk),

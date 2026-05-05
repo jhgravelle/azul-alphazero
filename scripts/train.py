@@ -215,7 +215,7 @@ def evaluate(
             agent.reset_tree(game)
 
         moves = 0
-        history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
         prev_round = game.round
 
         recorder: GameRecorder | None = None
@@ -236,12 +236,12 @@ def evaluate(
             current = game.current_player_index
 
             if buf is not None:
-                spatial, flat = encode_state(game)
+                encoding = encode_state(game)
                 move, policy_pairs = agents[current].get_policy_targets(game)
                 policy_vec = torch.zeros(MOVE_SPACE_SIZE)
                 for m, prob in policy_pairs:
                     policy_vec[encode_move(m, game)] = prob
-                history.append((current, spatial, flat, policy_vec))
+                history.append((current, encoding, policy_vec))
             else:
                 move = agents[current].choose_move(game)
 
@@ -284,11 +284,11 @@ def evaluate(
 
         if buf is not None:
             scores = _compute_game_scores(game)
-            for player_idx, spatial, flat, policy_vec in history:
+            for player_idx, encoding, policy_vec in history:
                 vw = win_loss_value(scores, player_idx)
                 vd = score_differential_value(scores, player_idx)
                 va = total_score_value(scores, player_idx)
-                buf.push(spatial, flat, policy_vec, vw, vd, va)
+                buf.push(encoding, policy_vec, vw, vd, va)
         else:
             scores = [p.score for p in game.players]
 

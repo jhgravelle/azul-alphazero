@@ -349,7 +349,7 @@ Note: easy = `depths=(1,1,3)` (weakened from `(2,3,7)` for experiment). Easy-vs-
 
 **Changes:**
 
-**1. Three-head policy** — `policy_head` (flat 210) replaced by three independent heads:
+**1. Three-head policy** — `policy_head` (flat 180) replaced by three independent heads:
 - `source_head` (2): center vs factory
 - `tile_head` (5): tile color
 - `destination_head` (6): pattern line + floor

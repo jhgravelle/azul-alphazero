@@ -1,11 +1,14 @@
+# neural/replay.py
+
 """Experience replay buffer for AzulNet self-play training.
 
 Each experience stores:
-    encoding    — float32 tensor of shape (FLAT_SIZE,) = (123,)
-    policy      — float32 tensor of shape (MOVE_SPACE_SIZE,), MCTS visit distribution
-    value_win   — float scalar in (-1, 1), win/loss outcome (primary target)
-    value_diff  — float scalar in (-1, 1), normalized score differential (auxiliary)
-    value_abs   — float scalar in (-1, 1), normalized absolute score (auxiliary)
+    encoding     — float32 tensor of shape (FLAT_SIZE,) = (123,)
+    policy       — float32 tensor of shape (MOVE_SPACE_SIZE,), MCTS visit distribution
+    value_win    — float scalar in (-1, 1), win/loss outcome (primary target)
+    value_diff   — float scalar in (-1, 1), normalized score differential (auxiliary)
+    value_abs    — float scalar in (-1, 1), normalized absolute score (auxiliary)
+    policy_mask  — float scalar, 1.0 = train policy, 0.0 = value-only (round-boundary)
 
 The buffer is circular: once full, new experiences overwrite the oldest.
 """
@@ -61,21 +64,25 @@ class ReplayBuffer:
         self._size = min(self._size + 1, self.capacity)
 
     def sample(self, batch_size: int) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
+        torch.Tensor,  # encodings     (batch, FLAT_SIZE)
+        torch.Tensor,  # policies      (batch, MOVE_SPACE_SIZE)
+        torch.Tensor,  # values_win    (batch, 1)
+        torch.Tensor,  # values_diff   (batch, 1)
+        torch.Tensor,  # values_abs    (batch, 1)
+        torch.Tensor,  # policy_masks  (batch, 1)
     ]:
         """Sample a random batch without replacement.
 
         Returns:
-            encodings:     (batch, FLAT_SIZE) = (batch, 123)
-            policies:      (batch, MOVE_SPACE_SIZE)
-            values_win:    (batch, 1)
-            values_diff:   (batch, 1)
-            values_abs:    (batch, 1)
-            policy_masks:  (batch, 1), 1.0 = train policy, 0.0 = value-only
+            encodings:    (batch, FLAT_SIZE) — encoded game states
+            policies:     (batch, MOVE_SPACE_SIZE) — MCTS visit distributions
+            values_win:   (batch, 1) — win/loss targets
+            values_diff:  (batch, 1) — score differential targets
+            values_abs:   (batch, 1) — absolute score targets
+            policy_masks: (batch, 1) — 1.0 = train policy, 0.0 = value-only
+
+        Raises:
+            ValueError: If batch_size exceeds the number of stored experiences.
         """
         if batch_size > self._size:
             raise ValueError(

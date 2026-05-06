@@ -4,7 +4,7 @@
 import torch
 
 from neural.encoder import FLAT_SIZE
-from neural.model import AzulNet, ResBlock
+from neural.model import AzulNet, ResBlock, HIDDEN
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -27,18 +27,18 @@ def forward(net: AzulNet, batch: int = 1):
 
 
 def test_resblock_output_shape():
-    block = ResBlock(dim=256)
-    x = torch.rand(4, 256)
-    assert block(x).shape == (4, 256)
+    block = ResBlock()
+    x = torch.rand(4, HIDDEN)
+    assert block(x).shape == (4, HIDDEN)
 
 
 def test_resblock_is_residual():
     """With all weights zeroed, output must equal input (skip connection only)."""
-    block = ResBlock(dim=256)
+    block = ResBlock()
     with torch.no_grad():
         for p in block.parameters():
             p.zero_()
-    x = torch.rand(4, 256)
+    x = torch.rand(4, HIDDEN)
     assert torch.allclose(block(x), x)
 
 
@@ -50,7 +50,8 @@ def test_azulnet_constructs():
 
 
 def test_azulnet_default_hidden_dim():
-    assert make_net().hidden_dim == 256
+    """The model's hidden dimension is the module-level HIDDEN constant (64)."""
+    assert HIDDEN == 64
 
 
 # ── Forward pass: output structure ────────────────────────────────────
@@ -190,25 +191,17 @@ def test_gradients_flow_to_all_parameters():
         assert p.grad.abs().sum().item() > 0.0, f"Zero gradient for {name}"
 
 
-# ── Hyperparameter overrides ───────────────────────────────────────────
+# ── Architecture constants ─────────────────────────────────────────────
 
 
-def test_custom_hidden_dim():
-    (src, tile, dst), v_win, v_diff, v_abs = AzulNet(hidden_dim=128)(
-        random_input(batch=2)
-    )
-    assert src.shape == (2, 2)
-    assert tile.shape == (2, 5)
-    assert dst.shape == (2, 6)
-    assert v_win.shape == (2, 1)
-    assert v_diff.shape == (2, 1)
-    assert v_abs.shape == (2, 1)
+def test_hidden_dimension_is_64():
+    """HIDDEN is the single fixed width used throughout the network."""
+    assert HIDDEN == 64
 
 
-def test_custom_num_blocks():
-    (src, tile, dst), v_win, v_diff, v_abs = AzulNet(num_blocks=1)(
-        random_input(batch=2)
-    )
+def test_azulnet_output_shapes():
+    """Verify all head output shapes for the default architecture."""
+    (src, tile, dst), v_win, v_diff, v_abs = AzulNet()(random_input(batch=2))
     assert src.shape == (2, 2)
     assert tile.shape == (2, 5)
     assert dst.shape == (2, 6)

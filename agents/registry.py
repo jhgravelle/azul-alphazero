@@ -10,6 +10,10 @@ from agents.mcts import MCTSAgent
 from agents.minimax import MinimaxAgent
 from agents.random import RandomAgent
 from typing import Callable
+from agents.alphazero import AlphaZeroAgent
+from neural.model import AzulNet
+import torch
+from pathlib import Path
 
 # (name, label, factory, hidden)
 AGENT_REGISTRY: list[tuple[str, str, Callable, bool]] = [
@@ -51,6 +55,14 @@ AGENT_REGISTRY: list[tuple[str, str, Callable, bool]] = [
         lambda **_: AlphaBetaAgent(depths=(20, 20, 20), thresholds=(180, 180)),
         False,
     ),
+    (
+        "alphazero",
+        "AlphaZero",
+        lambda **kwargs: AlphaZeroAgent(
+            _load_az_net(), simulations=kwargs.get("simulations", 200)
+        ),
+        False,
+    ),
 ]
 
 AGENT_NAMES = [name for name, _, _, _ in AGENT_REGISTRY]
@@ -62,3 +74,12 @@ def make_agent(name: str, **kwargs) -> Agent | None:
     if name not in _FACTORIES:
         raise ValueError(f"Unknown agent: {name!r}")
     return _FACTORIES[name](**kwargs)
+
+
+def _load_az_net() -> AzulNet:
+    net = AzulNet()
+    path = Path("checkpoints/latest.pt")
+    if path.exists():
+        net.load_state_dict(torch.load(path, map_location="cpu"))
+    net.eval()
+    return net

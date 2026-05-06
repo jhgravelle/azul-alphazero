@@ -19,18 +19,20 @@ from neural.encoder import FLAT_SIZE
 
 __all__ = ["ResBlock", "AzulNet"]
 
+HIDDEN = 64
+
 
 class ResBlock(nn.Module):
     """A single fully-connected residual block."""
 
-    def __init__(self, dim: int) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.LayerNorm(dim),
+            nn.Linear(HIDDEN, HIDDEN),
+            nn.LayerNorm(HIDDEN),
             nn.ReLU(),
-            nn.Linear(dim, dim),
-            nn.LayerNorm(dim),
+            nn.Linear(HIDDEN, HIDDEN),
+            nn.LayerNorm(HIDDEN),
         )
         self.relu = nn.ReLU()
 
@@ -41,42 +43,35 @@ class ResBlock(nn.Module):
 class AzulNet(nn.Module):
     """Policy + value network for Azul with flat encoding.
 
-    Args:
-        hidden_dim: Width of the trunk and residual blocks. Default 256.
-        num_blocks: Number of residual blocks in the trunk. Default 3.
+    Architecture:
+        input_proj: 123 → 64 (Linear + LayerNorm + ReLU)
+        trunk:      1 × ResBlock(64)
+        heads:      64 → 2 / 5 / 6 (policy)
+                    64 → 1 (value × 3, with Tanh)
     """
 
-    def __init__(self, hidden_dim: int = 256, num_blocks: int = 1) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.num_blocks = num_blocks
 
         # ── Input projection ───────────────────────────────────────────────
         self.input_proj = nn.Sequential(
-            nn.Linear(FLAT_SIZE, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.Linear(FLAT_SIZE, HIDDEN),
+            nn.LayerNorm(HIDDEN),
             nn.ReLU(),
         )
 
         # ── Trunk ──────────────────────────────────────────────────────────
-        self.blocks = nn.Sequential(*[ResBlock(hidden_dim) for _ in range(num_blocks)])
+        self.blocks = ResBlock()
 
-        # ── Heads ──────────────────────────────────────────────────────────
-        self.source_head = nn.Linear(hidden_dim, 2)  # center vs factory
-        self.tile_head = nn.Linear(hidden_dim, 5)  # tile color
-        self.destination_head = nn.Linear(hidden_dim, 6)  # pattern lines + floor
-        self.value_win_head = self._make_value_head(hidden_dim)
-        self.value_diff_head = self._make_value_head(hidden_dim)
-        self.value_abs_head = self._make_value_head(hidden_dim)
+        # ── Policy heads ───────────────────────────────────────────────────
+        self.source_head = nn.Linear(HIDDEN, 2)  # center vs factory
+        self.tile_head = nn.Linear(HIDDEN, 5)  # tile color
+        self.destination_head = nn.Linear(HIDDEN, 6)  # pattern lines + floor
 
-    @staticmethod
-    def _make_value_head(hidden_dim: int) -> nn.Sequential:
-        return nn.Sequential(
-            nn.Linear(hidden_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Tanh(),
-        )
+        # ── Value heads ────────────────────────────────────────────────────
+        self.value_win_head = nn.Sequential(nn.Linear(HIDDEN, 1), nn.Tanh())
+        self.value_diff_head = nn.Sequential(nn.Linear(HIDDEN, 1), nn.Tanh())
+        self.value_abs_head = nn.Sequential(nn.Linear(HIDDEN, 1), nn.Tanh())
 
     def forward(
         self,

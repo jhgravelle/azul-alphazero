@@ -67,51 +67,51 @@ def test_push_overwrites_oldest_when_full():
     # 4th push overwrites first (value_win -1.0)
     buf.push(torch.full((FLAT_SIZE,), 3.0), p, 0.5, 0.5, 0.5)
     assert len(buf) == 3
-    _, _, values_win, _, _ = buf.sample(3)
+    _, _, values_win, _, _, _ = buf.sample(3)
     assert -1.0 not in values_win.tolist()
 
 
 # ── Sample ─────────────────────────────────────────────────────────────────
 
 
-def test_sample_returns_five_tensors():
+def test_sample_returns_six_tensors():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    assert len(buf.sample(8)) == 5
+    assert len(buf.sample(8)) == 6
 
 
 def test_sample_encoding_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    encodings, _, _, _, _ = buf.sample(8)
+    encodings, _, _, _, _, _ = buf.sample(8)
     assert encodings.shape == (8, FLAT_SIZE)
 
 
 def test_sample_policy_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    _, policies, _, _, _ = buf.sample(8)
+    _, policies, _, _, _, _ = buf.sample(8)
     assert policies.shape == (8, MOVE_SPACE_SIZE)
 
 
 def test_sample_value_win_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    _, _, values_win, _, _ = buf.sample(8)
+    _, _, values_win, _, _, _ = buf.sample(8)
     assert values_win.shape == (8, 1)
 
 
 def test_sample_value_diff_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    _, _, _, values_diff, _ = buf.sample(8)
+    _, _, _, values_diff, _, _ = buf.sample(8)
     assert values_diff.shape == (8, 1)
 
 
 def test_sample_value_abs_shape():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 20)
-    _, _, _, _, values_abs = buf.sample(8)
+    _, _, _, _, values_abs, _ = buf.sample(8)
     assert values_abs.shape == (8, 1)
 
 
@@ -133,8 +133,8 @@ def test_sample_raises_when_too_few_experiences():
 def test_sample_batch_is_random():
     buf = ReplayBuffer(capacity=100)
     fill_buffer(buf, 50)
-    e1, _, _, _, _ = buf.sample(10)
-    e2, _, _, _, _ = buf.sample(10)
+    e1, _, _, _, _, _ = buf.sample(10)
+    e2, _, _, _, _, _ = buf.sample(10)
     assert not torch.equal(e1, e2)
 
 
@@ -148,7 +148,7 @@ def test_sample_preserves_value_independence():
     e = torch.zeros(FLAT_SIZE)
     p = torch.zeros(MOVE_SPACE_SIZE)
     buf.push(e, p, value_win=0.1, value_diff=0.2, value_abs=0.3)
-    _, _, vw, vd, va = buf.sample(1)
+    _, _, vw, vd, va, _ = buf.sample(1)
     assert vw.item() == pytest.approx(0.1)
     assert vd.item() == pytest.approx(0.2)
     assert va.item() == pytest.approx(0.3)
@@ -182,5 +182,5 @@ def test_clear_resets_position():
     # A fresh push should be retrievable as the only item
     e_marker = torch.full((FLAT_SIZE,), 7.0)
     buf.push(e_marker, p, 0.9, 0.8, 0.7)
-    encodings, _, _, _, _ = buf.sample(1)
+    encodings, _, _, _, _, _ = buf.sample(1)
     assert torch.equal(encodings[0], e_marker)

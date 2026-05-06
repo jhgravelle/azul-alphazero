@@ -64,12 +64,15 @@ def compute_loss(
     values_win: torch.Tensor,
     values_diff: torch.Tensor,
     values_abs: torch.Tensor,
+    policy_masks: torch.Tensor,
     value_only: bool = False,
     diff_only: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Combined policy + multi-head value loss.
 
     Args:
+        policy_masks: (batch, 1) float — 1.0 = train policy, 0.0 = value-only
+                      (round-boundary examples have no policy target).
         value_only: Zero out policy loss.
         diff_only:  Zero out value_win and value_abs; also zeros policy loss.
 
@@ -84,11 +87,17 @@ def compute_loss(
         policy_loss = torch.tensor(0.0, requires_grad=False)
     else:
         src_tgt, tile_tgt, dst_tgt = flat_policy_to_3head_targets(policies)
-        policy_loss = (
-            -(src_tgt * F.log_softmax(src_logits, dim=1)).sum(dim=1).mean()
-            + -(tile_tgt * F.log_softmax(tile_logits, dim=1)).sum(dim=1).mean()
-            + -(dst_tgt * F.log_softmax(dst_logits, dim=1)).sum(dim=1).mean()
+        src_loss = -(src_tgt * F.log_softmax(src_logits, dim=1)).sum(
+            dim=1, keepdim=True
         )
+        tile_loss = -(tile_tgt * F.log_softmax(tile_logits, dim=1)).sum(
+            dim=1, keepdim=True
+        )
+        dst_loss = -(dst_tgt * F.log_softmax(dst_logits, dim=1)).sum(
+            dim=1, keepdim=True
+        )
+        n_valid = policy_masks.sum().clamp(min=1.0)
+        policy_loss = ((src_loss + tile_loss + dst_loss) * policy_masks).sum() / n_valid
 
     loss_diff = F.mse_loss(pred_diff, values_diff)
     loss_abs = F.mse_loss(pred_abs, values_abs)
@@ -149,12 +158,13 @@ class Trainer:
                 )
             }
 
-        encodings, policies, vw, vd, va = buf.sample(self.batch_size)
+        encodings, policies, vw, vd, va, masks = buf.sample(self.batch_size)
         encodings = encodings.to(self.device)
         policies = policies.to(self.device)
         vw = vw.to(self.device)
         vd = vd.to(self.device)
         va = va.to(self.device)
+        masks = masks.to(self.device)
 
         self.net.train()
         self.optimizer.zero_grad()
@@ -165,6 +175,7 @@ class Trainer:
             vw,
             vd,
             va,
+            masks,
             value_only=value_only,
             diff_only=diff_only,
         )
@@ -284,8 +295,9 @@ def _format_pair_log(
 
 # ── Game record types ─────────────────────────────────────────────────────────
 
-# Each move: (player_idx, encoding_list, policy_list, vw, vd, va)
-_MoveRecord = tuple[int, list, list, float, float, float]
+# Each move: (player_idx, encoding_list, policy_list, vw, vd, va, policy_valid)
+# policy_valid=False for round-boundary value-only examples (no policy target)
+_MoveRecord = tuple[int, list, list, float, float, float, bool]
 _GameRecord = list[_MoveRecord]
 
 
@@ -297,11 +309,12 @@ def _compute_game_scores(game: Game) -> list[int]:
 def _play_game(
     game: Game,
     agents: list[Agent],
-) -> tuple[list[tuple[int, torch.Tensor, torch.Tensor]], list[int]]:
+) -> tuple[list[tuple[int, torch.Tensor, torch.Tensor, bool]], list[int]]:
     """Play a single game to completion.
 
     Returns (history, scores) where history is a list of
-    (player_index, encoding, policy_vec) tuples.
+    (player_index, encoding, policy_vec, policy_valid) tuples.
+    policy_valid=False for round-boundary entries (value target only, no policy).
     """
     from agents.alphazero import AlphaZeroAgent
 
@@ -310,7 +323,7 @@ def _play_game(
         if isinstance(agent, AlphaZeroAgent):
             agent.reset_tree(game)
 
-    history: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+    history: list[tuple[int, torch.Tensor, torch.Tensor, bool]] = []
     prev_round = game.round
 
     while True:
@@ -330,9 +343,23 @@ def _play_game(
         for m, prob in policy_pairs:
             policy_vec[encode_move(m, game)] = prob
 
-        history.append((current_player, encoding, policy_vec))
+        history.append((current_player, encoding, policy_vec, True))
 
         game.make_move(move)
+
+        # Capture round-boundary state before advance() scores and resets the round.
+        # This matches the state MCTS evaluates at is_round_boundary leaf nodes:
+        # empty factories, committed pattern lines, pending scores not yet settled.
+        # Encoding uses next_player() to match MCTS child construction exactly.
+        if game.is_round_over() and not game.is_game_over():
+            boundary_game = game.clone()
+            boundary_game.next_player()
+            boundary_enc = encode_state(boundary_game)
+            null_policy = torch.zeros(MOVE_SPACE_SIZE)
+            history.append(
+                (boundary_game.current_player_index, boundary_enc, null_policy, False)
+            )
+
         game.advance()
 
         if game.is_game_over():
@@ -353,12 +380,12 @@ def _play_game(
 
 
 def _history_to_records(
-    history: list[tuple[int, torch.Tensor, torch.Tensor]],
+    history: list[tuple[int, torch.Tensor, torch.Tensor, bool]],
     scores: list[int],
 ) -> _GameRecord:
     """Convert a game history to serializable move records with value targets."""
     records: _GameRecord = []
-    for player_idx, encoding, policy_vec in history:
+    for player_idx, encoding, policy_vec, policy_valid in history:
         vw = win_loss_value(scores, player_idx)
         vd = score_differential_value(scores, player_idx)
         va = total_score_value(scores, player_idx)
@@ -370,6 +397,7 @@ def _history_to_records(
                 vw,
                 vd,
                 va,
+                policy_valid,
             )
         )
     return records
@@ -377,10 +405,12 @@ def _history_to_records(
 
 def _push_records(buf: ReplayBuffer, records: _GameRecord) -> None:
     """Push serializable move records into the replay buffer."""
-    for _player_idx, encoding_list, policy_list, vw, vd, va in records:
+    for _player_idx, encoding_list, policy_list, vw, vd, va, policy_valid in records:
         encoding = torch.tensor(encoding_list, dtype=torch.float32)
         policy_vec = torch.tensor(policy_list, dtype=torch.float32)
-        buf.push(encoding, policy_vec, vw, vd, va)
+        buf.push(
+            encoding, policy_vec, vw, vd, va, policy_mask=1.0 if policy_valid else 0.0
+        )
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────

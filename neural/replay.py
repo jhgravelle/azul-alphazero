@@ -28,6 +28,7 @@ class ReplayBuffer:
         self._values_win = torch.zeros(capacity, 1, dtype=torch.float32)
         self._values_diff = torch.zeros(capacity, 1, dtype=torch.float32)
         self._values_abs = torch.zeros(capacity, 1, dtype=torch.float32)
+        self._policy_masks = torch.ones(capacity, 1, dtype=torch.float32)
         self._pos = 0
         self._size = 0
 
@@ -47,6 +48,7 @@ class ReplayBuffer:
         value_win: float,
         value_diff: float,
         value_abs: float,
+        policy_mask: float = 1.0,  # 0.0 for value-only (round-boundary) examples
     ) -> None:
         """Add one experience, overwriting the oldest if full."""
         self._encodings[self._pos] = encoding
@@ -54,6 +56,7 @@ class ReplayBuffer:
         self._values_win[self._pos] = value_win
         self._values_diff[self._pos] = value_diff
         self._values_abs[self._pos] = value_abs
+        self._policy_masks[self._pos] = policy_mask
         self._pos = (self._pos + 1) % self.capacity
         self._size = min(self._size + 1, self.capacity)
 
@@ -67,11 +70,12 @@ class ReplayBuffer:
         """Sample a random batch without replacement.
 
         Returns:
-            encodings:    (batch, FLAT_SIZE) = (batch, 123)
-            policies:     (batch, MOVE_SPACE_SIZE)
-            values_win:   (batch, 1)
-            values_diff:  (batch, 1)
-            values_abs:   (batch, 1)
+            encodings:     (batch, FLAT_SIZE) = (batch, 123)
+            policies:      (batch, MOVE_SPACE_SIZE)
+            values_win:    (batch, 1)
+            values_diff:   (batch, 1)
+            values_abs:    (batch, 1)
+            policy_masks:  (batch, 1), 1.0 = train policy, 0.0 = value-only
         """
         if batch_size > self._size:
             raise ValueError(
@@ -85,4 +89,5 @@ class ReplayBuffer:
             self._values_win[indices],
             self._values_diff[indices],
             self._values_abs[indices],
+            self._policy_masks[indices],
         )

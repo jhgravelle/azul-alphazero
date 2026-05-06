@@ -214,7 +214,7 @@ def test_fully_explored_minimax_matches_brute_force():
     assert tree._root._fully_explored is True
 
     serialized = tree.serialize()
-    mm_pts = serialized["minimax_value"] * 20
+    mm_pts = serialized["minimax_value"] * 50
     assert (
         abs(mm_pts - 5.0) < 0.01
     ), f"Expected exactly +5.0pts minimax, got {mm_pts:.2f}pts"

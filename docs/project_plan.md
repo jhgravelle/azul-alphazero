@@ -2,8 +2,8 @@
 
 # Azul AlphaZero — Project Plan
 
-> Last updated: 2026-05-05
-> Status: Phase 8 in progress. 8r complete — training v2 pipeline: 3-head policy, 25-move temperature rule, mirror eval, pretrain mode, value_abs removed from loss. All 619 non-slow tests passing. Next: fresh training run with `--pretrain` flag, or inspector serialization redesign (8h).
+> Last updated: 2026-05-06
+> Status: Phase 8 in progress. Training signal fixes (8u) complete — `_terminal_value` divisor corrected, round-boundary states now in training buffer. Ready to restart training run with 64-dim model.
 
 ---
 
@@ -45,13 +45,13 @@ This section tracks where our implementation diverges from the original AlphaZer
 ### Our Deviations
 
 **Deviation 1 — Simulation count**
-True AlphaZero uses 800 simulations per move for both training and eval. Our count is TBD — Azul has a much smaller branching factor than chess/Go, so far fewer simulations may be sufficient. This is a hyperparameter to tune. Current training uses configurable sim counts (50/100/200/500/1000/5000 in the UI).
+True AlphaZero uses 800 simulations per move for both training and eval. Our count is TBD — Azul has a much smaller branching factor than chess/Go, so far fewer simulations may be sufficient. Default is 200.
 
 **Deviation 2 — Training game generation**
-True AlphaZero generates training games from the single current best model with exploration enabled. Our current setup TBD — to be clarified and documented here.
+True AlphaZero generates training games from self-play only. We use a progressive curriculum: AZ vs AlphaBeta medium until 55% win rate, then switch to AZ vs AZ self-play. This prevents early self-play from poisoning the buffer with random-quality games.
 
 **Deviation 3 — Evaluation approach**
-True AlphaZero runs a fixed evaluation tournament with exploration off and promotes if win rate exceeds a threshold. We are considering using **model differences as implicit exploration** rather than an explicit exploration-off parameter — two models at different training stages naturally diverge in play. If high game counts and sim counts are not required to determine the better model, the true AlphaZero approach is preferable.
+True AlphaZero runs a fixed evaluation tournament with exploration off and promotes if win rate exceeds a threshold. We use the same approach: eval uses `temperature=0.0` (greedy/argmax), promotion at ≥55% win rate over 50 mirror pairs vs current best.
 
 **Deviation 4 — Virtual loss and batching**
 Our batched MCTS with virtual loss provides exploration breadth within each batch, partially compensating for any reduction in per-move simulation count. This is an architectural difference from the original sequential MCTS.
@@ -93,11 +93,10 @@ azul-alphazero/
 │   └── style.css
 ├── neural/
 │   ├── encoder.py         # Flat MLP encoding (v3: 123-value vector, no spatial conv)
-│   ├── model.py           # MLP-only architecture (ResBlocks, policy + 3× value heads)
+│   ├── model.py           # MLP-only architecture (1 ResBlock 64-dim, policy + 3× value heads)
 │   ├── replay.py          # Circular replay buffer, three value targets per example
 │   ├── search_tree.py     # SearchTree: MCTS, background worker, subtree reuse
-│   ├── trainer.py         # compute_loss, Trainer, target functions, data collection
-│   └── zobrist.py         # PENDING DELETION — replaced by move-path node keys
+│   └── trainer.py         # compute_loss, Trainer, AgentSpec, parallel collection
 ├── scripts/
 │   ├── benchmark_agents.py
 │   ├── benchmark_mcts.py
@@ -110,8 +109,6 @@ azul-alphazero/
 │   ├── self_play.py
 │   ├── tournament.py      # Round-robin parallel tournament; games feed replay buffer
 │   └── train.py
-├── scratch/
-│   └── draft_game         # Draft engine rewrite (Game + Player taking over scoring)
 ├── tests/
 │   ├── engine/
 │   │   ├── test_game.py
@@ -163,12 +160,12 @@ Key changes:
 - `score_placement` moves to `Player` (operates on the wall)
 - `_handle_round_end()` in `api/main.py` returns `(round_ended: bool, game_ended: bool)`
 - `count_distinct_source_tile_pairs()` removed from `Game` (never hooked up)
-- `Game.determine_winners() -> list[Player]` — returns list of one or two players. Tiebreak: (1) highest score after bonuses, (2) most completed horizontal wall rows, (3) shared victory. No column tiebreaker — not in official rules. Replaces wherever winner determination currently lives in the API or frontend.
+- `Game.determine_winners() -> list[Player]` — returns list of one or two players. Tiebreak: (1) highest score after bonuses, (2) most completed horizontal wall rows, (3) shared victory. No column tiebreaker — not in official rules.
 - Deleted: `engine/board.py`, `engine/game_state.py`, `engine/scoring.py`
 - Deleted associated tests: `test_board.py`, `test_game_state.py`, `test_scoring.py`
 - Moved `tests/test_game.py` → `tests/engine/test_game.py`
 
-**Status:** Complete. 625 tests passing.
+**Status:** Complete. 626 tests passing.
 
 #### 8g — Virtual Loss / MCTS Bug Fix ✅
 
@@ -231,44 +228,11 @@ GET /inspect/subtree?key=<move_path_hex>&depth=3
 
 #### 8q — Factory Overfitting Mitigation via Mirror Games ✅
 
-**Problem:** Value head overfits to factory state. Some games have correlated outcomes (e.g., games with larger factories cluster in wins), allowing the value head to memorize factory fingerprints rather than learn pure board evaluation.
-
-**Root cause:** Non-mirrored games introduce factory-outcome correlation. If one agent is stronger, games with certain factory distributions may systematically favor that player, creating spurious patterns.
-
-**Solution:** Mirror game pairs — identical bag seed, both players swap sides.
-- Game 1: Agent A vs Agent B, factories F
-- Game 2: Agent B vs Agent A, same factories F
-
-Both games use `Game(seed=N)` to guarantee identical factory sequences. Since the bag has exactly 100 tiles and no refill occurs until round 6, the seed fully determines all factories for rounds 1–5.
-
-**If agent A is stronger:** A wins from both sides, so factory state didn't determine outcome — board state did. This forces the value head to learn board evaluation.
-
-**Results (20 iterations, 100 mirror pairs per iter, 2000 games total):**
-- `value_win` std: 0.0409 (tight, no factory noise)
-- `value_diff` std: 0.0380 (tight, no factory noise)  
-- `value_abs` std: 0.0295 (tight, no factory noise)
-
-All three heads converge cleanly without factory fingerprinting.
-
-**Implementation:**
-- Use `collect_mirror_heuristic_games()` in trainer.py — already implemented
-- Add `--mirror-games-per-iter N` to training loop
-- Recommendation: 20–50 mirror pairs per iteration once model reaches competence
-- **Apply to all agent vs agent games:** self-play, heuristic collections, eval tournaments
-
-**Changes required:**
-
-| Location | Change |
-|---|---|
-| `scripts/train.py` | Already supports `--mirror-games-per-iter`; document best practices |
-| `neural/trainer.py` | Already implemented; ensure used in all data collection |
-| Documentation | Add mirror games as standard practice for all matchups |
+Mirror game pairs (identical bag seed, sides swapped) used for all data collection. Forces value head to learn board evaluation rather than factory fingerprints. All collection functions in `trainer.py` use mirror pairs by default.
 
 #### 8i — Encoding v3: Pure MLP ✅
 
-**Motivation:** Spatial convolution on only 4 channels was learning spurious patterns instead of rule-determined game structure (walls are vertical, rows are horizontal, completions are patterns). With MLP, the network can directly learn which spatial features matter without conv overfitting.
-
-**Architecture:** Single flat vector (123 values) fed to MLP trunk + policy/value heads. No spatial branch.
+Single flat vector (123 values) fed to MLP trunk + policy/value heads. No spatial branch.
 
 **Flat vector layout:**
 
@@ -288,66 +252,7 @@ All three heads converge cleanly without factory fingerprinting.
 
 **Total: 123 values**
 
-**Design rationale:**
-- Wall patterns (vertical completions, adjacent tiles) emerge naturally from MLP learning wall positions
-- Row/col/color completions removed — network computes from actual wall state
-- No conv bias/overfitting — simpler to debug and generalize
-- ~60% parameter reduction vs prior spatial conv architecture (~150k params → ~90k)
-
-#### 8j — Training Pipeline Phase 1 + Phase 2
-
-**Phase 1 — Value calibration (diff-only)**
-
-Goal: `value_diff` std < 0.3 on turn-1 empty boards.
-
-```
-python -m scripts.train \
-  --iterations 30 --games-per-iter 0 --simulations 200 \
-  --train-steps 1000 --value-only-iterations 0 \
-  --skip-eval-iterations 30 --eval-games 0 --eval-simulations 200 \
-  --win-threshold 0.55 --alphabeta-games-per-iter 100 \
-  --buffer-size 500000 --heuristic-workers 8 --diff-only
-```
-
-**Phase 2 — Full training**
-
-```
-python -m scripts.train \
-  --iterations 30 --games-per-iter 10 --simulations 200 \
-  --train-steps 1000 --value-only-iterations 0 \
-  --skip-eval-iterations 5 --eval-games 20 --eval-simulations 200 \
-  --win-threshold 0.55 --alphabeta-games-per-iter 40 \
-  --candidate-games-per-iter 20 --buffer-size 200000 \
-  --heuristic-workers 8 --initial-generation 1
-```
-
-**Heuristic matchup weights:**
-
-| Matchup | Weight | Purpose |
-|---|---|---|
-| Random vs AlphaBeta easy | 10% | Extreme loss signal |
-| Efficient vs AlphaBeta easy | 20% | Weak vs strong |
-| Cautious vs AlphaBeta easy | 30% | Moderate loss signal |
-| Greedy vs AlphaBeta easy | 40% | Near-peer, clean policy targets |
-
-Note: easy = `depths=(1,1,3)` (weakened from `(2,3,7)` for experiment). Easy-vs-easy dropped (was 45%).
-
-**Value heads:**
-- `value_diff` — primary PUCT signal
-- `value_win` — auxiliary, weight 0.3
-- `value_abs` — diagnostic only; excluded from training loss (see 8r)
-
-**Promotion bar:** Beat `alphabeta_hard` at ≥55% win rate with ≥1500 eval simulations.
-
-**Graduated eval targets:**
-1. Beat Greedy ≥70%
-2. Beat Cautious ≥60%
-3. Beat AlphaBeta easy ≥55%
-4. Beat AlphaBeta hard ≥55% — deployable
-
 #### 8r — Training v2: 3-Head Policy + Temperature + Mirror Eval + Pretrain ✅
-
-**Changes:**
 
 **1. Three-head policy** — `policy_head` (flat 180) replaced by three independent heads:
 - `source_head` (2): center vs factory
@@ -355,33 +260,93 @@ Note: easy = `depths=(1,1,3)` (weakened from `(2,3,7)` for experiment). Easy-vs-
 - `destination_head` (6): pattern line + floor
 
 Move priors = softmax(src) × softmax(tile) × softmax(dst), renormalized over legal moves.
-Training targets: flat MCTS visit distribution (210) marginalized to per-head soft targets via
+Training targets: flat MCTS visit distribution (180) marginalized to per-head soft targets via
 `flat_policy_to_3head_targets()` in `encoder.py`.
 
-**2. Temperature exploration (25-move rule)** — `_pick_move` reads `root.game.turn` and applies:
+Note: `MOVE_SPACE_SIZE = NUM_SOURCES(6) × BOARD_SIZE(5) × NUM_DESTINATIONS(6) = 180`, not 210 as previously documented.
+
+**2. Temperature exploration (25-move rule)** — `_pick_move` reads `root.game.turn`:
 - Moves 0–24: `EXPLORATION_TEMP = 1.0` (stochastic)
 - Moves 25+: `DETERMINISTIC_TEMP = 0.1` (sharp)
+- Eval always uses `temperature=0.0` (argmax)
 
-`temperature == 0.0` still means argmax. No API changes to `AlphaZeroAgent`.
-
-**3. Mirror eval** — `evaluate()` plays each seed twice (sides swapped) using `Game(seed=S)`.
-Total eval games = `num_games × 2`. Early-exit thresholds scale accordingly.
-
-**4. Pretrain mode** (`--pretrain` flag) — fills buffer with weak mirrored heuristic games
-(`_pretrain_matchups()`: random/efficient/cautious/greedy vs AlphaBeta easy), trains until loss
-plateaus, auto-switches to self-play. Saves `gen_0000.pt` at transition.
-
-**5. Value simplification** — `value_abs` excluded from training loss. Combined value loss:
+**3. Value simplification** — `value_abs` excluded from training loss. Combined value loss:
 `0.3×value_win_loss + 1.0×value_diff_loss`. `value_abs` still computed and logged.
+MCTS uses `value_diff` as its Q signal — continuous, better gradient than binary `value_win`.
 
 **Breaking change:** checkpoint format incompatible with pre-8r checkpoints (policy head renamed).
+
+#### 8s — Parallel Training Pipeline + AZ vs AB Medium Progression ✅
+
+**Unified AgentSpec worker architecture:**
+- `AgentSpec` dataclass — serializable description of any agent (AlphaZero or heuristic). Picklable, passed to worker processes.
+- `_build_agent(spec)` — constructs any agent from a spec inside a worker process
+- `_worker_play_mirror_pair(spec_0, spec_1)` — single worker function; picks its own seed, plays game A + game B (sides swapped), returns serializable records
+- `_iter_pair_results(sampled, num_workers)` — generator using `imap_unordered`; yields results as workers finish for streaming log output. `KeyboardInterrupt` terminates workers cleanly.
+- `collect_parallel(buf, spec_0, spec_1, num_pairs, num_workers)` — fixed matchup mirror pairs
+- `collect_heuristic_parallel(buf, num_pairs, matchups, num_workers)` — weighted matchup sampling
+- `evaluate_parallel(new_net, old_net, num_pairs, simulations, buf, num_workers)` — eval with `temperature=0.0`, runs all pairs to completion, pushes to buf
+
+**Pair logging format:**
+```
+pair 7/100  Cautious +-  [28,19][14,22]  -+ AlphaBeta(1, 2, 3)
+```
+Result chars: `+` win, `-` loss, `*` tie. Two chars per agent (game A result, game B result).
+
+**AZ vs AB medium progression:**
+- Iterations start in `az-vs-abmedium` mode
+- Each iteration: collect 50 mirror pairs AZ vs AB medium; check win rate from collection results
+- If AZ win rate ≥ 55%: switch to `az-vs-az` mode next iteration (permanent)
+- Both modes: follow with training steps, then 50 eval pairs new vs best net for promotion
+
+**Pretrain (single pass before iteration loop):**
+- `--pretrain` flag: collect `buffer_size // 100` mirror pairs (heuristics vs AB easy), train for `num_pairs × 10` steps
+- Saves `gen_0000.pt` — pretrained baseline, not random weights
+- `best_net` initialized from pretrained weights so iteration 1 evals against gen_0000
+
+**Model size:**
+- `AzulNet` 64-dim, 1 ResBlock — ~8k params
+- No intermediate layer in value heads: trunk → 64 → 1 directly
+- Smaller model: faster MCTS inference (CPU bottleneck), less overfitting risk
+
+**Default CLI args:**
+```
+--workers 8  --simulations 200  --games-per-iter 50  --eval-games 50  --train-steps 10000
+```
+
+**Worker optimization:** `_worker_play_mirror_pair_tuple` returns pair index instead of agent specs, avoiding pickling weights back through the result queue.
+
+**Removed from trainer.py:** `collect_self_play`, `collect_heuristic_games`, `collect_heuristic_games_parallel`, `_worker_play_games`, `_matchups_to_specs`, `collect_mirror_heuristic_games` — all replaced by the unified worker architecture.
+
+#### 8t — Training Fixes & Model Shrink ✅
+
+**Bug fix — `_compute_game_scores` double-counted end-of-game bonuses.**
+After `handle_game_end()` runs, `player.bonus` is added into `player.score` but `bonus` itself is not zeroed. Reading `player.earned` (= `score + pending + penalty + bonus`) after game end double-counts the bonus. Fix: read `player.score` at game end — it is the canonical settled value.
+
+**Model shrink:** `AzulNet` reduced from 256-dim (~215k params) to 64-dim (~8k params). No intermediate layer in value heads. Checkpoint format incompatible with pre-8t checkpoints.
+
+**Training steps:** increased from 500 to 10,000 per iteration. Training steps are cheap (faster than a single eval game) so running more steps per iteration is effectively free.
+
+**Skip-eval iterations:** `--skip-eval-iterations N` added to let the net warm up for N iterations before being judged against gen_0000.
+
+**AlphaZero added to inspector UI:** `agents/registry.py` and `api/schemas.py` updated. `_load_az_net()` loads `checkpoints/latest.pt` at agent construction time — picks up latest weights when server restarts during training.
+
+#### 8u — Training Signal Fixes ✅
+
+**Bug fix — `_terminal_value` divisor was ÷20, should be ÷50.**
+`SearchTree._terminal_value` returned `(my_earned - opp_earned) / 20.0`, but the `value_diff` head is trained with `_SCORE_DIFF_DIVISOR = 50.0`. Terminal node Q-values were 2.5× larger than the network's trained output range, corrupting MCTS policy distributions and creating a negative feedback loop: biased policy targets → net learns to prefer fast game endings → faster losses against AB medium → more negative buffer data → net regresses. Fix: import and use `_SCORE_DIFF_DIVISOR` from `trainer.py` in `_terminal_value`.
+
+**Round-boundary states added to training buffer.**
+MCTS evaluates round-boundary leaf nodes (empty factories, committed pattern lines, pending scores unsettled) using the neural net. These states never appeared in the training buffer — the net was extrapolating to out-of-distribution inputs at every round boundary. This matters strategically: the best move at the end of a round is sometimes to trash a tile to the floor (small immediate penalty) to keep a pattern line clean for next round. A heuristic terminal value would favor blocking the line (no penalty), so using the net is essential. Fix: after each `make_move` that ends a round, `_play_game` clones the game, calls `next_player()` (matching MCTS child construction exactly), encodes the boundary state, and appends it to history with `policy_valid=False`.
+
+**Policy mask added to replay buffer and loss computation.**
+Round-boundary examples have no legal moves and no policy target. `ReplayBuffer` gains a `policy_masks` field (1.0 = train policy, 0.0 = value-only). `compute_loss` masks out boundary examples from the policy loss and averages over valid examples only. Value heads train on all examples including boundaries.
 
 #### 8k — Elo Ladder
 
 - Elo tracked live during training, logged per iteration
 - Tournament games double as training data
 - Goal: UI page showing Elo ladder across all `gen_xxxx.pt` checkpoints
-- Multiple model sizes trained on same data; Elo is the selection mechanism
 
 #### 8l — Evaluation & Variance Analysis
 
@@ -389,20 +354,13 @@ plateaus, auto-switches to self-play. Saves `gen_0000.pt` at transition.
 
 **Approach:**
 - Head-to-head tournaments between strong model and weaker baselines
-- All eval games use mirrored pairs (same bag seed, players swap sides) — same discipline as training
-- Aggregation options per pair: count games independently, win-both/split/lose-both, or net score differential across the pair
+- All eval games use mirrored pairs (same bag seed, players swap sides)
 - Score differential may be more informative than binary win/loss when models are close in strength
 - Run enough game pairs for statistical confidence (target 500–1000+ games)
 
-**Open questions:**
-- How many simulations are needed for eval results to be meaningful? (Current guidance: ≥1500)
-- Does the stronger model need to be AlphaZero-level, or is AlphaBeta hard vs AlphaBeta medium sufficient to measure variance?
+#### 8m — Parallel Eval Games ✅
 
-#### 8m — Parallel Eval Games
-
-- Confirm or implement parallel execution of eval games
-- Individual games always run to completion; early exit applies only at the tournament level (stop if candidate has clinched promotion or been eliminated)
-- Parallelism makes full-game eval affordable even without early exit
+Implemented via `evaluate_parallel` in `trainer.py`. Uses same `_iter_pair_results` / `imap_unordered` architecture as collection. All pairs run to completion, no early exit.
 
 #### 8n — Multi-Flavor Hyperparameter Search (Early Stage)
 
@@ -411,26 +369,14 @@ plateaus, auto-switches to self-play. Saves `gen_0000.pt` at transition.
 **Design:**
 - Each flavor has its own current best model
 - A candidate promotes within its flavor by beating its own prior best
-- Cross-flavor eval games are used for training data richness and gameplay diversity only — they do not affect promotion decisions
-- Each eval phase tournament includes best and candidate models from all active flavors
+- Cross-flavor eval games used for training data richness only
 - Once a winning structure is identified, commit to it for the full training run
-
-**Hyperparameters to vary:** model architecture (depth, width), PUCT constant, simulation count, encoding choices. Treat as a hyperparameter; Elo selects the winner.
 
 #### 8o — Training Dashboard & Remote Monitoring
 
-**Goal:** Web dashboard for monitoring training progress, accessible remotely (e.g. from phone while away from the computer).
+**Goal:** Web dashboard for monitoring training progress, accessible remotely.
 
-**Metrics to display:**
-- Loss curves (policy head, value heads, total)
-- Elo progression across checkpoints
-- Win rates in eval tournaments per flavor/checkpoint
-- Current tournament standings and games remaining
-- Self-play health: games per hour, GPU utilization, replay buffer size
-
-**Implementation options:**
-- Lightweight local web page served by the existing FastAPI server
-- Weights & Biases (wandb) — handles remote access automatically, good mobile viewing
+**Metrics:** Loss curves, Elo progression, win rates, buffer size, games per hour.
 
 ---
 
@@ -446,16 +392,15 @@ plateaus, auto-switches to self-play. Saves `gen_0000.pt` at transition.
 
 ## Backlog
 
-- [ ] Write mirror game invariant test — confirm identical factory contents rounds 1–5 with same bag seed using random agents; assert round 6 is first potential divergence point. Acts as regression guard against future bag/shuffle changes.
-- [ ] **Model shrinking phase 2** — Current shrunk model is 706k params (2.1× reduction). Investigate further shrinking to ~350k params by: reducing ResBlocks from 3→1 (saves 262k), reducing hidden_dim from 256→192, reducing spatial channels from 18→14. Test value head calibration at each reduction to find the floor before overfitting returns.
-- [ ] Confirm or implement parallel eval games (see 8m)
-- [ ] Add `--no-early-exit` argument to eval tournament, or document current behavior clearly
-- [ ] Start design decisions doc — AlphaZero deviations (covered above in "AlphaZero Design Decisions & Deviations" section)
-- [ ] Fix `net_value_diff` display multiplier — currently ×20, should be ×50
+- [ ] Write mirror game invariant test — confirm identical factory contents rounds 1–5 with same bag seed using random agents; assert round 6 is first potential divergence point.
+- [x] Fix `_terminal_value` divisor — was ÷20, now ÷50 via `_SCORE_DIFF_DIVISOR` (8u)
+- [ ] Fix `net_value_diff` display multiplier in inspector UI — label still shows ×20, should be ×50
 - [ ] Copy node button — tiny icon per row, copies path from root to that node only
 - [ ] Condensed state copy format — compact and human-readable for pasting into prompts
 - [ ] Load game state from plain text — paste a copied state string to jump to that position
 - [ ] Scale indicator — tooltip clarifying all point values are `earned` differential ÷ 50, displayed ×50
+- [ ] Inspector serialization redesign (8h) — deferred in favour of training pipeline work
+- [ ] Delete `neural/zobrist.py` — replaced by move-path node keys (see 8h)
 
 ---
 
@@ -488,6 +433,8 @@ player.earned     — score + pending + penalty + bonus (cached property, never 
 ```
 
 `player.earned` is unclamped mid-round. Clamping happens only in `player.handle_round_end()`.
+
+At game end, read `player.score` (not `player.earned`) — `bonus` has been folded into `score` by `handle_game_end()` and reading `earned` would double-count it.
 
 Scoring divisors: absolute score ÷ 100, score differential ÷ 50.
 
@@ -548,7 +495,7 @@ UI difficulty levels:
 `(current_player.earned - opponent.earned) / 50.0` at every node.
 
 ### Inspector UI active work items
-- [ ] Fix `net_value_diff` display multiplier — currently ×20, should be ×50
+- [ ] Fix `net_value_diff` display multiplier in inspector UI — label still shows ×20, should be ×50
 - [ ] Copy node button — tiny icon per row, copies path from root to that node only
 - [ ] Condensed state copy format — compact and human-readable
 - [ ] Load game state from plain text
@@ -572,6 +519,11 @@ Training targets marginalize flat MCTS visit distribution to per-head soft targe
 `value_abs` is computed and logged but excluded from the training loss. Loss formula:
 `policy_loss + 0.3×value_win_loss + 1.0×value_diff_loss`.
 
+MCTS uses `value_diff` as its Q signal. `value_diff` is continuous (score differential ÷ 50),
+giving better gradient than the binary `value_win`.
+
+Architecture: `input_proj(123→64) → 1×ResBlock(64) → 6 heads`. ~8k params.
+
 ---
 
 ## Checkpoint Management
@@ -579,6 +531,7 @@ Training targets marginalize flat MCTS visit distribution to per-head soft targe
 - `checkpoints/latest.pt` — current training weights
 - `checkpoints/latest_params.json` — args used to produce `latest.pt`
 - `checkpoints/gen_xxxx.pt` — promoted checkpoints only
+- `gen_0000.pt` — pretrained baseline (after `--pretrain`), not random weights
 - `--load` defaults to `checkpoints/latest.pt`; silently skips if missing
 - `--initial-generation N` — start generation counter at N
 
@@ -593,7 +546,7 @@ Training targets marginalize flat MCTS visit distribution to per-head soft targe
 5. **Eval at low sim counts is nearly useless.** Need ≥1500 sims for meaningful eval.
 6. **Net weights reset every iteration when eval was skipped.** Fix: only reset when eval actually ran and net lost.
 7. **Policy loss dominates the trunk (~50x value loss).** Use `--diff-only` Phase 1.
-8. **Value head overfit to factory configurations.** Fix: encoding v3 removes raw factory distribution.
+8. **Value head overfit to factory configurations.** Fix: encoding v3 removes raw factory distribution; mirror games eliminate factory-outcome correlation.
 9. **MCTS snowballs on high-value outliers.** Fix: value head calibration (Phase 1).
 10. **Eval against random `gen_0000.pt` produces move-cap hits.** Fix: copy `latest.pt` to `gen_0001.pt` after Phase 1.
 11. **`uvicorn --reload` restarts server on checkpoint writes.** Run without `--reload` during training.
@@ -603,12 +556,19 @@ Training targets marginalize flat MCTS visit distribution to per-head soft targe
 15. **Virtual loss needs `visits + virtual_loss` as parent count in PUCT.** Passing only `visits` makes U=0 during batch collection, collapsing exploration to prior-greedy selection within each batch.
 16. **`while not game.is_game_over()` as a loop condition is always wrong** — `is_game_over()` now requires both `has_triggered_game_end()` AND `is_round_over()`. Use `while not game.is_game_over()` only after confirming this is what you mean. In practice, game loops should check `is_game_over()` after `advance()`, not before `make_move()`.
 17. **`has_triggered_game_end()` does not mean the game is over** — it means the game will end at the end of the current round. Moves may still remain this round. `is_game_over()` is only True when the round has also fully ended and all scoring is complete.
+18. **Early self-play poisons the buffer.** A weak net generates near-random MCTS visit distributions. Self-play data displaces good pretrain data and loss increases. Fix: use AZ vs AlphaBeta medium until AZ reaches 55% win rate before switching to self-play.
+19. **`imap_unordered` with multiprocessing needs a single-argument wrapper.** `pool.starmap` blocks until all results are done — use `imap_unordered` with a tuple-unpacking wrapper function to stream results as workers finish.
+20. **Don't pickle agent specs back through the worker result queue.** Returning `AgentSpec` (which contains the full model state dict) from workers serializes weights on every result. Return a pair index instead and look up the spec in the main process.
+21. **`_compute_game_scores` must read `player.score`, not `player.earned`, at game end.** After `handle_game_end()`, bonuses are folded into `score` but `bonus` is not zeroed — reading `earned` double-counts them. Scores of 0 in game logs are genuinely bad play (floor penalties exceeding placement points), not early termination.
+22. **500 training steps per iteration is insufficient.** Training steps are essentially free relative to game collection and eval. Use 10,000+ steps per iteration to give the net meaningful gradient signal before evaluation.
+23. **Pretrain loss curve not converged at 10k steps.** The curve was still declining — 50k steps reaches a better floor (~2.22 policy loss vs ~2.40 at 10k). Run pretrain longer.
+24. **`_terminal_value` divisor must match `_SCORE_DIFF_DIVISOR`.** Using ÷20 while the value_diff head trains with ÷50 makes terminal Q-values 2.5× too large. MCTS policy distributions are biased toward fast game endings, generating corrupted training targets and a progressive regression loop. Both must use the same constant.
+25. **Round-boundary states must be in the training buffer.** MCTS evaluates leaf nodes at round boundaries (empty factories, committed pattern lines). If the net has never seen these states during training, it extrapolates — and the heuristic fallback (`_terminal_value`) is wrong for Azul because it ignores the future cost of a blocked pattern line. Capture boundary states in `_play_game` after `make_move` (before `advance`), call `next_player()` to match MCTS child construction, and push with `policy_mask=0.0` so only the value heads train on them.
 
 ---
 
 ## Deferred / Future Ideas
 
-- **Parallel self-play via multiprocessing** — heuristic collection is parallel; self-play still sequential.
 - **Encoding cache / state reuse** — cache `(encoded_state, legal_moves)` per node within a search.
 - **Shared game-owned state tree** — game owns a cache of encoded states; agents request batches directly.
 - **Node-budget AlphaBeta** — cap total nodes explored rather than depth.
@@ -620,7 +580,7 @@ Training targets marginalize flat MCTS visit distribution to per-head soft targe
 
 | Script | Purpose |
 |---|---|
-| `scripts/train.py` | AlphaZero self-play training loop |
+| `scripts/train.py` | AlphaZero training loop — pretrain, AZ vs AB medium, AZ vs AZ self-play |
 | `scripts/inspect_policy.py` | Per-move policy/value/MCTS diagnostic |
 | `scripts/sample_policy.py` | Bulk value calibration across N random game states |
 | `scripts/tournament.py` | Round-robin parallel tournament |
@@ -637,21 +597,16 @@ Training targets marginalize flat MCTS visit distribution to per-head soft targe
 
 | Date | Change |
 |---|---|
-| 2026-05-05 | **Training v2 (8r) complete:** 3-head policy (source×tile×dest), 25-move temperature rule, mirror eval, `--pretrain` mode with plateau detection, `value_abs` removed from training loss. 619 non-slow tests passing. Checkpoint format incompatible with pre-8r. |
-| 2026-05-05 | **8f cleanup complete:** Deleted `engine/board.py`, `engine/scoring.py`, `engine/game_state.py` and their test files. Moved `tests/test_game.py` → `tests/engine/test_game.py`. 625 tests passing. |
-| 2026-05-05 | **AzulNet 12x shrink experiment:** Replaced 2-conv spatial branch (1.5M params) with multi-kernel design — local 5×5 (10ch) + row 1×5 (4ch) + col 5×1 (4ch) = 18ch, ~180k params. Bottleneck: Linear(450→256) vs prior Linear(3200→256). Trainer matchups rebalanced: easy-vs-easy dropped (0.45→0.00), weight shifted to greedy/cautious/efficient. AlphaBeta weakened to `depths=(1,1,3)` for experiment. Fixed `sample_policy.py`: `game.state.current_player` → `game.current_player`. |
+| 2026-05-06 | **8u complete:** `_terminal_value` divisor fixed ÷20→÷50 (now uses `_SCORE_DIFF_DIVISOR`). Round-boundary states captured in training buffer with `policy_mask=0.0` — net now trains on the same empty-factory states MCTS evaluates, enabling correct valuation of clean-line vs blocked-line tradeoffs. `ReplayBuffer` gains `policy_masks`; `compute_loss` masks boundary examples from policy loss. 545 tests passing. |
+| 2026-05-06 | **8t complete:** `_compute_game_scores` bug fixed (read `player.score` not `player.earned` at game end). `AzulNet` shrunk to 64-dim (~8k params), no intermediate value head layer. Training steps increased to 10k/iter. `--skip-eval-iterations` added. AlphaZero registered in inspector UI (`agents/registry.py`, `api/schemas.py`). Worker result queue no longer pickles agent specs back. |
+| 2026-05-05 | **Training pipeline v3 (8s) complete:** Unified AgentSpec worker architecture. `collect_parallel`, `collect_heuristic_parallel`, `evaluate_parallel` replace all previous collection functions. `imap_unordered` streams results as workers finish. AZ vs AB medium mode with auto-switch to AZ vs AZ at 55% win rate. Pretrain is single pass before loop. `AzulNet` default `num_blocks` 3→1 (~215k params). Default workers=8, sims=200, games-per-iter=50, eval-games=50. Fixed `MOVE_SPACE_SIZE` comment: 180 not 210. |
+| 2026-05-05 | **Training v2 (8r) complete:** 3-head policy (source×tile×dest), 25-move temperature rule, mirror eval, `--pretrain` mode, `value_abs` removed from training loss. 626 tests passing. Checkpoint format incompatible with pre-8r. |
+| 2026-05-05 | **8f cleanup complete:** Deleted `engine/board.py`, `engine/scoring.py`, `engine/game_state.py` and their test files. Moved `tests/test_game.py` → `tests/engine/test_game.py`. |
+| 2026-05-05 | **Mirror games discovery:** Value head overfitting to factory state resolved by using mirrored game pairs (identical bag seed, sides swapped) in all agent vs agent collections. |
+| 2026-05-05 | **Encoding v3 (8i):** Pure MLP, flat 123-value vector. No spatial conv. All checkpoints incompatible. |
 | 2026-05-04 | **MCTSAgent 3.5× speedup:** `clone()` replaces `deepcopy`, round-boundary rollouts, 200 sims default. |
-| 2026-05-05 | **Mirror games discovery:** Value head overfitting to factory state resolved by using mirrored game pairs (identical bag seed, sides swapped) in all agent vs agent collections. Testing shows `value_win`, `value_diff`, `value_abs` stds all < 0.041 on turn 1 (clean calibration). Added 8q phase documenting solution. Recommended for all future data collection. |
-| 2026-05-05 | **Model shrinking experiment:** Tested 706k-param shrunk model (2.1× smaller than original 1.5M). Bottleneck reduced from 819k to 115k params. Without mirror games, shrunk model overfit worse (std +17×). With mirror games, shrunk model achieves same tight calibration as larger model. Indicates overfitting was encoder + data correlation, not parameter count. Further shrinking to 350k params proposed for phase 8q. |
-| 2026-05-05 | **Encoding v3 (8i):** Spatial (8,5,5) → (4,5,5) — dropped bonus-proximity, bag, source-dist channels; kept wall + pattern for both players. Flat 8 → 53 — added row/col/color completion (post-placement wall), tiles-available, sources-with-color, bag-count per color. Earned divisor changed 50→100. All 488 non-engine tests passing. Existing checkpoints incompatible. |
-| 2026-04-25 | Inspector agent selector, policy priors, visit fractions. Minimax value fixed. Double policy_value_fn call eliminated. Copy Tree includes agent header. Inspector UI todos logged. |
-| 2026-05-02 | tests/engine/test_player.py added — 100% public interface coverage. Test subfolder structure introduced. |
-| 2026-05-02 | Project plan and instructions overhauled. Encoding v3 designed. Engine rewrite drafted. Virtual loss bug identified as top priority. Inspector serialization redesign fully specified. |
-| 2026-05-03 | Virtual loss MCTS concentration bug fixed. Root cause: `node.visits` passed as parent_visits, collapsing exploration. Fix: pass `node.visits + node.virtual_loss`. |
-| 2026-05-03 | `inspect_policy.py` probe fixed: removed stale v1 encoder imports, added `--batch-size` arg. |
-| 2026-05-03 | Added AlphaZero deviations section, variance/evaluation analysis phase (8l), parallel eval phase (8m), multi-flavor hyperparameter search phase (8n), training dashboard phase (8o). Added mirror game invariant test to backlog. File name comment added to code style preferences. File update instruction added to working preferences. |
-| 2026-05-03 | Engine rewrite (8f) complete — Player owns all scoring, Game owns transitions. Move moved into game.py. Board/GameState/scoring.py no longer imported. All 695 non-slow tests passing. |
-| 2026-05-03 | Fixed stale game.state.* references in scripts/train.py and trainer.py. Fixed value function type annotations (list[int] → list[float]). |
-| 2026-05-03 | Fixed is_game_over() — now requires is_round_over() AND has_triggered_game_end(). Fixed premature game termination in mcts.py, self_play.py, trainer.py, train.py. All slow tests passing. |
+| 2026-05-03 | **Engine rewrite (8f) complete** — Player owns all scoring, Game owns transitions. All 695 non-slow tests passing. |
+| 2026-05-03 | **Virtual loss MCTS concentration bug fixed.** Root cause: `node.visits` passed as parent_visits, collapsing exploration. Fix: pass `node.visits + node.virtual_loss`. |
+| 2026-05-03 | **Fixed is_game_over()** — now requires is_round_over() AND has_triggered_game_end(). Fixed premature game termination in mcts.py, self_play.py, trainer.py, train.py. |
 
 > For full history, see `git log`.

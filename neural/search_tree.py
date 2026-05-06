@@ -11,6 +11,7 @@ from typing import Callable
 import torch
 from engine.game import Game, Move, CENTER
 from neural.model import AzulNet
+from neural.trainer import _SCORE_DIFF_DIVISOR
 from neural.zobrist import ZobristTable
 
 _PUCT_C = 1.5
@@ -530,7 +531,7 @@ class SearchTree:
         idx = game.current_player_index
         my_earned = game.players[idx].earned
         opp_earned = game.players[1 - idx].earned
-        diff = (my_earned - opp_earned) / 20.0
+        diff = (my_earned - opp_earned) / _SCORE_DIFF_DIVISOR
         return max(-1.0, min(1.0, diff))
 
     def _minimax_value(

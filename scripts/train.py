@@ -221,7 +221,7 @@ def main() -> None:
         default=50,
         help="self-play mirror pairs per iteration",
     )
-    parser.add_argument("--train-steps", type=int, default=500)
+    parser.add_argument("--train-steps", type=int, default=10000)
     parser.add_argument(
         "--simulations",
         type=int,
@@ -304,7 +304,7 @@ def main() -> None:
     # ── Pretrain phase (single pass before self-play loop) ─────────────────
     if args.pretrain:
         num_pretrain_pairs = args.buffer_size // 100
-        num_pretrain_steps = num_pretrain_pairs * 10
+        num_pretrain_steps = num_pretrain_pairs * 50
         logger.info(
             "pretrain -- collecting %d mirror pairs (%d workers)...",
             num_pretrain_pairs,

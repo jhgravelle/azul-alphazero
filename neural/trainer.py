@@ -291,7 +291,7 @@ _GameRecord = list[_MoveRecord]
 
 def _compute_game_scores(game: Game) -> list[int]:
     """Return earned score for each player (unclamped, includes pending and penalty)."""
-    return [player.earned for player in game.players]
+    return [player.score for player in game.players]
 
 
 def _play_game(
@@ -423,14 +423,14 @@ def _worker_play_mirror_pair(
 
 
 def _worker_play_mirror_pair_tuple(
-    args: tuple[AgentSpec, AgentSpec],
-) -> tuple[AgentSpec, AgentSpec, _GameRecord, list[int], _GameRecord, list[int]]:
-    """Tuple-unpacking wrapper for imap_unordered. Returns specs alongside results
-    so the main process can log correctly regardless of completion order.
+    args: tuple[int, AgentSpec, AgentSpec],
+) -> tuple[int, _GameRecord, list[int], _GameRecord, list[int]]:
+    """Tuple-unpacking wrapper for imap_unordered. Returns pair index alongside
+    results so the main process can look up specs without passing them back.
     """
-    spec_0, spec_1 = args
+    pair_index, spec_0, spec_1 = args
     records_a, scores_a, records_b, scores_b = _worker_play_mirror_pair(spec_0, spec_1)
-    return spec_0, spec_1, records_a, scores_a, records_b, scores_b
+    return pair_index, records_a, scores_a, records_b, scores_b
 
 
 def _iter_pair_results(
@@ -442,10 +442,10 @@ def _iter_pair_results(
     """
     import multiprocessing as mp
 
-    args_list = [(s0, s1) for s0, s1 in sampled]
+    args_list = [(i, s0, s1) for i, (s0, s1) in enumerate(sampled)]
 
     if num_workers <= 1:
-        for spec_0, spec_1 in sampled:
+        for i, spec_0, spec_1 in args_list:
             records_a, scores_a, records_b, scores_b = _worker_play_mirror_pair(
                 spec_0, spec_1
             )
@@ -457,7 +457,8 @@ def _iter_pair_results(
                 for result in pool.imap_unordered(
                     _worker_play_mirror_pair_tuple, args_list
                 ):
-                    spec_0, spec_1, records_a, scores_a, records_b, scores_b = result
+                    pair_index, records_a, scores_a, records_b, scores_b = result
+                    spec_0, spec_1 = sampled[pair_index]
                     yield spec_0, spec_1, records_a, scores_a, records_b, scores_b
             except KeyboardInterrupt:
                 pool.terminate()

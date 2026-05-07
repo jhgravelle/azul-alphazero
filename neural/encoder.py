@@ -7,10 +7,10 @@ Encoding v3: Flat vector (125 values)
 Single flat vector with board state and game state combined.
 
 Wall & Pattern State (100 values):
-  0–24      My wall (flattened 5×5 grid, binary)
-  25–49     Opponent wall (flattened 5×5 grid, binary)
-  50–74     My pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
-  75–99     Opponent pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
+  0–24     My pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
+  25–49      My wall (flattened 5×5 grid, binary)
+  50–74     Opponent pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
+  75–99     Opponent wall (flattened 5×5 grid, binary)
 
 Game State (25 values, laid out as a 5×5 grid):
   100       My official score / 100
@@ -68,10 +68,10 @@ MOVE_SPACE_SIZE: int = NUM_SOURCES * BOARD_SIZE * NUM_DESTINATIONS
 NUM_COLORS: int = len(COLOR_TILES)  # 5
 BOARD_CELLS: int = BOARD_SIZE * BOARD_SIZE  # 25
 
-OFF_MY_WALL: int = 0  # 25 values
-OFF_OPP_WALL: int = 25  # 25 values
-OFF_MY_PATTERN: int = 50  # 25 values
-OFF_OPP_PATTERN: int = 75  # 25 values
+OFF_MY_PATTERN: int = 0  # 25 values
+OFF_MY_WALL: int = 25  # 25 values
+OFF_OPP_PATTERN: int = 50  # 25 values
+OFF_OPP_WALL: int = 75  # 25 values
 
 OFF_MY_SCORE: int = 100
 OFF_MY_EARNED: int = 101
@@ -218,10 +218,10 @@ def encode_state(game: Game) -> torch.Tensor:
     """Encode a Game into a flat vector of 125 values.
 
     Returns float32 tensor of shape (125,) containing:
-      0–24:   My wall (flattened)
-      25–49:  Opponent wall (flattened)
-      50–74:  My pattern line fills (flattened)
-      75–99:  Opponent pattern line fills (flattened)
+      0–24:  My pattern line fills (flattened)
+      25–49:   My wall (flattened)
+      50–74:  Opponent pattern line fills (flattened)
+      75–99:  Opponent wall (flattened)
       100–124: Game state (scores, penalties, tokens, tiles, bag)
     """
     current_player_index = game.current_player_index

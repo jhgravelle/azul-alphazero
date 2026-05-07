@@ -1,10 +1,11 @@
 # neural/model.py
-"""AzulNet — flat MLP architecture with v3 encoding (123 values).
+"""AzulNet — flat MLP architecture with v3 encoding (125 values).
 
 v3 encoding combines all board state and game state into a single flat vector:
 - Wall and pattern fills: 100 values (flattened 5×5 grids)
 - Game state: 23 values (scores, penalties, tokens, inventory, bag)
-- Total input: 123 values → MLP trunk → 3-head policy + value heads
+- 2 padding: (future needs)
+- Total input: 125 values → MLP trunk → 3-head policy + value heads
 
 Policy is factored into three independent heads:
   source_head (2):      center vs factory
@@ -44,7 +45,7 @@ class AzulNet(nn.Module):
     """Policy + value network for Azul with flat encoding.
 
     Architecture:
-        input_proj: 123 → 64 (Linear + LayerNorm + ReLU)
+        input_proj: 125 → 64 (Linear + LayerNorm + ReLU)
         trunk:      1 × ResBlock(64)
         heads:      64 → 2 / 5 / 6 (policy)
                     64 → 1 (value × 3, with Tanh)
@@ -75,7 +76,7 @@ class AzulNet(nn.Module):
 
     def forward(
         self,
-        encoding: torch.Tensor,  # (batch, FLAT_SIZE=123)
+        encoding: torch.Tensor,  # (batch, FLAT_SIZE=125)
     ) -> tuple[
         tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         torch.Tensor,
@@ -85,7 +86,7 @@ class AzulNet(nn.Module):
         """Run a forward pass.
 
         Args:
-            encoding: (batch, 123) tensor with board and game state
+            encoding: (batch, 125) tensor with board and game state
 
         Returns:
             policy:     3-tuple of raw logits:

@@ -23,7 +23,7 @@ from neural.encoder import (
 logger = logging.getLogger(__name__)
 
 _SCORE_DIFF_DIVISOR = 50.0
-_TOTAL_SCORE_DIVISOR = 80.0
+_TOTAL_SCORE_DIVISOR = 100.0
 _AUX_WEIGHT_WIN = 0.3
 _AUX_WEIGHT_DIFF = 1.0
 

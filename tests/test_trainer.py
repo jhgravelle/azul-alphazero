@@ -341,21 +341,21 @@ def test_total_score_value_zero():
 
 
 def test_total_score_value_positive_boundary():
-    # score 80 / divisor 80 = +1.0
-    assert total_score_value([80, 30], 0) == pytest.approx(1.0)
+    # score 100 / divisor 100 = +1.0
+    assert total_score_value([100, 30], 0) == pytest.approx(1.0)
 
 
 def test_total_score_value_clips_positive():
-    assert total_score_value([90, 30], 0) == 1.0
+    assert total_score_value([110, 30], 0) == 1.0
 
 
 def test_total_score_value_clips_negative():
-    assert total_score_value([-90, 30], 0) == -1.0
+    assert total_score_value([-110, 30], 0) == -1.0
 
 
 def test_total_score_value_midrange():
-    # score 40 / 80 = +0.5
-    assert total_score_value([40, 30], 0) == pytest.approx(0.5)
+    # score 40 / 100 = +0.4
+    assert total_score_value([40, 30], 0) == pytest.approx(0.4)
 
 
 def test_total_score_value_only_depends_on_own_score():

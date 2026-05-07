@@ -304,7 +304,7 @@ def main() -> None:
     # ── Pretrain phase (single pass before self-play loop) ─────────────────
     if args.pretrain:
         num_pretrain_pairs = args.buffer_size // 100
-        num_pretrain_steps = num_pretrain_pairs * 50
+        num_pretrain_steps = num_pretrain_pairs * 20
         logger.info(
             "pretrain -- collecting %d mirror pairs (%d workers)...",
             num_pretrain_pairs,

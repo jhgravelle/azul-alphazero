@@ -452,6 +452,20 @@ def _worker_play_mirror_pair(
 # ── Pool helpers ─────────────────────────────────────────────────────────────
 
 
+def _worker_ignore_sigint() -> None:
+    """Pool initializer that makes worker processes ignore SIGINT.
+
+    On Windows, Ctrl+C is broadcast to all processes in the console group,
+    so every worker receives the signal simultaneously and floods the terminal
+    with KeyboardInterrupt tracebacks before the main process can call
+    pool.terminate(). Setting SIGINT to SIG_IGN in each worker lets the main
+    process handle shutdown cleanly via pool.terminate() / pool.join().
+    """
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
 def _worker_play_mirror_pair_tuple(
     args: tuple[int, AgentSpec, AgentSpec],
 ) -> tuple[int, _GameRecord, list[int], _GameRecord, list[int]]:
@@ -482,7 +496,10 @@ def _iter_pair_results(
             yield spec_0, spec_1, records_a, scores_a, records_b, scores_b
     else:
         ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=num_workers) as pool:
+        with ctx.Pool(
+            processes=num_workers,
+            initializer=_worker_ignore_sigint,
+        ) as pool:
             try:
                 for result in pool.imap_unordered(
                     _worker_play_mirror_pair_tuple, args_list

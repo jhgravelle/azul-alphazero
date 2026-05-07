@@ -219,21 +219,21 @@ def main() -> None:
     parser.add_argument(
         "--games-per-iter",
         type=int,
-        default=50,
+        default=200,
         help="mirror pairs per iteration for both AZ collection and AB injection",
     )
     parser.add_argument("--train-steps", type=int, default=10000)
     parser.add_argument(
         "--simulations",
         type=int,
-        default=200,
+        default=50,
         help="MCTS simulations per move (self-play and eval)",
     )
     parser.add_argument(
-        "--eval-games", type=int, default=50, help="eval mirror pairs per iteration"
+        "--eval-games", type=int, default=48, help="eval mirror pairs per iteration"
     )
     parser.add_argument("--win-threshold", type=float, default=0.55)
-    parser.add_argument("--buffer-size", type=int, default=100_000)
+    parser.add_argument("--buffer-size", type=int, default=500_000)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument(
@@ -328,7 +328,7 @@ def main() -> None:
 
     iter_results: list[IterResult] = []
     az_vs_az_mode = False
-    ab_medium_spec = AgentSpec(type="alphabeta", depth=2, threshold=6)
+    ab_easy_spec = AgentSpec(type="alphabeta", depth=1, threshold=4)
 
     # ── Main iteration loop ────────────────────────────────────────────────
     for iteration in range(1, args.iterations + 1):
@@ -361,7 +361,7 @@ def main() -> None:
             stats = collect_parallel(
                 buf,
                 spec_0=az_spec,
-                spec_1=ab_medium_spec,
+                spec_1=ab_easy_spec,
                 num_pairs=args.games_per_iter,
                 num_workers=args.workers,
             )

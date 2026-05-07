@@ -576,9 +576,9 @@ def collect_parallel(
 
 
 def _pretrain_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:
-    medium = AgentSpec(type="alphabeta", depth=2, threshold=6)
+    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
     return [
-        (medium, medium, 1.0),
+        (easy, easy, 1.0),
     ]
 
 
@@ -587,16 +587,16 @@ def collect_ab_parallel(
     num_pairs: int,
     num_workers: int = 1,
 ) -> None:
-    """Collect ABmedium vs ABmedium mirror pairs and push into buf.
+    """Collect ABeasy vs ABeasy mirror pairs and push into buf.
 
-    Used each iteration during az-vs-abmedium mode to maintain a supply of
+    Used each iteration during az-vs-abeasy mode to maintain a supply of
     high-quality, AZ-independent training data in the buffer.
     """
-    medium = AgentSpec(type="alphabeta", depth=2, threshold=6)
+    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
     collect_parallel(
         buf,
-        spec_0=medium,
-        spec_1=medium,
+        spec_0=easy,
+        spec_1=easy,
         num_pairs=num_pairs,
         num_workers=num_workers,
     )

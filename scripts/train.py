@@ -265,6 +265,12 @@ def main() -> None:
         help="fill buffer with ABmedium vs ABmedium games and train before "
         "starting the main iteration loop",
     )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.1,
+        help="dropout probability on trunk output (0.0 to disable)",
+    )
     args = parser.parse_args()
 
     # ── Logging ────────────────────────────────────────────────────────────
@@ -276,7 +282,7 @@ def main() -> None:
         logger.info("  %-28s %s", key, value)
 
     # ── Setup ──────────────────────────────────────────────────────────────
-    net = AzulNet().to(DEVICE)
+    net = AzulNet(dropout=args.dropout).to(DEVICE)
     if args.load and Path(args.load).exists():
         load_checkpoint(net, args.load)
     elif args.load and not Path(args.load).exists():

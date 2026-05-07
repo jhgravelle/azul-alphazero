@@ -47,11 +47,16 @@ class AzulNet(nn.Module):
     Architecture:
         input_proj: 125 → 64 (Linear + LayerNorm + ReLU)
         trunk:      1 × ResBlock(64)
+        dropout:    optional regularization after trunk (disabled during eval)
         heads:      64 → 2 / 5 / 6 (policy)
                     64 → 1 (value × 3, with Tanh)
+
+    Args:
+        dropout: dropout probability applied to trunk output during training.
+                 0.0 disables dropout entirely. Recommended range: 0.1–0.2.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dropout: float = 0.0) -> None:
         super().__init__()
 
         # ── Input projection ───────────────────────────────────────────────
@@ -63,11 +68,12 @@ class AzulNet(nn.Module):
 
         # ── Trunk ──────────────────────────────────────────────────────────
         self.blocks = ResBlock()
+        self.dropout = nn.Dropout(p=dropout)
 
         # ── Policy heads ───────────────────────────────────────────────────
-        self.source_head = nn.Linear(HIDDEN, 2)  # center vs factory
-        self.tile_head = nn.Linear(HIDDEN, 5)  # tile color
-        self.destination_head = nn.Linear(HIDDEN, 6)  # pattern lines + floor
+        self.source_head = nn.Linear(HIDDEN, 2)
+        self.tile_head = nn.Linear(HIDDEN, 5)
+        self.destination_head = nn.Linear(HIDDEN, 6)
 
         # ── Value heads ────────────────────────────────────────────────────
         self.value_win_head = nn.Sequential(nn.Linear(HIDDEN, 1), nn.Tanh())
@@ -97,7 +103,7 @@ class AzulNet(nn.Module):
             value_diff: (batch, 1) score-differential prediction in (-1, 1)
             value_abs:  (batch, 1) absolute-score prediction in (-1, 1)
         """
-        trunk = self.blocks(self.input_proj(encoding))
+        trunk = self.dropout(self.blocks(self.input_proj(encoding)))
 
         return (
             (

@@ -554,7 +554,7 @@ def collect_parallel(
         else:
             ties += 1
 
-        logger.info(
+        logger.debug(
             _format_pair_log(spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs)
         )
 
@@ -676,7 +676,7 @@ def collect_heuristic_parallel(
         else:
             ties += 1
 
-        logger.info(
+        logger.debug(
             _format_pair_log(spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs)
         )
 
@@ -744,7 +744,7 @@ def evaluate_parallel(
         elif scores_b[1] == scores_b[0]:
             new_wins += 0.5
 
-        logger.info(
+        logger.debug(
             _format_pair_log(
                 new_spec, old_spec, scores_a, scores_b, pair_num, num_pairs
             )

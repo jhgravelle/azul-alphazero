@@ -34,6 +34,7 @@ from neural.trainer import (
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_DIR = Path("checkpoints")
 LOG_DIR = Path("logs")
+RECORDINGS_DIR = Path("recordings/training")
 
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -144,6 +145,74 @@ def _az_spec(net: AzulNet, simulations: int) -> AgentSpec:
         type="alphazero",
         state_dict={k: v.cpu() for k, v in net.state_dict().items()},
         simulations=simulations,
+    )
+
+
+# ── Showcase recording ────────────────────────────────────────────────────────
+
+
+def _record_showcase_game(
+    net: AzulNet,
+    simulations: int,
+    iteration: int,
+    device: torch.device,
+) -> None:
+    """Play one greedy AZ vs AZ game and save it as a training recording.
+
+    Not used for training — diagnostic only. Gives a human-readable view
+    of how the current candidate net plays before eval runs.
+    """
+    from agents.alphazero import AlphaZeroAgent
+    from engine.game import Game
+    from engine.game_recorder import GameRecorder
+
+    RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RECORDINGS_DIR / f"iter_{iteration:04d}.json"
+
+    net.eval()
+    net.cpu()
+    agent_0 = AlphaZeroAgent(net, simulations=simulations, temperature=0.0)
+    agent_1 = AlphaZeroAgent(net, simulations=simulations, temperature=0.0)
+    agents = [agent_0, agent_1]
+
+    recorder = GameRecorder(
+        player_names=[f"Iter {iteration}", f"Iter {iteration}"],
+        player_types=["alphazero", "alphazero"],
+    )
+
+    game = Game()
+    game.setup_round()
+    recorder.start_round(game)
+    prev_round = game.round
+
+    while True:
+        if not game.legal_moves():
+            break
+        agent = agents[game.current_player_index]
+        move = agent.choose_move(game)
+        recorder.record_move(move, game.current_player_index)
+        game.make_move(move)
+        game.advance()
+        if game.is_game_over():
+            break
+        if game.round != prev_round:
+            recorder.start_round(game)
+            for a in agents:
+                a.reset_tree(game)
+            prev_round = game.round
+        else:
+            for a in agents:
+                a.advance(move)
+
+    recorder.finalize(game)
+    recorder.save(path)
+    net.to(device)
+    scores = recorder.record.final_scores
+    logger.info(
+        "showcase game saved -> %s  [%d vs %d]",
+        path,
+        scores[0],
+        scores[1],
     )
 
 
@@ -262,7 +331,7 @@ def main() -> None:
     parser.add_argument(
         "--pretrain",
         action="store_true",
-        help="fill buffer with ABmedium vs ABmedium games and train before "
+        help="fill buffer with ABeasy vs ABeasy games and train before "
         "starting the main iteration loop",
     )
     parser.add_argument(
@@ -299,7 +368,7 @@ def main() -> None:
         num_pretrain_pairs = args.buffer_size // 100
         num_pretrain_steps = num_pretrain_pairs * 20
         logger.info(
-            "pretrain -- collecting %d ABmedium vs ABmedium pairs (%d workers)...",
+            "pretrain -- collecting %d ABeasy vs ABeasy pairs (%d workers)...",
             num_pretrain_pairs,
             args.workers,
         )
@@ -338,7 +407,7 @@ def main() -> None:
             "iteration %d / %d  [mode: %s]",
             iteration,
             args.iterations,
-            "az-vs-az" if az_vs_az_mode else "az-vs-abmedium",
+            "az-vs-az" if az_vs_az_mode else "az-vs-abeasy",
         )
 
         # ── 1. Data collection ─────────────────────────────────────────────
@@ -356,7 +425,7 @@ def main() -> None:
             )
         else:
             logger.info(
-                "generating %d AZ vs ABmedium mirror pairs...", args.games_per_iter
+                "generating %d AZ vs ABeasy mirror pairs...", args.games_per_iter
             )
             stats = collect_parallel(
                 buf,
@@ -372,7 +441,7 @@ def main() -> None:
                 else 0.0
             )
             logger.info(
-                "AZ win rate vs ABmedium: %.1f%%  (%dW / %dL / %dT)",
+                "AZ win rate vs ABeasy: %.1f%%  (%dW / %dL / %dT)",
                 az_win_rate * 100,
                 stats["wins_0"],
                 stats["wins_1"],
@@ -387,7 +456,7 @@ def main() -> None:
                 az_vs_az_mode = True
 
             logger.info(
-                "generating %d ABmedium vs ABmedium mirror pairs...",
+                "generating %d ABeasy vs ABeasy mirror pairs...",
                 args.games_per_iter,
             )
             collect_ab_parallel(
@@ -416,7 +485,12 @@ def main() -> None:
             "training complete -- %s", _format_loss_line(accum, args.train_steps)
         )
 
-        # ── 3. Evaluation: new net vs best net ─────────────────────────────
+        # ── 3. Showcase recording ──────────────────────────────────────────
+        net.eval()
+        logger.info("recording showcase game (iter %d)...", iteration)
+        _record_showcase_game(net, args.simulations, iteration, DEVICE)
+
+        # ── 4. Evaluation: new net vs best net ─────────────────────────────
         win_rate = 0.0
         promoted = False
 
@@ -435,7 +509,7 @@ def main() -> None:
         )
         logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
 
-        # ── 4. Promote or reset ────────────────────────────────────────────
+        # ── 5. Promote or reset ────────────────────────────────────────────
         if win_rate >= args.win_threshold:
             generation += 1
             best_net = copy.deepcopy(net)
@@ -454,7 +528,7 @@ def main() -> None:
         elapsed = time.time() - t0
         logger.info("iteration time: %.1fs", elapsed)
 
-        mode_label = "az-vs-az" if az_vs_az_mode else "az-vs-abmedium"
+        mode_label = "az-vs-az" if az_vs_az_mode else "az-vs-abeasy"
         result = IterResult(
             iteration=iteration,
             mode=mode_label,

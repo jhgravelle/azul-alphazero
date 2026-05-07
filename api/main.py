@@ -745,6 +745,7 @@ def list_recordings() -> list[RecordingSummary]:
     folders = {
         "human": _RECORDINGS_DIR,
         "eval": _RECORDINGS_DIR / "eval",
+        "training": _RECORDINGS_DIR / "training",
     }
     summaries = []
     for folder_name, folder_path in folders.items():
@@ -771,11 +772,12 @@ def list_recordings() -> list[RecordingSummary]:
 
 @app.get("/recordings/{game_id}")
 def get_recording(game_id: str) -> dict:
-    folders = {
-        "human": _RECORDINGS_DIR,
-        "eval": _RECORDINGS_DIR / "eval",
-    }
-    for folder_path in folders.values():
+    folders = [
+        _RECORDINGS_DIR,
+        _RECORDINGS_DIR / "eval",
+        _RECORDINGS_DIR / "training",
+    ]
+    for folder_path in folders:
         if not folder_path.exists():
             continue
         for path in folder_path.glob("*.json"):
@@ -812,8 +814,8 @@ _ALPHABETA_PRESETS: dict[str, dict] = {
 def _make_alphabeta_pv(agent_name: str) -> PolicyValueFn:
     config = _ALPHABETA_PRESETS[agent_name]
     ab_agent = AlphaBetaAgent(
-        depths=config["depths"],
-        thresholds=config["thresholds"],
+        depth=config["depth"],
+        threshold=config["threshold"],
     )
 
     def alphabeta_pv(game: Game, legal: list[Move]) -> tuple[list[float], float]:
@@ -951,7 +953,11 @@ def _inspector_load(
     agent_name: str = "minimax",
     simulations: int = 200,
 ) -> None:
-    folders = [_RECORDINGS_DIR, _RECORDINGS_DIR / "eval"]
+    folders = [
+        _RECORDINGS_DIR,
+        _RECORDINGS_DIR / "eval",
+        _RECORDINGS_DIR / "training",
+    ]
     record = None
     for folder in folders:
         if not folder.exists():

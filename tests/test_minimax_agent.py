@@ -9,9 +9,9 @@ def _make_game():
     return game
 
 
-def _make_agent(max_depth: int = 3) -> MinimaxAgent:
+def _make_agent(max_depth: int = 2) -> MinimaxAgent:
     """Make a MinimaxAgent that always uses max_depth regardless of branching."""
-    return MinimaxAgent(depths=(max_depth, max_depth, max_depth), thresholds=(0, 0))
+    return MinimaxAgent(depth=max_depth, threshold=999)
 
 
 def test_minimax_agent_returns_legal_move():

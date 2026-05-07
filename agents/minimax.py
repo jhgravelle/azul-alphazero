@@ -1,5 +1,4 @@
 # agents/minimax.py
-
 from engine.game import Game, Move
 from agents.base import Agent
 
@@ -13,21 +12,27 @@ class MinimaxAgent(Agent):
 
     def __init__(
         self,
-        depths: tuple[int, int, int] = (2, 3, 4),
-        thresholds: tuple[int, int] = (10, 7),
+        depth: int = 2,
+        threshold: int = 6,
     ) -> None:
-        self.depths = depths
-        self.thresholds = thresholds
+        self.depth = depth
+        self.threshold = threshold
         self._nodes: int = 0
 
     def _effective_depth(self, game: Game) -> int:
-        legal_count = len(game.legal_moves())
-        if legal_count > self.thresholds[0]:
-            return self.depths[0]
-        elif legal_count > self.thresholds[1]:
-            return self.depths[1]
-        else:
-            return self.depths[2]
+        """Return search depth based on remaining source-colors this round.
+
+        When the board is wide (many source-colors remaining), cap depth to
+        avoid combinatorial explosion. When narrow (few source-colors), use
+        the source count itself as depth — searching as deep as there are
+        moves remaining this round.
+        """
+        sources = sum(
+            source_count for _, source_count in game.tile_availability().values()
+        )
+        if sources > self.threshold:
+            return self.depth
+        return sources
 
     def choose_move(self, game: Game) -> Move:
         self._nodes = 0

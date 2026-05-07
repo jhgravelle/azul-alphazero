@@ -149,7 +149,7 @@ class Game:
         seed: int | None = None,
     ) -> None:
         self.seed: int = seed or random.randint(1, 2**31)
-        random.seed(self.seed)
+        self._rng: random.Random = random.Random(self.seed)
 
         names = player_names or [f"Player {i + 1}" for i in range(PLAYERS)]
         agent_list = agents or ["human"] * PLAYERS
@@ -164,7 +164,7 @@ class Game:
         self.discard: list[Tile] = []
         self.round: int = 0
         self.turn: int = 0
-        random.shuffle(self.bag)
+        self._rng.shuffle(self.bag)
 
     @property
     def current_player(self) -> Player:
@@ -294,6 +294,8 @@ class Game:
         """Return a fast independent copy of this game."""
         g = object.__new__(Game)
         g.seed = self.seed
+        g._rng = random.Random()
+        g._rng.setstate(self._rng.getstate())
         g.current_player_index = self.current_player_index
         g.round = self.round
         g.turn = self.turn
@@ -314,7 +316,7 @@ class Game:
             return
         self.bag.extend(self.discard)
         self.discard.clear()
-        random.shuffle(self.bag)
+        self._rng.shuffle(self.bag)
         logger.debug("refilled bag from discard and shuffled")
 
     def _draw_from_bag(self, count: int = TILES_PER_FACTORY) -> list[Tile]:

@@ -25,9 +25,10 @@ from neural.trainer import (
     AgentSpec,
     Trainer,
     collect_parallel,
-    collect_heuristic_parallel,
+    collect_ab_parallel,
     evaluate_parallel,
     _pretrain_matchups,
+    collect_heuristic_parallel,
 )
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -219,7 +220,7 @@ def main() -> None:
         "--games-per-iter",
         type=int,
         default=50,
-        help="self-play mirror pairs per iteration",
+        help="mirror pairs per iteration for both AZ collection and AB injection",
     )
     parser.add_argument("--train-steps", type=int, default=10000)
     parser.add_argument(
@@ -254,27 +255,15 @@ def main() -> None:
         help="parallel worker processes for game generation and eval (default 8)",
     )
     parser.add_argument(
-        "--heuristic-pairs-per-iter",
-        type=int,
-        default=0,
-        help="heuristic mirror pairs to inject each iteration from weighted matchups",
-    )
-    parser.add_argument(
         "--diff-only",
         action="store_true",
         help="train score differential head only (Phase 1 calibration)",
     )
     parser.add_argument(
-        "--skip-eval-iterations",
-        type=int,
-        default=0,
-        help="skip evaluation for the first N iterations",
-    )
-    parser.add_argument(
         "--pretrain",
         action="store_true",
-        help="fill buffer with weak mirrored heuristic games, train until loss "
-        "plateaus, then auto-switch to AlphaZero self-play",
+        help="fill buffer with ABmedium vs ABmedium games and train before "
+        "starting the main iteration loop",
     )
     args = parser.parse_args()
 
@@ -299,14 +288,12 @@ def main() -> None:
     buf = ReplayBuffer(capacity=args.buffer_size)
     trainer = Trainer(net, lr=args.lr, batch_size=args.batch_size, device=DEVICE)
 
-    iter_results: list[IterResult] = []
-
-    # ── Pretrain phase (single pass before self-play loop) ─────────────────
+    # ── Pretrain phase (optional, single pass before iteration loop) ───────
     if args.pretrain:
         num_pretrain_pairs = args.buffer_size // 100
         num_pretrain_steps = num_pretrain_pairs * 20
         logger.info(
-            "pretrain -- collecting %d mirror pairs (%d workers)...",
+            "pretrain -- collecting %d ABmedium vs ABmedium pairs (%d workers)...",
             num_pretrain_pairs,
             args.workers,
         )
@@ -334,7 +321,7 @@ def main() -> None:
             logger.info("pretrain -- buffer too small to train, skipping training step")
 
     iter_results: list[IterResult] = []
-    az_vs_az_mode = False  # start in AZ vs AB medium mode
+    az_vs_az_mode = False
     ab_medium_spec = AgentSpec(type="alphabeta", depth=2, threshold=6)
 
     # ── Main iteration loop ────────────────────────────────────────────────
@@ -363,7 +350,7 @@ def main() -> None:
             )
         else:
             logger.info(
-                "generating %d AZ vs AB medium mirror pairs...", args.games_per_iter
+                "generating %d AZ vs ABmedium mirror pairs...", args.games_per_iter
             )
             stats = collect_parallel(
                 buf,
@@ -373,40 +360,37 @@ def main() -> None:
                 num_workers=args.workers,
             )
             total_games = stats["wins_0"] + stats["wins_1"] + stats["ties"]
-            ab_medium_win_rate = (
+            az_win_rate = (
                 (stats["wins_0"] + 0.5 * stats["ties"]) / total_games
                 if total_games > 0
                 else 0.0
             )
             logger.info(
-                "AZ win rate vs AB medium: %.1f%%  (%dW / %dL / %dT)",
-                ab_medium_win_rate * 100,
+                "AZ win rate vs ABmedium: %.1f%%  (%dW / %dL / %dT)",
+                az_win_rate * 100,
                 stats["wins_0"],
                 stats["wins_1"],
                 stats["ties"],
             )
-            if ab_medium_win_rate >= args.win_threshold:
+            if az_win_rate >= args.win_threshold:
                 logger.info(
                     "AZ win rate %.1f%% >= %.0f%% -- switching to az-vs-az",
-                    ab_medium_win_rate * 100,
+                    az_win_rate * 100,
                     args.win_threshold * 100,
                 )
                 az_vs_az_mode = True
 
-        logger.info("buffer size after collection: %d", len(buf))
-
-        # ── 1b. Heuristic injection ────────────────────────────────────────
-        if args.heuristic_pairs_per_iter > 0:
             logger.info(
-                "generating %d heuristic mirror pairs...",
-                args.heuristic_pairs_per_iter,
+                "generating %d ABmedium vs ABmedium mirror pairs...",
+                args.games_per_iter,
             )
-            collect_heuristic_parallel(
+            collect_ab_parallel(
                 buf,
-                num_pairs=args.heuristic_pairs_per_iter,
+                num_pairs=args.games_per_iter,
                 num_workers=args.workers,
             )
-            logger.info("buffer size after heuristic injection: %d", len(buf))
+
+        logger.info("buffer size after collection: %d", len(buf))
 
         # ── 2. Training ────────────────────────────────────────────────────
         if len(buf) < args.batch_size:
@@ -414,9 +398,7 @@ def main() -> None:
             save_latest_checkpoint(net, args)
             continue
 
-        if args.diff_only and iteration == 1:
-            logger.info("diff-only mode -- training score differential head only")
-
+        net.train()
         logger.info("running %d training steps...", args.train_steps)
         avg_loss, accum = _run_training_steps(
             trainer,
@@ -432,45 +414,36 @@ def main() -> None:
         win_rate = 0.0
         promoted = False
 
-        if iteration <= args.skip_eval_iterations:
-            logger.info(
-                "skipping eval (iteration %d <= skip-eval-iterations %d)",
-                iteration,
-                args.skip_eval_iterations,
-            )
+        logger.info(
+            "evaluating new net vs best net (%d pairs, %d sims)...",
+            args.eval_games,
+            args.simulations,
+        )
+        win_rate = evaluate_parallel(
+            net,
+            best_net,
+            num_pairs=args.eval_games,
+            simulations=args.simulations,
+            buf=buf if az_vs_az_mode else None,
+            num_workers=args.workers,
+        )
+        logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
+
+        # ── 4. Promote or reset ────────────────────────────────────────────
+        if win_rate >= args.win_threshold:
+            generation += 1
+            best_net = copy.deepcopy(net)
+            save_checkpoint(net, generation)
+            logger.info("promoted -- new best model generation %d", generation)
+            promoted = True
         else:
             logger.info(
-                "evaluating new net vs best net (%d pairs, %d sims)...",
-                args.eval_games,
-                args.simulations,
+                "did not beat threshold (%.1f%% < %.0f%%) -- resetting to best",
+                win_rate * 100,
+                args.win_threshold * 100,
             )
-            win_rate = evaluate_parallel(
-                net,
-                best_net,
-                num_pairs=args.eval_games,
-                simulations=args.simulations,
-                buf=(
-                    buf if az_vs_az_mode else None
-                ),  # only push eval data once net is strong
-                num_workers=args.workers,
-            )
-            logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
-
-            # ── 4. Promote or reset ────────────────────────────────────────
-            if win_rate >= args.win_threshold:
-                generation += 1
-                best_net = copy.deepcopy(net)
-                save_checkpoint(net, generation)
-                logger.info("promoted -- new best model generation %d", generation)
-                promoted = True
-            else:
-                logger.info(
-                    "did not beat threshold (%.0f%% < %.0f%%) -- resetting to best",
-                    win_rate * 100,
-                    args.win_threshold * 100,
-                )
-                net.load_state_dict(copy.deepcopy(best_net.state_dict()))
-                trainer.optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
+            net.load_state_dict(copy.deepcopy(best_net.state_dict()))
+            trainer.optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
 
         elapsed = time.time() - t0
         logger.info("iteration time: %.1fs", elapsed)

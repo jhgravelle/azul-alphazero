@@ -33,11 +33,11 @@ def _softmax_distribution(
 
 def _sample_from_distribution(
     distribution: list[tuple[Move, float]],
+    rng: random.Random,
 ) -> Move:
-    """Sample a move from a probability distribution."""
     moves = [move for move, _ in distribution]
     weights = [prob for _, prob in distribution]
-    return random.choices(moves, weights=weights, k=1)[0]
+    return rng.choices(moves, weights=weights, k=1)[0]
 
 
 class AlphaBetaAgent(Agent):
@@ -61,6 +61,7 @@ class AlphaBetaAgent(Agent):
         self.depth = depth
         self.threshold = threshold
         self.exploration_temperature = exploration_temperature
+        self._rng = random.Random()  # independent RNG per agent instance
         self._nodes: int = 0
         self._root_move_scores: list[tuple[Move, float]] = []
 
@@ -97,7 +98,7 @@ class AlphaBetaAgent(Agent):
             else self.exploration_temperature
         )
         distribution = _softmax_distribution(self._root_move_scores, temperature)
-        return _sample_from_distribution(distribution)
+        return _sample_from_distribution(distribution, self._rng)
 
     def choose_move(self, game: Game) -> Move:
         self._nodes = 0

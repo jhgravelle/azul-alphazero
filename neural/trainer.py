@@ -419,15 +419,8 @@ def _worker_play_mirror_pair(
     spec_0: AgentSpec,
     spec_1: AgentSpec,
 ) -> tuple[_GameRecord, list[int], _GameRecord, list[int]]:
-    """Play one mirror pair: game A then game B with sides swapped, same seed.
-
-    Runs inside a worker process. Picks its own seed. Returns serializable
-    records and scores for both games.
-
-    Game A: spec_0 as p0, spec_1 as p1
-    Game B: spec_1 as p0, spec_0 as p1 (sides swapped, same factories)
-    """
     seed = random.randint(0, 2**31)
+    random.seed(seed)  # deterministic random state for game A
     agent_0 = _build_agent(spec_0)
     agent_1 = _build_agent(spec_1)
 
@@ -436,7 +429,6 @@ def _worker_play_mirror_pair(
     history_a, scores_a = _play_game(game_a, [agent_0, agent_1])
     records_a = _history_to_records(history_a, scores_a)
 
-    # Clone agents to discard any internal state from game A
     agent_0b = _build_agent(spec_0)
     agent_1b = _build_agent(spec_1)
 
@@ -584,13 +576,30 @@ def collect_parallel(
 
 
 def _pretrain_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:
-    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
+    medium = AgentSpec(type="alphabeta", depth=2, threshold=6)
     return [
-        (AgentSpec(type="random"), easy, 0.00),
-        (AgentSpec(type="efficient"), easy, 0.00),
-        (AgentSpec(type="cautious"), easy, 0.00),
-        (AgentSpec(type="greedy"), easy, 1.00),
+        (medium, medium, 1.0),
     ]
+
+
+def collect_ab_parallel(
+    buf: ReplayBuffer,
+    num_pairs: int,
+    num_workers: int = 1,
+) -> None:
+    """Collect ABmedium vs ABmedium mirror pairs and push into buf.
+
+    Used each iteration during az-vs-abmedium mode to maintain a supply of
+    high-quality, AZ-independent training data in the buffer.
+    """
+    medium = AgentSpec(type="alphabeta", depth=2, threshold=6)
+    collect_parallel(
+        buf,
+        spec_0=medium,
+        spec_1=medium,
+        num_pairs=num_pairs,
+        num_workers=num_workers,
+    )
 
 
 def _default_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:

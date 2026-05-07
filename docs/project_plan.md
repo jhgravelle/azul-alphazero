@@ -3,7 +3,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-05-06
-> Status: Phase 8 in progress. Training signal fixes (8u) complete — `_terminal_value` divisor corrected, round-boundary states now in training buffer. Ready to restart training run with 64-dim model.
+> Status: Phase 8 in progress. Code review complete (8v) — mcts.py/search_tree.py bugs fixed, ±1 value convention unified, stale tests updated, multiprocessing KeyboardInterrupt fixed on Windows. Ready to restart training run.
 
 ---
 
@@ -94,7 +94,7 @@ azul-alphazero/
 ├── neural/
 │   ├── encoder.py         # Flat MLP encoding (v3: 123-value vector, no spatial conv)
 │   ├── model.py           # MLP-only architecture (1 ResBlock 64-dim, policy + 3× value heads)
-│   ├── replay.py          # Circular replay buffer, three value targets per example
+│   ├── replay.py          # Circular replay buffer, three value targets + policy mask per example
 │   ├── search_tree.py     # SearchTree: MCTS, background worker, subtree reuse
 │   └── trainer.py         # compute_loss, Trainer, AgentSpec, parallel collection
 ├── scripts/
@@ -173,13 +173,7 @@ Key changes:
 
 **Root cause:** `_select_vl` passed `node.visits` as `parent_visits` to `puct_score`. During batch collection, backprop hasn't run yet, so `node.visits` is 0 for the root the entire batch. This makes the exploration term `U = C * prior * sqrt(0) / (1 + adj_visits) = 0` for every child. With U=0, PUCT collapses to Q-only selection. After all children have been visited once, the highest-prior child wins every subsequent selection in the batch.
 
-**Fix:** In `_select_vl`, increment `virtual_loss` before computing `parent_visits`, then pass `node.visits + node.virtual_loss`:
-
-```python
-node.virtual_loss += 1
-parent_visits = node.visits + node.virtual_loss
-node = max(eligible, key=lambda c: c.puct_score(parent_visits))
-```
+**Fix:** In `_select_vl`, increment `virtual_loss` before computing `parent_visits`, then pass `node.visits + node.virtual_loss`.
 
 **Confirmed by:** `inspect_policy.py` MCTS probe with `batch_size=250`. Before fix: top move got 261/500 visits (52%). After fix: top move got 28/500 visits (5.6%), spread proportional to priors.
 
@@ -341,6 +335,46 @@ MCTS evaluates round-boundary leaf nodes (empty factories, committed pattern lin
 
 **Policy mask added to replay buffer and loss computation.**
 Round-boundary examples have no legal moves and no policy target. `ReplayBuffer` gains a `policy_masks` field (1.0 = train policy, 0.0 = value-only). `compute_loss` masks out boundary examples from the policy loss and averages over valid examples only. Value heads train on all examples including boundaries.
+
+#### 8v — Code Review & Bug Fixes ✅
+
+**mcts.py:**
+- **Bug fix — `_backpropagate` did not alternate perspective.** Values were accumulated from a fixed root player's perspective instead of being negated at each level. Now uses `result = -result` per level (±1 convention), matching `search_tree.py`.
+- **Bug fix — `_simulate` called `legal_moves()` twice per loop iteration.** Result cached in `legal` variable.
+- **Value convention unified.** Both `mcts.py` and `search_tree.py` now use ±1 (positive = good for current player at that node), negated at each backpropagation level. Previously `mcts.py` used a 0–1 convention with `1.0 - result` flipping.
+- **`_simulate` no longer takes `root_player_index`.** Perspective is handled entirely by backprop negation.
+- Removed unused `import logging` / `logger`.
+- Added `MCTSNode.is_terminal()`, `path_from_root()`, `_replay_to_node()` helpers.
+- `choose_move` now raises `RuntimeError` on no legal moves; falls back gracefully if `simulations=0`.
+
+**search_tree.py:**
+- **Bug fix — `_empty_node_dict` schema was incomplete.** Missing `immediate`, `cumulative_immediate`, `minimax_value`, `net_value_diff`, `visit_fraction` keys — frontend would receive inconsistently shaped objects when root was absent.
+- **`FLOOR` moved to module-level import** (was re-imported inside `_move_str` on every call).
+- **`record_batch_stability` removed unnecessary `getattr`** — `_last_top_k` is always initialized in `__init__`.
+- Refactored large methods into named helpers:
+  - `advance()` → `_find_child_for_move`, `_child_is_unexplored`, `_build_fresh_root`, `_prune_siblings`
+  - `_run_batched_simulations` → `_collect_leaves_with_virtual_loss`, `_backpropagate_batch`; nested `_backprop_one` promoted to `_process_one_leaf` closure
+  - `_select_with_virtual_loss` (was `_select_vl`) extracts `_expand_one_child_with_virtual_loss`
+  - `_select` extracts `_expand_one_child`
+  - `_serialize_node` → `_compute_immediate_score`, `_serialize_children`, `_compute_cumulative_score`, `_deduplicate_by_hash`, `_q_value_from_root_perspective`, `_net_value_from_root_perspective`
+  - `_minimax_value` → `_leaf_value_from_root_perspective`, `_node_value_from_root_perspective`
+  - `_pick_move` → `_sample_move_by_temperature`
+  - `_canonical_moves` → `_build_canonical_factory_map`
+  - `_run_simulations` → `_run_sequential_simulations`
+  - `_evaluate` → `_evaluate_round_boundary`
+- **Abbreviated names expanded throughout:** `vl` → `virtual_loss`, `adj_visits` → `adjusted_visits`, `idx` → `current_player_index`, etc.
+- Full docstrings on `AZNode` attributes, `SearchTree.__init__` args, all new helpers.
+
+**neural/replay.py:**
+- **Bug fix — `sample` return type annotation declared 5 tensors, returns 6.** Added `policy_masks` as the 6th element in the type signature. Added inline comments labeling each return position.
+
+**neural/trainer.py:**
+- **Bug fix — Windows KeyboardInterrupt flood in multiprocessing pool.** On Windows, Ctrl+C is broadcast to all worker processes simultaneously. Workers now install `signal.SIG_IGN` for `SIGINT` via a pool `initializer` (`_worker_ignore_sigint`). The main process handles shutdown via `pool.terminate()` / `pool.join()` in the existing `except KeyboardInterrupt` block.
+
+**Tests updated (all were out of date, not production bugs):**
+- `test_trainer.py` — removed phantom `collect_heuristic_games`, `collect_mirror_heuristic_games`, `collect_self_play` imports (replaced by unified architecture in 8s). Fixed `buf.sample()` unpacking from 5 → 6 tensors. Fixed stats key names (`wins_by_p0` → `wins_0`). Fixed `make_batch` to return 6 tensors including `policy_masks`. Fixed policy-sum tests to exclude round-boundary examples (`policy_mask=0.0`).
+- `test_train.py` — removed ~130 lines of tests for phantom `evaluate` function (never existed in `train.py`). Fixed `IterResult` instantiation (removed nonexistent `az_avg` field).
+- `test_model.py` — updated `ResBlock` tests to use no-arg constructor and `HIDDEN` constant. Updated `AzulNet` hidden-dim test to check module-level `HIDDEN == 64`. Replaced `test_custom_hidden_dim` / `test_custom_num_blocks` (parameters removed in 8t model shrink) with `test_azulnet_output_shapes`.
 
 #### 8k — Elo Ladder
 
@@ -564,6 +598,9 @@ Architecture: `input_proj(123→64) → 1×ResBlock(64) → 6 heads`. ~8k params
 23. **Pretrain loss curve not converged at 10k steps.** The curve was still declining — 50k steps reaches a better floor (~2.22 policy loss vs ~2.40 at 10k). Run pretrain longer.
 24. **`_terminal_value` divisor must match `_SCORE_DIFF_DIVISOR`.** Using ÷20 while the value_diff head trains with ÷50 makes terminal Q-values 2.5× too large. MCTS policy distributions are biased toward fast game endings, generating corrupted training targets and a progressive regression loop. Both must use the same constant.
 25. **Round-boundary states must be in the training buffer.** MCTS evaluates leaf nodes at round boundaries (empty factories, committed pattern lines). If the net has never seen these states during training, it extrapolates — and the heuristic fallback (`_terminal_value`) is wrong for Azul because it ignores the future cost of a blocked pattern line. Capture boundary states in `_play_game` after `make_move` (before `advance`), call `next_player()` to match MCTS child construction, and push with `policy_mask=0.0` so only the value heads train on them.
+26. **`_backpropagate` in `mcts.py` must negate, not flip.** Using `1.0 - result` only works in the [0,1] range and is wrong conceptually — it conflates perspective-flipping with value transformation. Use `result = -result` (±1 convention) so both `mcts.py` and `search_tree.py` share the same mental model: positive = good for current player at that node.
+27. **On Windows, Ctrl+C floods the terminal with worker KeyboardInterrupt tracebacks.** The OS broadcasts SIGINT to all processes in the console group. Fix: pass `initializer=_worker_ignore_sigint` to `ctx.Pool` — workers install `signal.SIG_IGN` on startup and let the main process handle shutdown via `pool.terminate()`.
+28. **Stale tests are worse than no tests.** Tests importing functions that no longer exist (`collect_heuristic_games`, `evaluate`, `AzulNet(hidden_dim=...)`) block the entire test run. Delete or update them promptly — if the production API changed, the tests are wrong, not the code.
 
 ---
 
@@ -597,6 +634,7 @@ Architecture: `input_proj(123→64) → 1×ResBlock(64) → 6 heads`. ~8k params
 
 | Date | Change |
 |---|---|
+| 2026-05-06 | **8v complete:** Code review — mcts.py backprop perspective bug fixed (±1 convention unified across mcts.py and search_tree.py), `_simulate` double legal_moves call fixed, `search_tree.py` refactored (large methods split, abbreviated names expanded, full docstrings), `_empty_node_dict` schema completed, `FLOOR` moved to module-level import. `ReplayBuffer.sample` return type annotation fixed (5→6 tensors). Windows KeyboardInterrupt flood fixed via `_worker_ignore_sigint` pool initializer. Stale tests updated: `test_trainer.py`, `test_train.py`, `test_model.py`. |
 | 2026-05-06 | **8u complete:** `_terminal_value` divisor fixed ÷20→÷50 (now uses `_SCORE_DIFF_DIVISOR`). Round-boundary states captured in training buffer with `policy_mask=0.0` — net now trains on the same empty-factory states MCTS evaluates, enabling correct valuation of clean-line vs blocked-line tradeoffs. `ReplayBuffer` gains `policy_masks`; `compute_loss` masks boundary examples from policy loss. 545 tests passing. |
 | 2026-05-06 | **8t complete:** `_compute_game_scores` bug fixed (read `player.score` not `player.earned` at game end). `AzulNet` shrunk to 64-dim (~8k params), no intermediate value head layer. Training steps increased to 10k/iter. `--skip-eval-iterations` added. AlphaZero registered in inspector UI (`agents/registry.py`, `api/schemas.py`). Worker result queue no longer pickles agent specs back. |
 | 2026-05-05 | **Training pipeline v3 (8s) complete:** Unified AgentSpec worker architecture. `collect_parallel`, `collect_heuristic_parallel`, `evaluate_parallel` replace all previous collection functions. `imap_unordered` streams results as workers finish. AZ vs AB medium mode with auto-switch to AZ vs AZ at 55% win rate. Pretrain is single pass before loop. `AzulNet` default `num_blocks` 3→1 (~215k params). Default workers=8, sims=200, games-per-iter=50, eval-games=50. Fixed `MOVE_SPACE_SIZE` comment: 180 not 210. |

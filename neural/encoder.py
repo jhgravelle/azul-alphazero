@@ -2,7 +2,7 @@
 
 """Encodes Azul game states and moves as tensors for the neural network.
 
-Encoding v3: Flat vector (123 values)
+Encoding v3: Flat vector (125 values)
 ---------------------------------------------------------------------
 Single flat vector with board state and game state combined.
 
@@ -12,18 +12,20 @@ Wall & Pattern State (100 values):
   50–74     My pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
   75–99     Opponent pattern line fills (flattened 5×5 grid, 0.0–1.0 ratio)
 
-Game State (23 values):
+Game State (25 values, laid out as a 5×5 grid):
   100       My official score / 100
-  101       Opponent official score / 100
-  102       My earned score / 100
-  103       Opponent earned score / 100
-  104       My floor penalty / 14
-  105       Opponent floor penalty / 14
+  101       My earned score / 100
+  102       0 (padding)
+  103       Opponent official score / 100
+  104       Opponent earned score / 100
+  105       My floor penalty / 14
   106       I hold first-player token (0 or 1)
-  107       Opponent holds first-player token (0 or 1)
-  108–112   Tiles available by color (5 colors) / 20
-  113–117   Sources with that color (5 colors) / 5
-  118–122   Bag tile count by color (5 colors) / 20
+  107       0 (padding)
+  108       Opponent floor penalty / 14
+  109       Opponent holds first-player token (0 or 1)
+  110–114   Tiles available by color (5 colors) / 20
+  115–119   Sources with that color (5 colors) / 5
+  120–124   Bag tile count by color (5 colors) / 20
 
 Move index layout
 -----------------------------------------------------
@@ -72,18 +74,20 @@ OFF_MY_PATTERN: int = 50  # 25 values
 OFF_OPP_PATTERN: int = 75  # 25 values
 
 OFF_MY_SCORE: int = 100
-OFF_OPP_SCORE: int = 101
-OFF_MY_EARNED: int = 102
-OFF_OPP_EARNED: int = 103
-OFF_MY_FLOOR: int = 104
-OFF_OPP_FLOOR: int = 105
+OFF_MY_EARNED: int = 101
+# index 102: padding zero
+OFF_OPP_SCORE: int = 103
+OFF_OPP_EARNED: int = 104
+OFF_MY_FLOOR: int = 105
 OFF_MY_FP_TOKEN: int = 106
-OFF_OPP_FP_TOKEN: int = 107
-OFF_TILES_AVAILABLE: int = 108  # 5 values, COLOR_TILES order
-OFF_SOURCES_WITH_COLOR: int = 113  # 5 values
-OFF_BAG_COUNT: int = 118  # 5 values
+# index 107: padding zero
+OFF_OPP_FLOOR: int = 108
+OFF_OPP_FP_TOKEN: int = 109
+OFF_TILES_AVAILABLE: int = 110  # 5 values, COLOR_TILES order
+OFF_SOURCES_WITH_COLOR: int = 115  # 5 values
+OFF_BAG_COUNT: int = 120  # 5 values
 
-FLAT_SIZE: int = 123
+FLAT_SIZE: int = 125
 
 # ── Normalization constants ────────────────────────────────────────────────
 
@@ -92,9 +96,6 @@ EARNED_DIVISOR: float = 100.0
 FLOOR_PENALTY_DIVISOR: float = 14.0
 MAX_BAG_TILES: float = float(TILES_PER_COLOR)  # 20
 MAX_SOURCES: float = 5.0
-
-# ── Internal helpers — wall geometry ──────────────────────────────────────
-
 
 # ── Internal helpers — board state encoders ───────────────────────────────
 
@@ -143,8 +144,8 @@ def _encode_flat_scores(
 ) -> None:
     """Write official scores and earned values."""
     flat[OFF_MY_SCORE] = my_player.score / MAX_SCORE_DIVISOR
-    flat[OFF_OPP_SCORE] = opp_player.score / MAX_SCORE_DIVISOR
     flat[OFF_MY_EARNED] = my_player.earned / EARNED_DIVISOR
+    flat[OFF_OPP_SCORE] = opp_player.score / MAX_SCORE_DIVISOR
     flat[OFF_OPP_EARNED] = opp_player.earned / EARNED_DIVISOR
 
 
@@ -153,7 +154,7 @@ def _encode_flat_floor_penalties(
     my_player: Player,
     opp_player: Player,
 ) -> None:
-    """Write floor penalty values (negative) normalized by max penalty."""
+    """Write floor penalty values normalized by max penalty."""
     flat[OFF_MY_FLOOR] = (
         CUMULATIVE_FLOOR_PENALTIES[len(my_player.floor_line)] / FLOOR_PENALTY_DIVISOR
     )
@@ -214,14 +215,14 @@ def _idx_to_dest(idx: int) -> int:
 
 
 def encode_state(game: Game) -> torch.Tensor:
-    """Encode a Game into a flat vector of 123 values.
+    """Encode a Game into a flat vector of 125 values.
 
-    Returns float32 tensor of shape (123,) containing:
+    Returns float32 tensor of shape (125,) containing:
       0–24:   My wall (flattened)
       25–49:  Opponent wall (flattened)
       50–74:  My pattern line fills (flattened)
       75–99:  Opponent pattern line fills (flattened)
-      100–122: Game state (scores, penalties, tokens, tiles, bag)
+      100–124: Game state (scores, penalties, tokens, tiles, bag)
     """
     current_player_index = game.current_player_index
     opponent_index = 1 - current_player_index
@@ -322,3 +323,33 @@ def flat_policy_to_3head_targets(
     src_targets = torch.stack([center_mass, factory_mass], dim=1)  # (B, 2)
 
     return src_targets, tile_targets, dst_targets
+
+
+def format_encoding(encoding: torch.Tensor) -> str:
+    """Format a 125-value encoding tensor as five 5x5 grids printed side by side.
+
+    Grids left to right: my wall, opponent wall, my pattern, opponent pattern,
+    game state. Each cell is right-aligned to 5 characters (e.g. ' 0.00' or
+    ' 1.00') with two spaces between columns inside a grid and four spaces
+    between grids so columns stay visually aligned.
+    """
+    grids = [
+        encoding[offset : offset + 25].reshape(5, 5) for offset in (0, 25, 50, 75, 100)
+    ]
+    lines = []
+    for row_index in range(5):
+        grid_strings = [
+            "  ".join(
+                f"{grids[grid_index][row_index, col].item():5.2f}" for col in range(5)
+            )
+            for grid_index in range(5)
+        ]
+        lines.append("    ".join(grid_strings))
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    game = Game()
+    game.setup_round()
+    encoding = encode_state(game)
+    print(format_encoding(encoding))

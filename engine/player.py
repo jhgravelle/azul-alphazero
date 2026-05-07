@@ -348,10 +348,10 @@ class Player:
         """
         return (
             f"{self.score:>2d}"
-            f"+{self.pending:>2d}"
-            f"-{-self.penalty:>2d}"
-            f"+{self.bonus:>2d}"
-            f"={self.earned:>2d}"
+            f" + {self.pending:>2d}"
+            f" - {-self.penalty:>2d}"
+            f" + {self.bonus:>2d}"
+            f" = {self.earned:>2d}"
         )
 
     def _format_row(self, row: int) -> str:
@@ -363,9 +363,10 @@ class Player:
         """
         empty = TILE_CHAR[None] * (CAPACITY[row] - len(self.pattern_lines[row]))
         filled = TILE_CHAR[self._line_tile(row)] * len(self.pattern_lines[row])
-        pattern = "".join([empty, filled]).rjust(BOARD_SIZE)
+        pattern = "".join([*empty, *filled]).rjust(BOARD_SIZE)
         wall = "".join(TILE_CHAR[self.wall[row][col]] for col in range(BOARD_SIZE))
-        return BOARD_SEPARATOR.join([pattern, wall])
+        chars = BOARD_SEPARATOR.join([pattern, wall])
+        return " ".join([c for c in chars])
 
     def _format_floor(self) -> str:
         """Format the floor line for display.
@@ -375,10 +376,11 @@ class Player:
         additional penalty but are shown for debugging visibility.
         """
         length = len(FLOOR_PENALTIES)
-        tile_strs = "".join(TILE_CHAR[tile] for tile in self.floor_line)
+        tile_strs = " ".join(TILE_CHAR[tile] for tile in self.floor_line)
         slots = tile_strs[:length].ljust(length, TILE_CHAR[None])
         overflow = tile_strs[length:]
-        return BOARD_SEPARATOR.join([slots, overflow])
+        chars = BOARD_SEPARATOR.join([slots, overflow])
+        return " ".join([c for c in chars])
 
     def __str__(self) -> str:
         """Multi-line monospaced display of the player board.
@@ -395,10 +397,13 @@ class Player:
         """
         return "\n".join(
             [
-                f"{self.name} ({self.agent})",
-                self._format_score_line(),
-                "\n".join(self._format_row(row) for row in range(BOARD_SIZE)),
-                self._format_floor(),
+                f"{self.name} ({self.agent})".rjust((BOARD_SIZE + 1) * 4),
+                self._format_score_line().rjust((BOARD_SIZE + 1) * 4),
+                "\n".join(
+                    self._format_row(row).rjust((BOARD_SIZE + 1) * 4)
+                    for row in range(BOARD_SIZE)
+                ),
+                self._format_floor().rjust((BOARD_SIZE + 1) * 4),
             ]
         )
 
@@ -430,3 +435,9 @@ class Player:
         return p
 
     # endregion
+
+
+if __name__ == "__main__":
+    player = Player("Joe")
+    player.pattern_lines[3] = [Tile.BLACK] * 2
+    print(player)

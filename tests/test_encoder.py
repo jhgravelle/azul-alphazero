@@ -25,6 +25,7 @@ from neural.encoder import (
     decode_move,
     encode_move,
     encode_state,
+    format_encoding,
 )
 from engine.game import CENTER, FLOOR, Game, Move
 from engine.constants import BOARD_SIZE, COLOR_TILES, COLUMN_FOR_TILE_IN_ROW, Tile
@@ -45,8 +46,8 @@ def test_encode_state_returns_correct_shape():
     assert encoding.shape == (FLAT_SIZE,)
 
 
-def test_encoding_size_is_123():
-    assert FLAT_SIZE == 123
+def test_encoding_size_is_125():
+    assert FLAT_SIZE == 125
 
 
 # ── Wall encoding ──────────────────────────────────────────────────────────
@@ -289,3 +290,12 @@ def test_all_legal_moves_have_distinct_indices():
     moves = game.legal_moves()
     indices = [encode_move(m, game) for m in moves]
     assert len(indices) == len(set(indices))
+
+
+def test_format_encoding_five_grids_side_by_side():
+    game = fresh_game()
+    encoding = encode_state(game)
+    result = format_encoding(encoding)
+    lines = result.splitlines()
+    assert len(lines) == 5
+    assert all(len(line) == len(lines[0]) for line in lines)

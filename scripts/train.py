@@ -295,7 +295,7 @@ def main() -> None:
     parser.add_argument(
         "--simulations",
         type=int,
-        default=50,
+        default=200,
         help="MCTS simulations per move (self-play and eval)",
     )
     parser.add_argument(
@@ -366,7 +366,7 @@ def main() -> None:
     # ── Pretrain phase (optional, single pass before iteration loop) ───────
     if args.pretrain:
         num_pretrain_pairs = args.buffer_size // 100
-        num_pretrain_steps = num_pretrain_pairs * 20
+        num_pretrain_steps = num_pretrain_pairs * 5
         logger.info(
             "pretrain -- collecting %d ABeasy vs ABeasy pairs (%d workers)...",
             num_pretrain_pairs,

@@ -29,7 +29,7 @@ from neural.model import AzulNet
 from neural.trainer import _SCORE_DIFF_DIVISOR
 from neural.zobrist import ZobristTable
 
-_PUCT_C = 1.5
+_PUCT_C = 1.0
 
 _ZOBRIST = ZobristTable()
 
@@ -202,25 +202,31 @@ class AZNode:
             return True
         return False
 
-    def puct_score(self, parent_visits: int) -> float:
+    def puct_score(self, parent_visits: int, unvisited_exploitation: float) -> float:
         """Compute the PUCT score used for child selection during tree descent.
 
         PUCT = Q + U, where:
           Q = exploitation term: average value adjusted for virtual losses.
+              Unvisited nodes use the parent's net_value_diff as a prior estimate
+              rather than 0.0, so they are not artificially suppressed before any
+              evidence is collected.
           U = exploration term: scaled by prior and inversely by visit count.
+              C must remain > 0 to break ties on the initial visit via the prior.
 
         Fully explored nodes return -infinity so they are never selected again.
         Virtual loss makes this node look artificially bad during batched
         selection, discouraging other threads from selecting the same path.
 
         Args:
-            parent_visits: Visit count of the parent node, used to scale U.
+            parent_visits:          Visit count of the parent node, used to scale U.
+            unvisited_exploitation: Parent's net_value_diff, used as the exploitation
+                                    estimate for unvisited nodes instead of 0.0.
         """
         if self._fully_explored:
             return float("-inf")
         adjusted_visits = self.visits + self.virtual_loss
         if adjusted_visits == 0:
-            exploitation = 0.0
+            exploitation = unvisited_exploitation
         else:
             exploitation = (
                 -(self.total_value + float(self.virtual_loss)) / adjusted_visits
@@ -558,17 +564,13 @@ class SearchTree:
         node = root
         while not node.is_terminal and not node.is_round_boundary:
             if node._untried_moves is None:
-                # Node has never been evaluated by the policy network. Mark it
-                # with virtual loss and return it for evaluation.
                 node.virtual_loss += 1
                 return node
 
             if node._untried_moves:
-                # Expand one untried move into a new child.
                 node = self._expand_one_child_with_virtual_loss(node)
                 return node
 
-            # All moves expanded — descend by PUCT score among unexplored children.
             eligible = [child for child in node.children if not child._fully_explored]
             if not eligible:
                 node._explored = True
@@ -577,8 +579,13 @@ class SearchTree:
 
             node.virtual_loss += 1
             parent_visits_with_virtual = node.visits + node.virtual_loss
+            assert node.net_value_diff is not None
+            unvisited_exploitation = node.net_value_diff
             node = max(
-                eligible, key=lambda child: child.puct_score(parent_visits_with_virtual)
+                eligible,
+                key=lambda child: child.puct_score(
+                    parent_visits_with_virtual, unvisited_exploitation
+                ),
             )
 
         node.virtual_loss += 1
@@ -634,7 +641,12 @@ class SearchTree:
             if not eligible:
                 node._explored = True
                 return node
-            node = max(eligible, key=lambda child: child.puct_score(node.visits))
+            assert node.net_value_diff is not None
+            unvisited_exploitation = node.net_value_diff
+            node = max(
+                eligible,
+                key=lambda child: child.puct_score(node.visits, unvisited_exploitation),
+            )
 
         return node
 

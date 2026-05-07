@@ -387,6 +387,28 @@ class Game:
         count += len({t for t in self.center if t != Tile.FIRST_PLAYER})
         return count
 
+    def tile_availability(self) -> dict[Tile, tuple[int, int]]:
+        """Return tile counts and source counts across all active sources.
+
+        For each color tile, returns a tuple of:
+            (total_tiles, source_count)
+        where total_tiles is the total number of that color across all
+        non-empty factories and the center, and source_count is the number
+        of sources containing at least one tile of that color.
+
+        Used by the encoder and by agents that need to reason about what
+        tiles are available without reaching into game internals.
+        """
+        totals: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
+        source_counts: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
+        for source in [*self.factories, self.center]:
+            for color in COLOR_TILES:
+                count = source.count(color)
+                if count > 0:
+                    totals[color] += count
+                    source_counts[color] += 1
+        return {color: (totals[color], source_counts[color]) for color in COLOR_TILES}
+
     # endregion
 
     # region Turn execution -------------------------------------------------

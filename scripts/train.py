@@ -335,7 +335,7 @@ def main() -> None:
 
     iter_results: list[IterResult] = []
     az_vs_az_mode = False  # start in AZ vs AB medium mode
-    ab_medium_spec = AgentSpec(type="alphabeta", depths=(2, 3, 7), thresholds=(20, 10))
+    ab_medium_spec = AgentSpec(type="alphabeta", depth=2, threshold=6)
 
     # ── Main iteration loop ────────────────────────────────────────────────
     for iteration in range(1, args.iterations + 1):
@@ -449,7 +449,9 @@ def main() -> None:
                 best_net,
                 num_pairs=args.eval_games,
                 simulations=args.simulations,
-                buf=buf,
+                buf=(
+                    buf if az_vs_az_mode else None
+                ),  # only push eval data once net is strong
                 num_workers=args.workers,
             )
             logger.info("new net win rate vs best: %.1f%%", win_rate * 100)

@@ -175,20 +175,11 @@ def _encode_flat_first_player_tokens(
 
 def _encode_flat_game_tiles(flat: torch.Tensor, game: Game) -> None:
     """Write tiles-available, sources-with-color, and bag-count features."""
+    availability = game.tile_availability()
     for color_idx, color in enumerate(COLOR_TILES):
-        tiles_available = 0
-        sources_with_color = 0
-        for factory in game.factories:
-            count = factory.count(color)
-            if count > 0:
-                tiles_available += count
-                sources_with_color += 1
-        center_count = game.center.count(color)
-        if center_count > 0:
-            tiles_available += center_count
-            sources_with_color += 1
-        flat[OFF_TILES_AVAILABLE + color_idx] = tiles_available / MAX_BAG_TILES
-        flat[OFF_SOURCES_WITH_COLOR + color_idx] = sources_with_color / MAX_SOURCES
+        total_tiles, source_count = availability[color]
+        flat[OFF_TILES_AVAILABLE + color_idx] = total_tiles / MAX_BAG_TILES
+        flat[OFF_SOURCES_WITH_COLOR + color_idx] = source_count / MAX_SOURCES
         flat[OFF_BAG_COUNT + color_idx] = game.bag.count(color) / MAX_BAG_TILES
 
 

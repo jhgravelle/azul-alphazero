@@ -209,8 +209,8 @@ class AgentSpec:
     type: str
     state_dict: dict | None = None
     simulations: int = 100
-    depths: tuple[int, int, int] = (2, 3, 7)
-    thresholds: tuple[int, int] = (20, 10)
+    depth: int = 2
+    threshold: int = 6
     temperature: float = 1.0
 
 
@@ -232,7 +232,7 @@ def _build_agent(spec: AgentSpec) -> Agent:
             net, simulations=spec.simulations, temperature=spec.temperature
         )
     if spec.type == "alphabeta":
-        return AlphaBetaAgent(depths=spec.depths, thresholds=spec.thresholds)
+        return AlphaBetaAgent(depth=spec.depth, threshold=spec.threshold)
     if spec.type == "greedy":
         return GreedyAgent()
     if spec.type == "cautious":
@@ -248,11 +248,10 @@ def _build_agent(spec: AgentSpec) -> Agent:
 
 
 def _spec_name(spec: AgentSpec) -> str:
-    """Short human-readable name for an agent spec."""
     if spec.type == "alphazero":
         return f"AlphaZero(sims={spec.simulations})"
     if spec.type == "alphabeta":
-        return f"AlphaBeta{spec.depths}"
+        return f"AlphaBeta(d={spec.depth},t={spec.threshold})"
     return spec.type.capitalize()
 
 
@@ -585,36 +584,22 @@ def collect_parallel(
 
 
 def _pretrain_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:
-    """Weak heuristics vs easy AlphaBeta for fast buffer initialization.
-
-    Returns a list of (spec_0, spec_1, weight) triples.
-    """
-    easy = AgentSpec(type="alphabeta", depths=(1, 2, 3), thresholds=(20, 10))
+    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
     return [
-        (AgentSpec(type="random"), easy, 0.25),
-        (AgentSpec(type="efficient"), easy, 0.25),
-        (AgentSpec(type="cautious"), easy, 0.25),
-        (AgentSpec(type="greedy"), easy, 0.25),
+        (AgentSpec(type="random"), easy, 0.00),
+        (AgentSpec(type="efficient"), easy, 0.00),
+        (AgentSpec(type="cautious"), easy, 0.00),
+        (AgentSpec(type="greedy"), easy, 1.00),
     ]
 
 
 def _default_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:
-    """Default weighted matchup list for heuristic data collection.
-
-    All matchups pair heuristic agents against AlphaBeta easy.
-    AlphaBeta easy runs fast (~4ms/move) allowing high game volume.
-
-    random    vs easy: 10% — extreme loss signal
-    efficient vs easy: 20% — weak vs strong
-    cautious  vs easy: 30% — moderate loss signal
-    greedy    vs easy: 40% — near-peer, clean policy targets
-    """
-    easy = AgentSpec(type="alphabeta", depths=(1, 2, 3), thresholds=(20, 10))
+    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
     return [
-        (AgentSpec(type="random"), easy, 0.10),
-        (AgentSpec(type="efficient"), easy, 0.20),
-        (AgentSpec(type="cautious"), easy, 0.30),
-        (AgentSpec(type="greedy"), easy, 0.40),
+        (AgentSpec(type="random"), easy, 0.00),
+        (AgentSpec(type="efficient"), easy, 0.00),
+        (AgentSpec(type="cautious"), easy, 0.00),
+        (AgentSpec(type="greedy"), easy, 1.00),
     ]
 
 

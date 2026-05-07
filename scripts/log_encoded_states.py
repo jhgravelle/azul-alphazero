@@ -116,8 +116,8 @@ def _format_policy_and_values(
 
 
 def main() -> None:
-    alphabeta_easy = AlphaBetaAgent(depths=(1, 2, 3), thresholds=(20, 10))
-    alphabeta_medium = AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
+    alphabeta_easy = AlphaBetaAgent(depth=1, threshold=4)
+    alphabeta_medium = AlphaBetaAgent(depth=1, threshold=4)
     agents: list[Agent] = [alphabeta_easy, alphabeta_medium]
     agent_names = ["AlphaBeta Easy", "AlphaBeta Medium"]
 

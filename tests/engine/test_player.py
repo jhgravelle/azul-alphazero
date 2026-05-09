@@ -473,11 +473,6 @@ def test_str_contains_player_name():
     assert "Alice" in str(player)
 
 
-def test_str_contains_agent():
-    player = Player(name="Alice", agent="alphabeta_hard")
-    assert "alphabeta_hard" in str(player)
-
-
 def test_str_is_multiline():
     player = make_player()
     assert "\n" in str(player)

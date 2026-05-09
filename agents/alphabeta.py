@@ -1,9 +1,13 @@
 # agents/alphabeta.py
 import math
+import random
 from engine.game import Game, Move
 from agents.base import Agent
 
 _POLICY_TEMPERATURE = 1.0
+_EXPLORATION_TEMPERATURE = 0.3
+_END_OF_ROUND_TEMPERATURE = 1.0
+_END_OF_ROUND_SOURCES_THRESHOLD = 2
 
 
 def _softmax_distribution(
@@ -27,6 +31,15 @@ def _softmax_distribution(
     return [(move, exp_val / total) for (move, _), exp_val in zip(scored_moves, exps)]
 
 
+def _sample_from_distribution(
+    distribution: list[tuple[Move, float]],
+    rng: random.Random,
+) -> Move:
+    moves = [move for move, _ in distribution]
+    weights = [prob for _, prob in distribution]
+    return rng.choices(moves, weights=weights, k=1)[0]
+
+
 class AlphaBetaAgent(Agent):
     """Depth-limited minimax with alpha-beta pruning and move ordering.
 
@@ -41,22 +54,51 @@ class AlphaBetaAgent(Agent):
 
     def __init__(
         self,
-        depths: tuple[int, int, int] = (2, 3, 5),
-        thresholds: tuple[int, int] = (10, 7),
+        depth: int = 2,
+        threshold: int = 6,
+        exploration_temperature: float = _EXPLORATION_TEMPERATURE,
     ) -> None:
-        self.depths = depths
-        self.thresholds = thresholds
+        self.depth = depth
+        self.threshold = threshold
+        self.exploration_temperature = exploration_temperature
+        self._rng = random.Random()  # independent RNG per agent instance
         self._nodes: int = 0
         self._root_move_scores: list[tuple[Move, float]] = []
 
     def _effective_depth(self, game: Game) -> int:
-        legal_count = len(game.legal_moves())
-        if legal_count > self.thresholds[0]:
-            return self.depths[0]
-        elif legal_count > self.thresholds[1]:
-            return self.depths[1]
-        else:
-            return self.depths[2]
+        """Return search depth based on remaining source-colors this round.
+
+        When the board is wide (many source-colors remaining), cap depth to
+        avoid combinatorial explosion. When narrow (few source-colors), use
+        the source count itself as depth — searching as deep as there are
+        moves remaining this round.
+        """
+        sources = sum(
+            source_count for _, source_count in game.tile_availability().values()
+        )
+        if sources > self.threshold:
+            return self.depth
+        return sources
+
+    def _pick_move(self, game: Game) -> Move:
+        """Sample a move from the scored distribution using the appropriate temperature.
+
+        Uses end-of-round temperature (fully exploratory) when only a few
+        sources remain, and exploration temperature (mostly smart) otherwise.
+        """
+        if self.exploration_temperature == 0.0:
+            return max(self._root_move_scores, key=lambda pair: pair[1])[0]
+
+        sources = sum(
+            source_count for _, source_count in game.tile_availability().values()
+        )
+        temperature = (
+            _END_OF_ROUND_TEMPERATURE
+            if sources <= _END_OF_ROUND_SOURCES_THRESHOLD
+            else self.exploration_temperature
+        )
+        distribution = _softmax_distribution(self._root_move_scores, temperature)
+        return _sample_from_distribution(distribution, self._rng)
 
     def choose_move(self, game: Game) -> Move:
         self._nodes = 0
@@ -69,7 +111,7 @@ class AlphaBetaAgent(Agent):
             game, legal, depth, root_player_index
         )
 
-        return max(self._root_move_scores, key=lambda pair: pair[1])[0]
+        return self._pick_move(game)
 
     def policy_distribution(self, game: Game) -> list[tuple[Move, float]]:
         """Softmax over root move scores from the most recent choose_move call.
@@ -115,9 +157,12 @@ class AlphaBetaAgent(Agent):
         moving_player_index = game.current_player_index
         if move.destination == -2:
             return -10.0 if moving_player_index == root_player_index else 10.0
-        capacity = move.destination + 1
-        line = game.current_player.pattern_lines[move.destination]
-        fills_line = len(line) + 1 >= capacity
+        from engine.constants import CAPACITY, COLUMN_FOR_TILE_IN_ROW
+
+        capacity = CAPACITY[move.destination]
+        col = COLUMN_FOR_TILE_IN_ROW[move.tile][move.destination]
+        filled = game.current_player.pattern_grid[move.destination][col]
+        fills_line = filled + 1 >= capacity
         if fills_line:
             return 5.0 if moving_player_index == root_player_index else -5.0
         return 0.0

@@ -8,7 +8,7 @@ from agents.greedy import GreedyAgent
 from engine.game import Game
 from agents.base import Agent
 from agents.random import RandomAgent
-from engine.constants import Tile
+from engine.constants import COLUMN_FOR_TILE_IN_ROW, Tile
 from engine.game import FLOOR
 
 
@@ -80,7 +80,7 @@ def test_greedy_agent_prefers_partial_line_without_biasing_color_selection():
     agent = GreedyAgent()
 
     player = game.current_player
-    player.pattern_lines[2] = [Tile.BLUE]
+    player.place(2, [Tile.BLUE])
     game.center.append(Tile.BLUE)
 
     moves = [agent.choose_move(game) for _ in range(100)]
@@ -265,12 +265,13 @@ def test_efficient_policy_distribution_prefers_partial_lines_when_available():
     game = Game()
     game.setup_round()
     player = game.current_player
-    player.pattern_lines[2] = [Tile.BLUE]
+    player.place(2, [Tile.BLUE])
     game.center.append(Tile.BLUE)
     dist = EfficientAgent().policy_distribution(game)
     for move, _ in dist:
         assert move.destination >= 0
-        assert len(player.pattern_lines[move.destination]) > 0
+        col = COLUMN_FOR_TILE_IN_ROW[move.tile][move.destination]
+        assert player.pattern_grid[move.destination][col] > 0
 
 
 def test_efficient_policy_distribution_covers_all_preferred_moves():
@@ -280,13 +281,17 @@ def test_efficient_policy_distribution_covers_all_preferred_moves():
     game = Game()
     game.setup_round()
     player = game.current_player
-    player.pattern_lines[2] = [Tile.BLUE]
+    player.place(2, [Tile.BLUE])
     game.center.append(Tile.BLUE)
     legal = game.legal_moves()
     expected_preferred = [
         m
         for m in legal
-        if m.destination >= 0 and len(player.pattern_lines[m.destination]) > 0
+        if m.destination >= 0
+        and player.pattern_grid[m.destination][
+            COLUMN_FOR_TILE_IN_ROW[m.tile][m.destination]
+        ]
+        > 0
     ]
     dist = EfficientAgent().policy_distribution(game)
     moves_in_dist = [m for m, _ in dist]
@@ -364,7 +369,7 @@ def test_greedy_policy_distribution_prefers_partial_lines_within_color():
     game = Game()
     game.setup_round()
     player = game.current_player
-    player.pattern_lines[2] = [Tile.BLUE]
+    player.place(2, [Tile.BLUE])
     game.center.append(Tile.BLUE)
     dist = GreedyAgent().policy_distribution(game)
     blue_moves = [m for m, _ in dist if m.tile == Tile.BLUE]

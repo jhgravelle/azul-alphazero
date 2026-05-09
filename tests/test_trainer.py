@@ -4,13 +4,13 @@
 import torch
 import pytest
 
-from neural.encoder import SPATIAL_SHAPE, FLAT_SIZE, MOVE_SPACE_SIZE
+from neural.encoder import FLAT_SIZE, MOVE_SPACE_SIZE
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
 from neural.trainer import (
     Trainer,
     compute_loss,
-    collect_heuristic_games,
+    collect_heuristic_parallel,
     score_differential_value,
     total_score_value,
     win_loss_value,
@@ -26,30 +26,29 @@ def make_trainer() -> Trainer:
 def make_batch(
     batch_size: int = 16,
 ) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
+    torch.Tensor,  # encodings     (batch, FLAT_SIZE)
+    torch.Tensor,  # policies      (batch, MOVE_SPACE_SIZE)
+    torch.Tensor,  # values_win    (batch, 1)
+    torch.Tensor,  # values_diff   (batch, 1)
+    torch.Tensor,  # values_abs    (batch, 1)
+    torch.Tensor,  # policy_masks  (batch, 1)
 ]:
-    """Return a random (spatials, flats, policies, v_win, v_diff, v_abs) batch."""
-    spatials = torch.rand(batch_size, *SPATIAL_SHAPE)
-    flats = torch.rand(batch_size, FLAT_SIZE)
+    """Return a random (encodings, policies, v_win, v_diff, v_abs, masks) batch."""
+    encodings = torch.rand(batch_size, FLAT_SIZE)
     raw = torch.rand(batch_size, MOVE_SPACE_SIZE)
     policies = raw / raw.sum(dim=-1, keepdim=True)
     values_win = torch.rand(batch_size, 1) * 2 - 1
     values_diff = torch.rand(batch_size, 1) * 2 - 1
     values_abs = torch.rand(batch_size, 1) * 2 - 1
-    return spatials, flats, policies, values_win, values_diff, values_abs
+    policy_masks = torch.ones(batch_size, 1)
+    return encodings, policies, values_win, values_diff, values_abs, policy_masks
 
 
 def fill_buffer(buf: ReplayBuffer, n: int) -> None:
-    spatials, flats, policies, vw, vd, va = make_batch(n)
+    encodings, policies, vw, vd, va, _ = make_batch(n)
     for i in range(n):
         buf.push(
-            spatials[i],
-            flats[i],
+            encodings[i],
             policies[i],
             vw[i, 0].item(),
             vd[i, 0].item(),
@@ -139,22 +138,22 @@ def test_train_step_loss_trends_down():
     assert sum(losses[:10]) > sum(losses[-10:])
 
 
-# ── collect_heuristic_games ────────────────────────────────────────────────
+# ── collect_heuristic_parallel ─────────────────────────────────────────────
 
 
-def test_collect_heuristic_games_fills_buffer():
+def test_collect_heuristic_parallel_fills_buffer():
     buf = ReplayBuffer(capacity=10_000)
-    collect_heuristic_games(buf, num_games=3)
+    collect_heuristic_parallel(buf, num_pairs=2)
     assert len(buf) > 0
 
 
-def test_collect_heuristic_games_policy_is_distribution_not_one_hot():
+def test_collect_heuristic_parallel_policy_is_distribution_not_one_hot():
     """Policy targets should be multi-move distributions, not one-hot.
     At least one example in the buffer should have multiple non-zero
     entries in its policy vector."""
     buf = ReplayBuffer(capacity=10_000)
-    collect_heuristic_games(buf, num_games=3)
-    _, _, policies, _, _, _ = buf.sample(min(len(buf), 50))
+    collect_heuristic_parallel(buf, num_pairs=2)
+    _, policies, _, _, _, _ = buf.sample(min(len(buf), 50))
     nonzero_counts = (policies > 0).sum(dim=1)
     multi_move_rows = (nonzero_counts > 1).sum().item()
     assert multi_move_rows > 0, (
@@ -163,136 +162,29 @@ def test_collect_heuristic_games_policy_is_distribution_not_one_hot():
     )
 
 
-def test_collect_heuristic_games_policy_sums_to_one():
-    """Every policy target should sum to exactly 1.0."""
+def test_collect_heuristic_parallel_policy_sums_to_one():
+    """Every policy target with a valid mask should sum to exactly 1.0.
+
+    Round-boundary examples have policy_mask=0.0 and a zero policy vector —
+    they carry only a value target, no policy target. These are excluded.
+    """
     buf = ReplayBuffer(capacity=10_000)
-    collect_heuristic_games(buf, num_games=2)
-    _, _, policies, _, _, _ = buf.sample(min(len(buf), 30))
-    sums = policies.sum(dim=1)
+    collect_heuristic_parallel(buf, num_pairs=2)
+    _, policies, _, _, _, masks = buf.sample(min(len(buf), 30))
+    valid_policies = policies[masks.squeeze(1) > 0.5]
+    assert len(valid_policies) > 0, "No policy-valid examples in sample"
+    sums = valid_policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
 
 @pytest.mark.slow
-def test_collect_heuristic_games_records_all_games():
-    """No games should be skipped — stats should show all games recorded."""
+def test_collect_heuristic_parallel_records_all_games():
+    """No games should be skipped — stats should reflect 2 games per pair."""
     buf = ReplayBuffer(capacity=100_000)
-    stats = collect_heuristic_games(buf, num_games=20)
-    total_games = stats["wins_by_p0"] + stats["wins_by_p1"] + stats["ties"]
+    stats = collect_heuristic_parallel(buf, num_pairs=10)
+    total_games = stats["wins_0"] + stats["wins_1"] + stats["ties"]
     assert total_games == 20
     assert stats["games_recorded"] == 20
-
-
-def test_collect_self_play_warmup_records_both_players():
-    from neural.model import AzulNet
-    from neural.trainer import collect_self_play
-    from agents.greedy import GreedyAgent
-
-    net = AzulNet()
-    buf = ReplayBuffer(capacity=100_000)
-    collect_self_play(
-        buf,
-        net=net,
-        num_games=4,
-        simulations=2,
-        temperature=1.0,
-        opponent=GreedyAgent(),
-    )
-    assert len(buf) > 100, (
-        f"Buffer has {len(buf)} examples from 4 games. "
-        f"Expected >100 if recording both players."
-    )
-
-
-def test_collect_self_play_warmup_az_as_p1_records_nonzero_score():
-    """AZ as player 1 in warmup mode should record actual score, not zero.
-
-    We engineer a near-complete game state where both players are guaranteed
-    to score: pattern line row 0 is full (scores 5 points — connects to 4
-    wall neighbors), completing row 0 triggers a +2 row bonus. Starting score
-    of 15 ensures floor penalties (-14 max) can't reach zero (15+5+2-14=8).
-    """
-    from neural.trainer import collect_self_play
-    from neural.replay import ReplayBuffer
-    from neural.model import AzulNet
-    from agents.greedy import GreedyAgent
-    from engine.constants import Tile, WALL_PATTERN, COLUMN_FOR_TILE_IN_ROW
-    from engine import game as game_module
-
-    net = AzulNet()
-    buf = ReplayBuffer(capacity=1000)
-    opponent = GreedyAgent()
-
-    original_setup = game_module.Game.setup_round
-
-    def rigged_setup(self, factories=None):
-        original_setup(self, factories)
-        for board in self.players:
-            board.score = 15
-        for board in self.players:
-            board.pattern_lines[0] = [Tile.BLUE]
-        blue_col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
-        for board in self.players:
-            for col in range(5):
-                if col != blue_col:
-                    board.wall[0][col] = WALL_PATTERN[0][col]
-            board._update_pending()
-            board._update_bonus()
-
-    game_module.Game.setup_round = rigged_setup
-    try:
-        az_scores = collect_self_play(
-            buf,
-            net=net,
-            num_games=2,
-            simulations=5,
-            temperature=1.0,
-            opponent=opponent,
-            device=torch.device("cpu"),
-        )
-    finally:
-        game_module.Game.setup_round = original_setup
-
-    assert len(az_scores) == 2
-    assert az_scores[0] > 0, f"AZ as p0 scored {az_scores[0]}, expected > 0"
-    assert az_scores[1] > 0, f"AZ as p1 scored {az_scores[1]}, expected > 0"
-
-
-def test_collect_self_play_warmup_az_avoids_floor_when_alternatives_exist():
-    """In warmup mode, AZ should not choose a floor move when non-floor moves exist."""
-    from neural.model import AzulNet
-    from agents.alphazero import AlphaZeroAgent
-    from engine.game import Game, FLOOR
-
-    net = AzulNet()
-    game = Game()
-    game.setup_round()
-
-    # Verify there are non-floor moves available
-    legal = game.legal_moves()
-    non_floor = [m for m in legal if m.destination != FLOOR]
-    assert len(non_floor) > 0
-
-    # Simulate what collect_self_play does in warmup mode
-    move_before_override = None
-    az_agent = AlphaZeroAgent(net, simulations=5, temperature=1.0)
-    raw_move, policy_pairs = az_agent.get_policy_targets(game)
-    move_before_override = raw_move
-
-    # Apply the warmup floor override (same logic as collect_self_play)
-    move = raw_move
-    if move.destination == FLOOR:
-        policy_list = list(policy_pairs)
-        move = max(
-            non_floor,
-            key=lambda m: next((prob for pm, prob in policy_list if pm == m), 0.0),
-        )
-
-    # After override, move must not be a floor move
-    assert move.destination != FLOOR, (
-        f"After warmup override, move {move} is still a floor move. "
-        f"Raw move was {move_before_override}"
-    )
-    assert move in legal, f"Overridden move {move} is not legal"
 
 
 # ── compute_loss — dict return and value_only ──────────────────────────────
@@ -449,21 +341,21 @@ def test_total_score_value_zero():
 
 
 def test_total_score_value_positive_boundary():
-    # score 80 / divisor 80 = +1.0
-    assert total_score_value([80, 30], 0) == pytest.approx(1.0)
+    # score 100 / divisor 100 = +1.0
+    assert total_score_value([100, 30], 0) == pytest.approx(1.0)
 
 
 def test_total_score_value_clips_positive():
-    assert total_score_value([90, 30], 0) == 1.0
+    assert total_score_value([110, 30], 0) == 1.0
 
 
 def test_total_score_value_clips_negative():
-    assert total_score_value([-90, 30], 0) == -1.0
+    assert total_score_value([-110, 30], 0) == -1.0
 
 
 def test_total_score_value_midrange():
-    # score 40 / 80 = +0.5
-    assert total_score_value([40, 30], 0) == pytest.approx(0.5)
+    # score 40 / 100 = +0.4
+    assert total_score_value([40, 30], 0) == pytest.approx(0.4)
 
 
 def test_total_score_value_only_depends_on_own_score():
@@ -495,15 +387,14 @@ def test_compute_loss_per_head_components_are_positive():
 
 
 def test_compute_loss_value_equals_weighted_sum():
-    """Combined value loss should equal the weighted sum of per-head losses."""
-    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
+    """Combined value loss = _AUX_WEIGHT_WIN * win + _AUX_WEIGHT_DIFF * diff.
+    value_abs is excluded from the training loss (diagnostic only)."""
+    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF
 
     net = AzulNet()
     result = compute_loss(net, *make_batch())
     expected = (
-        _AUX_WEIGHT_WIN * result["value_win"]
-        + _AUX_WEIGHT_DIFF * result["value_diff"]
-        + _AUX_WEIGHT_ABS * result["value_abs"]
+        _AUX_WEIGHT_WIN * result["value_win"] + _AUX_WEIGHT_DIFF * result["value_diff"]
     )
     assert torch.isclose(result["value"], expected)
 
@@ -528,42 +419,37 @@ def test_train_step_too_small_buffer_returns_all_value_keys():
     assert result["value_abs"] == 0.0
 
 
-def test_compute_loss_value_equals_weighted_sum_new_weights():
-    """Combined value loss = _AUX_WEIGHT_WIN·win
-    + _AUX_WEIGHT_DIFF·diff + _AUX_WEIGHT_ABS·abs."""
-    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF, _AUX_WEIGHT_ABS
+def test_compute_loss_value_abs_is_diagnostic_only():
+    """value_abs computed but NOT included in combined value loss."""
+    from neural.trainer import _AUX_WEIGHT_WIN, _AUX_WEIGHT_DIFF
 
     net = AzulNet()
     result = compute_loss(net, *make_batch())
-    expected = (
-        _AUX_WEIGHT_WIN * result["value_win"]
-        + _AUX_WEIGHT_DIFF * result["value_diff"]
-        + _AUX_WEIGHT_ABS * result["value_abs"]
+    # value_abs is computed (nonzero) but absent from combined value
+    assert result["value_abs"].item() > 0.0
+    expected_without_abs = (
+        _AUX_WEIGHT_WIN * result["value_win"] + _AUX_WEIGHT_DIFF * result["value_diff"]
     )
-    assert torch.isclose(result["value"], expected)
+    assert torch.isclose(result["value"], expected_without_abs)
 
 
-# ── collect_mirror_heuristic_games ─────────────────────────────────────────
+# ── collect_heuristic_parallel mirror pair tests ───────────────────────────
 
 
 def test_collect_mirror_games_fills_buffer():
-    from neural.trainer import collect_mirror_heuristic_games
-
     buf = ReplayBuffer(capacity=10_000)
-    collect_mirror_heuristic_games(buf, num_pairs=2)
+    collect_heuristic_parallel(buf, num_pairs=2)
     assert len(buf) > 0
 
 
 @pytest.mark.slow
 def test_collect_mirror_games_records_double_the_pairs():
     """Each pair produces 2 games — buffer should have examples from both."""
-    from neural.trainer import collect_mirror_heuristic_games
-
     buf_single = ReplayBuffer(capacity=10_000)
-    collect_mirror_heuristic_games(buf_single, num_pairs=1)
+    collect_heuristic_parallel(buf_single, num_pairs=1)
 
     buf_double = ReplayBuffer(capacity=10_000)
-    collect_mirror_heuristic_games(buf_double, num_pairs=2)
+    collect_heuristic_parallel(buf_double, num_pairs=2)
 
     # Two pairs should produce roughly twice the examples of one pair
     assert len(buf_double) > len(buf_single)
@@ -571,22 +457,24 @@ def test_collect_mirror_games_records_double_the_pairs():
 
 @pytest.mark.slow
 def test_collect_mirror_games_returns_correct_game_count():
-    from neural.trainer import collect_mirror_heuristic_games
-
     buf = ReplayBuffer(capacity=10_000)
-    stats = collect_mirror_heuristic_games(buf, num_pairs=3)
+    stats = collect_heuristic_parallel(buf, num_pairs=3)
     assert stats["games_recorded"] == 6
 
 
 @pytest.mark.slow
 def test_collect_mirror_games_policy_sums_to_one():
-    """Every policy target from mirror games should sum to 1.0."""
-    from neural.trainer import collect_mirror_heuristic_games
+    """Every policy-valid example from mirror games should sum to 1.0.
 
+    Round-boundary examples (policy_mask=0.0) are excluded — they have zero
+    policy vectors and carry only a value target.
+    """
     buf = ReplayBuffer(capacity=10_000)
-    collect_mirror_heuristic_games(buf, num_pairs=2)
-    _, _, policies, _, _, _ = buf.sample(min(len(buf), 30))
-    sums = policies.sum(dim=1)
+    collect_heuristic_parallel(buf, num_pairs=2)
+    _, policies, _, _, _, masks = buf.sample(min(len(buf), 30))
+    valid_policies = policies[masks.squeeze(1) > 0.5]
+    assert len(valid_policies) > 0, "No policy-valid examples in sample"
+    sums = valid_policies.sum(dim=1)
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
 
@@ -623,10 +511,8 @@ def test_mirror_games_different_seeds_different_factories():
 @pytest.mark.slow
 def test_mirror_games_both_sides_represented():
     """Mirror pairs should produce wins from both p0 and p1 across enough pairs."""
-    from neural.trainer import collect_mirror_heuristic_games
-
     buf = ReplayBuffer(capacity=50_000)
-    stats = collect_mirror_heuristic_games(buf, num_pairs=10)
+    stats = collect_heuristic_parallel(buf, num_pairs=10)
     # With sides swapped each pair, both p0 and p1 should win some games
-    assert stats["wins_by_p0"] > 0
-    assert stats["wins_by_p1"] > 0
+    assert stats["wins_0"] > 0
+    assert stats["wins_1"] > 0

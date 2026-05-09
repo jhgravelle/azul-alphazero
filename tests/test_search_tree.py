@@ -4,9 +4,11 @@
 import pytest
 from engine.game import Game, CENTER
 from engine.constants import Tile, COLOR_TILES
-from neural.search_tree import SearchTree, AZNode
+from neural.search_tree import SearchTree, AZNode, _PUCT_C
 from neural.model import AzulNet
 import torch
+import math
+from unittest.mock import MagicMock
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -15,6 +17,14 @@ def fresh_game() -> Game:
     g = Game()
     g.setup_round()
     return g
+
+
+def _make_node(**kwargs) -> AZNode:
+    """Create a minimal AZNode with a mock game for unit testing."""
+    game = MagicMock()
+    game.is_game_over.return_value = False
+    game.is_round_over.return_value = False
+    return AZNode(game=game, **kwargs)
 
 
 def make_policy_value_fn(net: AzulNet | None = None):
@@ -105,7 +115,7 @@ def test_aznode_q_value_correct_when_visited():
 
 def test_aznode_puct_score_unvisited():
     node = AZNode(game=fresh_game(), prior=0.5)
-    assert node.puct_score(parent_visits=10) > 0.0
+    assert node.puct_score(parent_visits=10, unvisited_exploitation=0.0) > 0.0
 
 
 def test_aznode_not_terminal_mid_game():
@@ -478,8 +488,8 @@ def test_batched_advance_root_has_no_parent():
     assert tree._root.parent is None
 
 
-def test_policy_value_fn_uses_value_abs():
-    """make_policy_value_fn should return value_abs, not value_win."""
+def test_policy_value_fn_uses_value_diff():
+    """make_policy_value_fn should return value_diff as the scalar value."""
     from unittest.mock import patch
     import torch
     from neural.search_tree import make_policy_value_fn
@@ -494,12 +504,15 @@ def test_policy_value_fn_uses_value_abs():
 
     sentinel_diff = 0.333
 
-    def fake_forward(self, spatial, flat):
-        b = spatial.shape[0]
+    def fake_forward(self, encoding):
+        b = encoding.shape[0]
+        src = torch.zeros(b, 2)
+        tile = torch.zeros(b, 5)
+        dst = torch.zeros(b, 6)
         return (
-            torch.zeros(b, 1526),
+            (src, tile, dst),
             torch.full((b, 1), 0.111),  # value_win
-            torch.full((b, 1), 0.333),  # value_diff
+            torch.full((b, 1), sentinel_diff),  # value_diff
             torch.full((b, 1), 0.777),  # value_abs
         )
 
@@ -520,17 +533,14 @@ def test_puct_prefers_winning_child():
 
     game = Game()
     game.setup_round()
-
     parent = AZNode(game=game, visits=10)
-
     # opponent did well in this subtree — parent should avoid it
     opponent_won_child = AZNode(game=game, visits=5, total_value=4.0, prior=0.5)
     # opponent did poorly — parent should prefer it
     opponent_lost_child = AZNode(game=game, visits=5, total_value=-4.0, prior=0.5)
-
     assert opponent_lost_child.puct_score(
-        parent.visits
-    ) > opponent_won_child.puct_score(parent.visits), (
+        parent.visits, unvisited_exploitation=0.0
+    ) > opponent_won_child.puct_score(parent.visits, unvisited_exploitation=0.0), (
         "Parent should prefer subtree where opponent did poorly (negative "
         "total_value). If this fails, PUCT is not correctly negating child Q values."
     )
@@ -543,17 +553,13 @@ def test_puct_selects_move_leading_to_positive_value():
 
     game = Game()
     game.setup_round()
-
     parent = AZNode(game=game, visits=100)
-
     child_a = AZNode(game=game, visits=50, total_value=40.0, prior=0.5)  # opponent won
     child_b = AZNode(
         game=game, visits=50, total_value=-40.0, prior=0.5
     )  # opponent lost
-
-    score_a = child_a.puct_score(parent.visits)
-    score_b = child_b.puct_score(parent.visits)
-
+    score_a = child_a.puct_score(parent.visits, unvisited_exploitation=0.0)
+    score_b = child_b.puct_score(parent.visits, unvisited_exploitation=0.0)
     assert score_b > score_a, (
         f"Parent should prefer child_b (opponent lost, total_value=-40, "
         f"score={score_b:.3f}) over child_a (opponent won, total_value=+40, "
@@ -588,3 +594,51 @@ def test_terminal_value_positive_for_winning_player():
     game.current_player_index = 1
     val = tree._terminal_value(game)
     assert val < 0, f"Losing player should get negative terminal value, got {val}"
+
+
+class TestPuctScore:
+    def test_unvisited_node_uses_unvisited_exploitation(self):
+        """Unvisited node exploitation should be the passed parent value, not 0.0."""
+        node = _make_node(prior=0.30)
+        parent_visits = 4
+        unvisited_exploitation = 0.50
+
+        score = node.puct_score(parent_visits, unvisited_exploitation)
+        expected_exploration = _PUCT_C * 0.30 * math.sqrt(4) / 1
+        expected = 0.50 + expected_exploration
+        assert score == pytest.approx(expected)
+
+    def test_unvisited_node_zero_exploitation_gives_old_behavior(self):
+        """Passing 0.0 as unvisited_exploitation reproduces the old behavior."""
+        node = _make_node(prior=0.30)
+        score = node.puct_score(4, 0.0)
+        expected_exploration = _PUCT_C * 0.30 * math.sqrt(4) / 1
+        assert score == pytest.approx(0.0 + expected_exploration)
+
+    def test_visited_node_uses_negated_total_value(self):
+        """Visited node exploitation should be -(total_value / visits)."""
+        node = _make_node(prior=0.40, visits=2, total_value=-1.10)
+        score = node.puct_score(4, 0.50)
+        expected_exploitation = -(-1.10) / 2  # = 0.55
+        expected_exploration = _PUCT_C * 0.40 * math.sqrt(4) / 3
+        assert score == pytest.approx(expected_exploitation + expected_exploration)
+
+    def test_fully_explored_returns_negative_infinity(self):
+        """Fully explored nodes should never be selected."""
+        node = _make_node(prior=0.40)
+        node._explored = True
+        assert node.puct_score(4, 0.50) == float("-inf")
+
+    def test_negative_parent_value_suppresses_unvisited(self):
+        """A pessimistic parent value should reduce unvisited node scores."""
+        node_pessimistic = _make_node(prior=0.30)
+        node_neutral = _make_node(prior=0.30)
+        score_pessimistic = node_pessimistic.puct_score(4, -0.50)
+        score_neutral = node_neutral.puct_score(4, 0.0)
+        assert score_pessimistic < score_neutral
+
+    def test_higher_prior_wins_among_unvisited(self):
+        """Among unvisited nodes with same parent value, higher prior wins."""
+        node_high = _make_node(prior=0.40)
+        node_low = _make_node(prior=0.10)
+        assert node_high.puct_score(4, 0.50) > node_low.puct_score(4, 0.50)

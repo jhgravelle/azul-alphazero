@@ -6,8 +6,10 @@ from engine.constants import Tile, COLUMN_FOR_TILE_IN_ROW
 from neural.search_tree import AZNode
 
 
-def _place(wall, row: int, col: int, tile: Tile) -> None:
-    wall[row][col] = tile  # type: ignore[index]
+def _place_wall(wall: list[list[int]], row: int, tile: Tile) -> None:
+    """Place a tile on the wall by its color and row."""
+    col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+    wall[row][col] = 1
 
 
 def _make_game_for_bug_report() -> Game:
@@ -37,30 +39,28 @@ def _make_game_for_bug_report() -> Game:
     p1 = game.players[0]
     p1.score = 27
 
-    # Row 0 already scored — WHITE placed on wall, pattern line empty
-    p1.pattern_lines[0] = []
-    p1.pattern_lines[1] = [Tile.WHITE, Tile.WHITE]
-    p1.pattern_lines[2] = [Tile.YELLOW, Tile.YELLOW, Tile.YELLOW]
-    p1.pattern_lines[3] = [Tile.BLACK, Tile.BLACK]
-    p1.pattern_lines[4] = []
+    # Pattern lines — use place() for non-empty rows
+    p1.place(1, [Tile.WHITE, Tile.WHITE])
+    p1.place(2, [Tile.YELLOW, Tile.YELLOW, Tile.YELLOW])
+    p1.place(3, [Tile.BLACK, Tile.BLACK])
 
     T = Tile
-    # Row 0: all 5 tiles placed (already complete — no pending game end)
-    _place(p1.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.BLUE][0], T.BLUE)
-    _place(p1.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.YELLOW][0], T.YELLOW)
-    _place(p1.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.RED][0], T.RED)
-    _place(p1.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.BLACK][0], T.BLACK)
-    _place(p1.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.WHITE][0], T.WHITE)
+    # Row 0: all 5 tiles placed (already complete)
+    _place_wall(p1.wall, 0, T.BLUE)
+    _place_wall(p1.wall, 0, T.YELLOW)
+    _place_wall(p1.wall, 0, T.RED)
+    _place_wall(p1.wall, 0, T.BLACK)
+    _place_wall(p1.wall, 0, T.WHITE)
 
-    _place(p1.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.BLUE][1], T.BLUE)
-    _place(p1.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.YELLOW][1], T.YELLOW)
-    _place(p1.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.RED][1], T.RED)
-    _place(p1.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.BLACK][1], T.BLACK)
+    _place_wall(p1.wall, 1, T.BLUE)
+    _place_wall(p1.wall, 1, T.YELLOW)
+    _place_wall(p1.wall, 1, T.RED)
+    _place_wall(p1.wall, 1, T.BLACK)
 
-    _place(p1.wall, 2, COLUMN_FOR_TILE_IN_ROW[T.BLUE][2], T.BLUE)
-    _place(p1.wall, 3, COLUMN_FOR_TILE_IN_ROW[T.WHITE][3], T.WHITE)
-    _place(p1.wall, 4, COLUMN_FOR_TILE_IN_ROW[T.RED][4], T.RED)
-    _place(p1.wall, 4, COLUMN_FOR_TILE_IN_ROW[T.BLACK][4], T.BLACK)
+    _place_wall(p1.wall, 2, T.BLUE)
+    _place_wall(p1.wall, 3, T.WHITE)
+    _place_wall(p1.wall, 4, T.RED)
+    _place_wall(p1.wall, 4, T.BLACK)
 
     p1.floor_line.extend([Tile.FIRST_PLAYER, Tile.YELLOW, Tile.YELLOW])
     p1._update_pending()
@@ -69,31 +69,30 @@ def _make_game_for_bug_report() -> Game:
 
     p2 = game.players[1]
     p2.score = 23
-    p2.pattern_lines[0] = []
-    p2.pattern_lines[1] = []  # already scored
-    p2.pattern_lines[2] = []
-    p2.pattern_lines[3] = [Tile.BLUE, Tile.BLUE]
-    p2.pattern_lines[4] = []
 
-    _place(p2.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.BLUE][0], T.BLUE)
-    _place(p2.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.YELLOW][0], T.YELLOW)
-    _place(p2.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.BLACK][0], T.BLACK)
-    _place(p2.wall, 0, COLUMN_FOR_TILE_IN_ROW[T.WHITE][0], T.WHITE)
+    # Pattern lines — only row 3 has tiles
+    p2.place(3, [Tile.BLUE, Tile.BLUE])
 
-    _place(p2.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.WHITE][1], T.WHITE)
-    _place(p2.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.BLUE][1], T.BLUE)
-    _place(p2.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.YELLOW][1], T.YELLOW)
-    _place(p2.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.RED][1], T.RED)
-    _place(p2.wall, 1, COLUMN_FOR_TILE_IN_ROW[T.BLACK][1], T.BLACK)
+    _place_wall(p2.wall, 0, T.BLUE)
+    _place_wall(p2.wall, 0, T.YELLOW)
+    _place_wall(p2.wall, 0, T.BLACK)
+    _place_wall(p2.wall, 0, T.WHITE)
 
-    _place(p2.wall, 2, COLUMN_FOR_TILE_IN_ROW[T.BLACK][2], T.BLACK)
-    _place(p2.wall, 2, COLUMN_FOR_TILE_IN_ROW[T.WHITE][2], T.WHITE)
-    _place(p2.wall, 2, COLUMN_FOR_TILE_IN_ROW[T.RED][2], T.RED)
+    _place_wall(p2.wall, 1, T.WHITE)
+    _place_wall(p2.wall, 1, T.BLUE)
+    _place_wall(p2.wall, 1, T.YELLOW)
+    _place_wall(p2.wall, 1, T.RED)
+    _place_wall(p2.wall, 1, T.BLACK)
 
-    _place(p2.wall, 3, COLUMN_FOR_TILE_IN_ROW[T.YELLOW][3], T.YELLOW)
+    _place_wall(p2.wall, 2, T.BLACK)
+    _place_wall(p2.wall, 2, T.WHITE)
+    _place_wall(p2.wall, 2, T.RED)
 
-    _place(p2.wall, 4, COLUMN_FOR_TILE_IN_ROW[T.WHITE][4], T.WHITE)
-    _place(p2.wall, 4, COLUMN_FOR_TILE_IN_ROW[T.BLUE][4], T.BLUE)
+    _place_wall(p2.wall, 3, T.YELLOW)
+
+    _place_wall(p2.wall, 4, T.WHITE)
+    _place_wall(p2.wall, 4, T.BLUE)
+
     p2.floor_line.clear()
     p2._update_pending()
     p2._update_penalty()

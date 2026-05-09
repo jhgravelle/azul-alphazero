@@ -15,12 +15,11 @@ from engine.constants import (
     CELLS_BY_COLUMN,
     CELLS_BY_ROW,
     CELLS_BY_TILE,
-    COLOR_TILES,
     COLUMN_FOR_TILE_IN_ROW,
     PLAYERS,
-    Tile,
+    WALL_PATTERN,
 )
-from engine.game import Game, Move
+from engine.game import Game, Move, Tile
 from engine.player import Player
 
 # ── Data classes ───────────────────────────────────────────────────────────
@@ -55,20 +54,24 @@ def _pending_placement_details(player: Player) -> list[dict[str, Any]]:
     Simulates end-of-round placement in row order on a temporary wall copy
     so adjacency scores are correct when pending placements are adjacent.
     """
-    wall: list[list[Tile | None]] = [row[:] for row in player.wall]
+    from engine.constants import CAPACITY
+
+    wall: list[list[int]] = [row[:] for row in player.wall]
     details = []
-    for row, line in enumerate(player.pattern_lines):
-        if len(line) < row + 1:
+    for row in range(5):
+        tile = player._line_tile(row)
+        if tile is None:
             continue
-        tile = line[0]
         col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-        wall[row][col] = tile
+        if player.pattern_grid[row][col] < CAPACITY[row]:
+            continue
+        wall[row][col] = 1
         points = _score_placement(wall, row, col)
         details.append({"row": row, "column": col, "placement_points": points})
     return details
 
 
-def _score_placement(wall: list[list[Tile | None]], row: int, col: int) -> int:
+def _score_placement(wall: list[list[int]], row: int, col: int) -> int:
     """Score a single tile at (row, col) on the wall.
 
     Precondition: wall[row][col] must already be set before calling.
@@ -76,16 +79,16 @@ def _score_placement(wall: list[list[Tile | None]], row: int, col: int) -> int:
     from engine.constants import BOARD_SIZE
 
     h_start, h_end = col, col
-    while h_start - 1 >= 0 and wall[row][h_start - 1] is not None:
+    while h_start - 1 >= 0 and wall[row][h_start - 1]:
         h_start -= 1
-    while h_end + 1 < BOARD_SIZE and wall[row][h_end + 1] is not None:
+    while h_end + 1 < BOARD_SIZE and wall[row][h_end + 1]:
         h_end += 1
     h = h_end - h_start + 1
 
     v_start, v_end = row, row
-    while v_start - 1 >= 0 and wall[v_start - 1][col] is not None:
+    while v_start - 1 >= 0 and wall[v_start - 1][col]:
         v_start -= 1
-    while v_end + 1 < BOARD_SIZE and wall[v_end + 1][col] is not None:
+    while v_end + 1 < BOARD_SIZE and wall[v_end + 1][col]:
         v_end += 1
     v = v_end - v_start + 1
 
@@ -93,47 +96,40 @@ def _score_placement(wall: list[list[Tile | None]], row: int, col: int) -> int:
 
 
 def _pending_bonus_details(
-    wall: list[list[Tile | None]],
+    wall: list[list[int]],
 ) -> list[dict[str, Any]]:
     """Return bonus details for all end-of-game bonuses guaranteed by the wall."""
     bonuses = []
     for row_idx, cells in enumerate(CELLS_BY_ROW):
-        if all(wall[r][c] is not None for r, c in cells):
+        if all(wall[r][c] for r, c in cells):
             bonuses.append(
                 {"bonus_type": "row", "index": row_idx, "bonus_points": BONUS_ROW}
             )
     for col_idx, cells in enumerate(CELLS_BY_COLUMN):
-        if all(wall[r][c] is not None for r, c in cells):
+        if all(wall[r][c] for r, c in cells):
             bonuses.append(
-                {
-                    "bonus_type": "column",
-                    "index": col_idx,
-                    "bonus_points": BONUS_COLUMN,
-                }
+                {"bonus_type": "column", "index": col_idx, "bonus_points": BONUS_COLUMN}
             )
-    for tile_idx, (tile, cells) in enumerate(zip(COLOR_TILES, CELLS_BY_TILE)):
-        if all(wall[r][c] is not None for r, c in cells):
+    for tile_idx, cells in enumerate(CELLS_BY_TILE):
+        if all(wall[r][c] for r, c in cells):
             bonuses.append(
-                {
-                    "bonus_type": "tile",
-                    "index": tile_idx,
-                    "bonus_points": BONUS_TILE,
-                }
+                {"bonus_type": "tile", "index": tile_idx, "bonus_points": BONUS_TILE}
             )
     return bonuses
 
 
-def _build_post_placement_wall(
-    player: Player,
-) -> list[list[Tile | None]]:
+def _build_post_placement_wall(player: Player) -> list[list[int]]:
     """Return a copy of the wall with all pending full pattern lines placed."""
-    wall: list[list[Tile | None]] = [row[:] for row in player.wall]
-    for row, line in enumerate(player.pattern_lines):
-        if len(line) < row + 1:
+    from engine.constants import CAPACITY
+
+    wall: list[list[int]] = [row[:] for row in player.wall]
+    for row in range(5):
+        tile = player._line_tile(row)
+        if tile is None:
             continue
-        tile = line[0]
         col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-        wall[row][col] = tile
+        if player.pattern_grid[row][col] >= CAPACITY[row]:
+            wall[row][col] = 1
     return wall
 
 
@@ -142,15 +138,27 @@ def _build_post_placement_wall(
 
 def _player_to_dict(player: Player) -> dict[str, Any]:
     """Serialize a Player to a JSON-compatible dict."""
+
+    pattern_lines = []
+    for row in range(5):
+        tile = player._line_tile(row)
+        if tile is None:
+            pattern_lines.append([])
+        else:
+            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+            count = player.pattern_grid[row][col]
+            pattern_lines.append([tile.name] * count)
+    wall = [
+        [
+            WALL_PATTERN[row][col].name if player.wall[row][col] else None
+            for col in range(5)
+        ]
+        for row in range(5)
+    ]
     return {
         "score": player.score,
-        "pattern_lines": [
-            [tile.name for tile in line] for line in player.pattern_lines
-        ],
-        "wall": [
-            [cell.name if cell is not None else None for cell in row]
-            for row in player.wall
-        ],
+        "pattern_lines": pattern_lines,
+        "wall": wall,
         "floor_line": [tile.name for tile in player.floor_line],
     }
 

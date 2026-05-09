@@ -38,7 +38,7 @@ def test_aznode_importable_from_alphazero():
 
 def test_aznode_puct_score_positive_with_prior():
     node = AZNode(game=fresh_game(), prior=0.5)
-    assert node.puct_score(parent_visits=10) > 0.0
+    assert node.puct_score(parent_visits=10, unvisited_exploitation=0.0) > 0.0
 
 
 # ── Construction ───────────────────────────────────────────────────────────

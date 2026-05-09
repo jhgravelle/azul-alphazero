@@ -7,30 +7,32 @@ import logging
 import random
 import torch
 import torch.nn.functional as F
-from typing import Callable
+from dataclasses import dataclass
 
-from agents.alphazero import AlphaZeroAgent
 from agents.base import Agent
-from engine.game import Game, FLOOR
+from engine.game import Game
 from neural.model import AzulNet
 from neural.replay import ReplayBuffer
-from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
+from neural.encoder import (
+    encode_state,
+    encode_move,
+    MOVE_SPACE_SIZE,
+    flat_policy_to_3head_targets,
+)
 
 logger = logging.getLogger(__name__)
 
-_SCORE_DIFF_DIVISOR = 50.0  # matches encoder SCORE_DELTA_DIVISOR
-_TOTAL_SCORE_DIVISOR = 80.0
+_SCORE_DIFF_DIVISOR = 50.0
+_TOTAL_SCORE_DIVISOR = 100.0
 _AUX_WEIGHT_WIN = 0.3
 _AUX_WEIGHT_DIFF = 1.0
-_AUX_WEIGHT_ABS = 0.1  # reduced from 0.3; candidate for removal
+
+
+# ── Value target functions ────────────────────────────────────────────────────
 
 
 def win_loss_value(scores: list[int], player_index: int) -> float:
-    """+1 if this player won, -1 if lost, 0 if tied.
-
-    scores should be earned_score_unclamped values so floor-penalty games
-    are ranked correctly even when board.score is clamped at 0.
-    """
+    """+1 if this player won, -1 if lost, 0 if tied."""
     own = scores[player_index]
     opp = scores[1 - player_index]
     if own > opp:
@@ -41,25 +43,13 @@ def win_loss_value(scores: list[int], player_index: int) -> float:
 
 
 def score_differential_value(scores: list[int], player_index: int) -> float:
-    """Normalized score-differential value target for a player.
-
-    Uses earned_score_unclamped values so that floor penalties below zero
-    carry gradient signal even when board.score is 0.
-    """
+    """Normalized score-differential value target for a player."""
     diff = (scores[player_index] - scores[1 - player_index]) / _SCORE_DIFF_DIVISOR
     return max(-1.0, min(1.0, diff))
 
 
 def total_score_value(scores: list[int], player_index: int) -> float:
-    """Normalized absolute-score value target for a player.
-
-    Only this player's score matters — opponent's score is ignored.
-    Divisor chosen so that competitive-skilled-play scores (~50) land
-    at the +1 boundary; typical catastrophic play (~-30) maps to -0.6.
-
-    Uses earned_score_unclamped values so floor penalties below zero
-    produce appropriately negative targets.
-    """
+    """Normalized absolute-score value target for a player."""
     value = scores[player_index] / _TOTAL_SCORE_DIVISOR
     return max(-1.0, min(1.0, value))
 
@@ -69,56 +59,55 @@ def total_score_value(scores: list[int], player_index: int) -> float:
 
 def compute_loss(
     net: AzulNet,
-    spatials: torch.Tensor,  # (B, 14, 5, 6)
-    flats: torch.Tensor,  # (B, FLAT_SIZE)
-    policies: torch.Tensor,  # (B, MOVE_SPACE_SIZE)
-    values_win: torch.Tensor,  # (B, 1)
-    values_diff: torch.Tensor,  # (B, 1)
-    values_abs: torch.Tensor,  # (B, 1)
+    encodings: torch.Tensor,
+    policies: torch.Tensor,
+    values_win: torch.Tensor,
+    values_diff: torch.Tensor,
+    values_abs: torch.Tensor,
+    policy_masks: torch.Tensor,
     value_only: bool = False,
     diff_only: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Combined policy + multi-head value loss.
 
     Args:
-        value_only: Zero out policy loss — trunk learns from value signal only.
-        diff_only:  Zero out value_win and value_abs — trunk learns from score
-                    differential only. Use during Phase 1 to give the value head
-                    a dense continuous signal before win/loss targets are meaningful.
-                    Implies value_only=True (policy is also zeroed).
+        policy_masks: (batch, 1) float — 1.0 = train policy, 0.0 = value-only
+                      (round-boundary examples have no policy target).
+        value_only: Zero out policy loss.
+        diff_only:  Zero out value_win and value_abs; also zeros policy loss.
 
-    Returns a dict with:
-        total:      combined loss
-        policy:     cross-entropy on MCTS visit distribution (0 if value_only)
-        value:      combined value loss
-        value_win:  MSE on win/loss target (0 if diff_only)
-        value_diff: MSE on score-differential target (always active)
-        value_abs:  MSE on absolute-score target (0 if diff_only)
+    Returns a dict with keys: total, policy, value, value_win, value_diff, value_abs.
+    value_abs is diagnostic only — never included in total.
     """
-    logits, pred_win, pred_diff, pred_abs = net(spatials, flats)
-    log_probs = F.log_softmax(logits, dim=1)
+    (src_logits, tile_logits, dst_logits), pred_win, pred_diff, pred_abs = net(
+        encodings
+    )
 
     if value_only or diff_only:
         policy_loss = torch.tensor(0.0, requires_grad=False)
     else:
-        policy_loss = -(policies * log_probs).sum(dim=1).mean()
+        src_tgt, tile_tgt, dst_tgt = flat_policy_to_3head_targets(policies)
+        src_loss = -(src_tgt * F.log_softmax(src_logits, dim=1)).sum(
+            dim=1, keepdim=True
+        )
+        tile_loss = -(tile_tgt * F.log_softmax(tile_logits, dim=1)).sum(
+            dim=1, keepdim=True
+        )
+        dst_loss = -(dst_tgt * F.log_softmax(dst_logits, dim=1)).sum(
+            dim=1, keepdim=True
+        )
+        n_valid = policy_masks.sum().clamp(min=1.0)
+        policy_loss = ((src_loss + tile_loss + dst_loss) * policy_masks).sum() / n_valid
 
     loss_diff = F.mse_loss(pred_diff, values_diff)
+    loss_abs = F.mse_loss(pred_abs, values_abs)
 
     if diff_only:
-        # Only score differential — gives trunk a dense continuous training signal
-        # without the noise of win/loss targets on early-training data.
         loss_win = torch.tensor(0.0, requires_grad=False)
-        loss_abs = torch.tensor(0.0, requires_grad=False)
         combined_value = loss_diff
     else:
         loss_win = F.mse_loss(pred_win, values_win)
-        loss_abs = F.mse_loss(pred_abs, values_abs)
-        combined_value = (
-            _AUX_WEIGHT_WIN * loss_win
-            + _AUX_WEIGHT_DIFF * loss_diff
-            + _AUX_WEIGHT_ABS * loss_abs
-        )
+        combined_value = _AUX_WEIGHT_WIN * loss_win + _AUX_WEIGHT_DIFF * loss_diff
 
     return {
         "total": policy_loss + combined_value,
@@ -158,683 +147,625 @@ class Trainer:
         """Sample a batch, backpropagate, and return a loss dict."""
         if len(buf) < self.batch_size:
             return {
-                "total": 0.0,
-                "policy": 0.0,
-                "value": 0.0,
-                "value_win": 0.0,
-                "value_diff": 0.0,
-                "value_abs": 0.0,
+                k: 0.0
+                for k in (
+                    "total",
+                    "policy",
+                    "value",
+                    "value_win",
+                    "value_diff",
+                    "value_abs",
+                )
             }
-        spatials, flats, policies, vw, vd, va = buf.sample(self.batch_size)
-        spatials = spatials.to(self.device)
-        flats = flats.to(self.device)
+
+        encodings, policies, vw, vd, va, masks = buf.sample(self.batch_size)
+        encodings = encodings.to(self.device)
         policies = policies.to(self.device)
         vw = vw.to(self.device)
         vd = vd.to(self.device)
         va = va.to(self.device)
+        masks = masks.to(self.device)
+
         self.net.train()
         self.optimizer.zero_grad()
         loss_dict = compute_loss(
             self.net,
-            spatials,
-            flats,
+            encodings,
             policies,
             vw,
             vd,
             va,
+            masks,
             value_only=value_only,
             diff_only=diff_only,
         )
         loss_dict["total"].backward()
         self.optimizer.step()
+
         return {
             k: float(v.item() if hasattr(v, "item") else v)
             for k, v in loss_dict.items()
         }
 
 
-# ── Self-play data collection ─────────────────────────────────────────────────
+# ── Agent specs ───────────────────────────────────────────────────────────────
+
+
+@dataclass
+class AgentSpec:
+    """Serializable description of one player in a game.
+
+    Passed to worker processes, which reconstruct the agent from this spec.
+    All fields must be picklable.
+
+    For AlphaZero agents:
+        type="alphazero", state_dict=net.state_dict(), simulations=N
+
+    For heuristic agents:
+        type="alphabeta", depths=(2,3,7), thresholds=(20,10)
+        type="greedy" | "cautious" | "efficient" | "random"
+    """
+
+    type: str
+    state_dict: dict | None = None
+    simulations: int = 100
+    depth: int = 2
+    threshold: int = 6
+    temperature: float = 1.0
+
+
+def _build_agent(spec: AgentSpec) -> Agent:
+    """Construct an agent from a spec. Runs inside worker processes."""
+    from agents.alphabeta import AlphaBetaAgent
+    from agents.alphazero import AlphaZeroAgent
+    from agents.cautious import CautiousAgent
+    from agents.efficient import EfficientAgent
+    from agents.greedy import GreedyAgent
+    from agents.random import RandomAgent
+
+    if spec.type == "alphazero":
+        assert spec.state_dict is not None, "AlphaZero AgentSpec requires a state_dict"
+        net = AzulNet()
+        net.load_state_dict(spec.state_dict)
+        net.eval()
+        return AlphaZeroAgent(
+            net, simulations=spec.simulations, temperature=spec.temperature
+        )
+    if spec.type == "alphabeta":
+        return AlphaBetaAgent(depth=spec.depth, threshold=spec.threshold)
+    if spec.type == "greedy":
+        return GreedyAgent()
+    if spec.type == "cautious":
+        return CautiousAgent()
+    if spec.type == "efficient":
+        return EfficientAgent()
+    if spec.type == "random":
+        return RandomAgent()
+    raise ValueError(f"Unknown agent type: {spec.type!r}")
+
+
+# ── Display helpers ───────────────────────────────────────────────────────────
+
+
+def _spec_name(spec: AgentSpec) -> str:
+    if spec.type == "alphazero":
+        return f"AlphaZero(sims={spec.simulations})"
+    if spec.type == "alphabeta":
+        return f"AlphaBeta(d={spec.depth},t={spec.threshold})"
+    return spec.type.capitalize()
+
+
+def _result_char(score_mine: int, score_theirs: int) -> str:
+    """Return +, -, or * for a single game result from one player's perspective."""
+    if score_mine > score_theirs:
+        return "+"
+    if score_mine < score_theirs:
+        return "-"
+    return "*"
+
+
+def _format_pair_log(
+    spec_0: AgentSpec,
+    spec_1: AgentSpec,
+    scores_a: list[int],
+    scores_b: list[int],
+    pair_num: int,
+    total_pairs: int,
+) -> str:
+    """Format a mirror pair result line.
+
+    Game A: spec_0 is p0, spec_1 is p1
+    Game B: spec_1 is p0, spec_0 is p1
+
+    Example:
+        pair 3/100  RandomAgent -+  [18,32][21,15]  +- AlphaBeta(1, 2, 3)
+    """
+    r0_a = _result_char(scores_a[0], scores_a[1])
+    r0_b = _result_char(scores_b[1], scores_b[0])
+    r1_a = _result_char(scores_a[1], scores_a[0])
+    r1_b = _result_char(scores_b[0], scores_b[1])
+    return (
+        f"pair {pair_num}/{total_pairs}  "
+        f"{_spec_name(spec_0)} {r0_a}{r0_b}  "
+        f"[{scores_a[0]},{scores_a[1]}][{scores_b[0]},{scores_b[1]}]  "
+        f"{r1_a}{r1_b} {_spec_name(spec_1)}"
+    )
+
+
+# ── Game record types ─────────────────────────────────────────────────────────
+
+# Each move: (player_idx, encoding_list, policy_list, vw, vd, va, policy_valid)
+# policy_valid=False for round-boundary value-only examples (no policy target)
+_MoveRecord = tuple[int, list, list, float, float, float, bool]
+_GameRecord = list[_MoveRecord]
 
 
 def _compute_game_scores(game: Game) -> list[int]:
-    """Return earned score for each player.
+    """Return earned score for each player (unclamped, includes pending and penalty)."""
+    return [player.score for player in game.players]
 
-    Uses player.earned (score + pending + penalty + bonus) so floor
-    penalties below zero carry meaningful signal even when score is clamped.
-    """
-    return [player.earned for player in game.players]
 
-
-def collect_self_play(
-    buf: ReplayBuffer,
-    net: AzulNet,
-    num_games: int = 50,
-    simulations: int = 100,
-    temperature: float = 1.0,
-    opponent: Agent | None = None,
-    device: torch.device = torch.device("cpu"),
-) -> list[float]:
-    """Play num_games games and push training examples into buf."""
-    from engine.game import Game
-
-    cpu = torch.device("cpu")
-    if next(net.parameters()).device.type != "cpu":
-        net_cpu = AzulNet()
-        net_cpu.load_state_dict(net.state_dict())
-    else:
-        net_cpu = net
-
-    az_agent = AlphaZeroAgent(
-        net_cpu,
-        simulations=simulations,
-        temperature=temperature,
-        device=cpu,
-    )
-    az_scores: list[float] = []
-
-    for game_num in range(num_games):
-        game = Game()
-        game.setup_round()
-        az_agent.reset_tree(game)
-
-        if opponent is not None:
-            az_player = game_num % 2
-            agents: list[Agent] = (
-                [az_agent, opponent] if az_player == 0 else [opponent, az_agent]
-            )
-        else:
-            az_player = None
-            agents = [az_agent, az_agent]
-
-        history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-
-        while True:
-            if not game.legal_moves():
-                break
-            current_player = game.current_player_index
-            is_az_turn = az_player is None or current_player == az_player
-
-            spatial, flat = encode_state(game)
-
-            if is_az_turn:
-                move, policy_pairs = az_agent.get_policy_targets(game)
-                if opponent is not None and move.destination == FLOOR:
-                    legal = game.legal_moves()
-                    non_floor = [m for m in legal if m.destination != FLOOR]
-                    if non_floor:
-                        policy_list = list(policy_pairs)
-                        move = max(
-                            non_floor,
-                            key=lambda m: next(
-                                (prob for pm, prob in policy_list if pm == m), 0.0
-                            ),
-                        )
-                        non_floor_pairs = [
-                            (m, p) for m, p in policy_pairs if m.destination != FLOOR
-                        ]
-                        total = sum(p for _, p in non_floor_pairs)
-                        if total > 0:
-                            policy_pairs = [(m, p / total) for m, p in non_floor_pairs]
-                policy_vec = torch.zeros(MOVE_SPACE_SIZE)
-                for m, prob in policy_pairs:
-                    policy_vec[encode_move(m, game)] = prob
-            else:
-                move = agents[current_player].choose_move(game)
-                policy_pairs = agents[current_player].policy_distribution(game)
-                policy_vec = torch.zeros(MOVE_SPACE_SIZE)
-                for m, prob in policy_pairs:
-                    policy_vec[encode_move(m, game)] = prob
-
-            history.append((current_player, spatial, flat, policy_vec))
-
-            prev_round = game.round
-            game.make_move(move)
-            game.advance()
-
-            if game.is_game_over():
-                break
-
-            if game.round != prev_round:
-                az_agent.reset_tree(game)
-            else:
-                az_agent.advance(move)
-
-        scores = _compute_game_scores(game)
-
-        for player_idx, spatial, flat, policy_vec in history:
-            vw = win_loss_value(scores, player_idx)
-            vd = score_differential_value(scores, player_idx)
-            va = total_score_value(scores, player_idx)
-            buf.push(spatial, flat, policy_vec, vw, vd, va)
-
-        az_score = scores[az_player] if az_player is not None else max(scores)
-        az_scores.append(az_score)
-
-        opponent_name = (
-            type(opponent).__name__ if opponent is not None else "AlphaZeroAgent"
-        )
-        az_side = f"p{az_player}" if az_player is not None else "both"
-        logger.debug(
-            f"{'warmup' if opponent is not None else 'self-play'} game "
-            f"{game_num + 1}/{num_games} -- AZ({az_side}) vs {opponent_name} -- "
-            f"scores {scores} -- az_score={az_score} -- buffer size {len(buf)}"
-        )
-
-    return az_scores
-
-
-# ── Heuristic data collection ─────────────────────────────────────────────────
-
-# Type alias for a matchup: two agent factories and a relative weight.
-# The weight controls how often this matchup is sampled relative to others.
-# Example:
-#   MATCHUPS_DEFAULT = [
-#       (make_easy, make_easy,   0.3),
-#       (make_easy, make_medium, 0.4),
-#       (make_medium, make_medium, 0.3),
-#   ]
-
-MatchupSpec = tuple[Callable, Callable, float]
-
-
-def _default_matchups() -> list[MatchupSpec]:
-    """Default weighted matchup list for heuristic data collection.
-
-    All matchups pair a variety of skill levels against AlphaBeta easy,
-    so every game has one reference player without the speed cost of medium.
-    AlphaBeta easy runs ~8x faster than medium (~4ms vs ~35ms per move),
-    allowing significantly more games per iteration.
-
-    Random vs easy:    10% -- extreme loss signal, fast games
-    Efficient vs easy: 10% -- weak vs strong, passive play exposed
-    Cautious vs easy:  15% -- moderate loss signal, floor avoidance
-    Greedy vs easy:    20% -- near-peer, clean policy targets
-    Easy vs easy:      45% -- symmetric, consistent quality
-    """
-    from agents.alphabeta import AlphaBetaAgent
-    from agents.random import RandomAgent
-    from agents.efficient import EfficientAgent
-    from agents.cautious import CautiousAgent
-    from agents.greedy import GreedyAgent
-
-    def make_random() -> RandomAgent:
-        return RandomAgent()
-
-    def make_efficient() -> EfficientAgent:
-        return EfficientAgent()
-
-    def make_cautious() -> CautiousAgent:
-        return CautiousAgent()
-
-    def make_greedy() -> GreedyAgent:
-        return GreedyAgent()
-
-    def make_easy() -> AlphaBetaAgent:
-        return AlphaBetaAgent(depths=(1, 1, 3), thresholds=(20, 10))
-
-    return [
-        (make_random, make_easy, 0.10),
-        (make_efficient, make_easy, 0.20),
-        (make_cautious, make_easy, 0.30),
-        (make_greedy, make_easy, 0.40),
-        (make_easy, make_easy, 0.00),
-    ]
-
-
-def _sample_matchup(
-    matchups: list[MatchupSpec],
-    rng: "random.Random",
-) -> tuple[Agent, Agent]:
-    """Sample one matchup according to weights, return two fresh agent instances."""
-    weights = [w for _, _, w in matchups]
-    total = sum(weights)
-    threshold = rng.random() * total
-    cumulative = 0.0
-    for factory_a, factory_b, weight in matchups:
-        cumulative += weight
-        if threshold <= cumulative:
-            return factory_a(), factory_b()
-    # Fallback to last matchup (handles floating point edge cases)
-    factory_a, factory_b, _ = matchups[-1]
-    return factory_a(), factory_b()
-
-
-def _clone_agent(agent: Agent) -> Agent:
-    """Return a fresh instance of the same agent type with identical config.
-
-    Needed before mirror games — agents may carry internal state (e.g.
-    AlphaBeta score cache) from a previous game. Always construct fresh.
-    """
-    from agents.alphabeta import AlphaBetaAgent
-    from agents.random import RandomAgent
-    from agents.efficient import EfficientAgent
-    from agents.cautious import CautiousAgent
-    from agents.greedy import GreedyAgent
-
-    if isinstance(agent, AlphaBetaAgent):
-        return AlphaBetaAgent(depths=agent.depths, thresholds=agent.thresholds)
-    if isinstance(agent, RandomAgent):
-        return RandomAgent()
-    if isinstance(agent, EfficientAgent):
-        return EfficientAgent()
-    if isinstance(agent, CautiousAgent):
-        return CautiousAgent()
-    if isinstance(agent, GreedyAgent):
-        return GreedyAgent()
-    raise ValueError(f"Cannot clone agent type: {type(agent)}")
-
-
-def collect_mirror_heuristic_games(
-    buf: ReplayBuffer,
-    num_pairs: int = 100,
-    matchups: list[MatchupSpec] | None = None,
-) -> dict[str, int]:
-    """Play pairs of mirror games with identical factory sequences.
-
-    For each pair, two agents play both games with sides swapped. Both
-    games use Game(seed=N) so the bag shuffle — and therefore all factory
-    draws across all rounds — is identical. Since a normal 2-player game
-    draws exactly 100 tiles across 5 rounds and the bag holds 100 tiles,
-    no refill occurs and the seed fully determines all factories.
-
-    If the stronger agent wins from both sides, the factory configuration
-    has zero net correlation with outcome in this pair. Over many pairs
-    this forces the value head to ignore factory fingerprints.
-
-    Policy targets come from each agent's policy_distribution.
-    Both players' perspectives are recorded for every game.
-    """
-    if matchups is None:
-        matchups = _default_matchups()
-
-    rng = random.Random()
-    wins_by_p0 = 0
-    wins_by_p1 = 0
-    ties = 0
-
-    for pair_num in range(num_pairs):
-        agent_a, agent_b = _sample_matchup(matchups, rng)
-        game_seed = rng.randint(0, 2**31)
-
-        # Game 1: agent_a as p0, agent_b as p1
-        game_1 = Game(seed=game_seed)
-        game_1.setup_round()
-        history_1 = _play_heuristic_game(game_1, [agent_a, agent_b])
-        scores_1 = _compute_game_scores(game_1)
-
-        # Game 2: sides swapped, identical factory sequence via same seed.
-        # Clone agents to discard any internal state from game 1.
-        game_2 = Game(seed=game_seed)
-        game_2.setup_round()
-        history_2 = _play_heuristic_game(
-            game_2, [_clone_agent(agent_b), _clone_agent(agent_a)]
-        )
-        scores_2 = _compute_game_scores(game_2)
-
-        for scores, history in [(scores_1, history_1), (scores_2, history_2)]:
-            if scores[0] > scores[1]:
-                wins_by_p0 += 1
-            elif scores[1] > scores[0]:
-                wins_by_p1 += 1
-            else:
-                ties += 1
-            for player_idx, spatial, flat, policy_vec in history:
-                vw = win_loss_value(scores, player_idx)
-                vd = score_differential_value(scores, player_idx)
-                va = total_score_value(scores, player_idx)
-                buf.push(spatial, flat, policy_vec, vw, vd, va)
-
-        logger.debug(
-            f"mirror pair {pair_num + 1}/{num_pairs} -- seed {game_seed} -- "
-            f"game1 scores {scores_1} -- game2 scores {scores_2}"
-        )
-
-    games_recorded = num_pairs * 2
-    logger.info(
-        f"mirror games complete -- "
-        f"p0: {wins_by_p0}W / p1: {wins_by_p1}W / {ties}T -- "
-        f"{games_recorded} games recorded"
-    )
-    return {
-        "wins_by_p0": wins_by_p0,
-        "wins_by_p1": wins_by_p1,
-        "ties": ties,
-        "games_recorded": games_recorded,
-    }
-
-
-def collect_heuristic_games(
-    buf: ReplayBuffer,
-    num_games: int = 200,
-    matchups: list[MatchupSpec] | None = None,
-) -> dict[str, int]:
-    """Fill the buffer with AlphaBeta vs AlphaBeta games.
-
-    Matchups are sampled according to the weighted matchup list. Each game
-    alternates which agent plays p0/p1 for symmetric training data. Both
-    agents' perspectives are recorded every game.
-
-    Policy targets come from each agent's policy_distribution — for
-    AlphaBeta this is a softmax over root move scores, not one-hot.
-
-    Args:
-        buf:      Replay buffer to push examples into.
-        num_games: Number of games to play.
-        matchups:  Weighted matchup specs. Defaults to easy/medium variety.
-    """
-    import random as random_module
-
-    if matchups is None:
-        matchups = _default_matchups()
-
-    rng = random_module.Random()
-    wins_by_p0 = 0
-    wins_by_p1 = 0
-    ties = 0
-    all_scores: list[int] = []
-
-    for game_num in range(num_games):
-        game = Game()
-        game.setup_round()
-
-        agent_a, agent_b = _sample_matchup(matchups, rng)
-
-        # Alternate who plays p0 for symmetric data.
-        if game_num % 2 == 0:
-            agents: list[Agent] = [agent_a, agent_b]
-        else:
-            agents = [agent_b, agent_a]
-
-        history = _play_heuristic_game(game, agents)
-
-        scores = _compute_game_scores(game)
-        all_scores.extend(scores)
-
-        if scores[0] > scores[1]:
-            wins_by_p0 += 1
-        elif scores[1] > scores[0]:
-            wins_by_p1 += 1
-        else:
-            ties += 1
-
-        for player_idx, spatial, flat, policy_vec in history:
-            vw = win_loss_value(scores, player_idx)
-            vd = score_differential_value(scores, player_idx)
-            va = total_score_value(scores, player_idx)
-            buf.push(spatial, flat, policy_vec, vw, vd, va)
-
-        logger.debug(
-            f"heuristic game {game_num + 1}/{num_games} -- "
-            f"{type(agents[0]).__name__} vs {type(agents[1]).__name__} -- "
-            f"scores {scores} -- buffer size {len(buf)}"
-        )
-
-    avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
-    logger.info(
-        f"heuristic games complete -- "
-        f"p0: {wins_by_p0}W / p1: {wins_by_p1}W / {ties}T -- "
-        f"avg score: {avg_score:.1f} -- "
-        f"{num_games} games recorded"
-    )
-
-    return {
-        "wins_by_p0": wins_by_p0,
-        "wins_by_p1": wins_by_p1,
-        "ties": ties,
-        "games_recorded": num_games,
-    }
-
-
-def _play_heuristic_game(
-    game: "Game",
+def _play_game(
+    game: Game,
     agents: list[Agent],
-) -> list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]]:
-    """Play a single heuristic game to completion, collecting history.
+) -> tuple[list[tuple[int, torch.Tensor, torch.Tensor, bool]], list[int]]:
+    """Play a single game to completion.
 
-    Each history entry is (player_index, spatial, flat, policy_vec) where
-    policy_vec comes from the acting agent's policy_distribution method.
-
-    For AlphaBeta agents, policy_distribution returns a softmax over root
-    move scores. choose_move must be called first to populate the cache.
+    Returns (history, scores) where history is a list of
+    (player_index, encoding, policy_vec, policy_valid) tuples.
+    policy_valid=False for round-boundary entries (value target only, no policy).
     """
-    history: list[tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+    from agents.alphazero import AlphaZeroAgent
+
+    # Reset any AlphaZero trees for the new game
+    for agent in agents:
+        if isinstance(agent, AlphaZeroAgent):
+            agent.reset_tree(game)
+
+    history: list[tuple[int, torch.Tensor, torch.Tensor, bool]] = []
+    prev_round = game.round
 
     while True:
         if not game.legal_moves():
             break
         current_player = game.current_player_index
-        spatial, flat = encode_state(game)
-
+        encoding = encode_state(game)
         agent = agents[current_player]
-        move = agent.choose_move(game)
-        policy_pairs = agent.policy_distribution(game)
+
+        if isinstance(agent, AlphaZeroAgent):
+            move, policy_pairs = agent.get_policy_targets(game)
+        else:
+            move = agent.choose_move(game)
+            policy_pairs = agent.policy_distribution(game)
+
         policy_vec = torch.zeros(MOVE_SPACE_SIZE)
         for m, prob in policy_pairs:
             policy_vec[encode_move(m, game)] = prob
 
-        history.append((current_player, spatial, flat, policy_vec))
+        history.append((current_player, encoding, policy_vec, True))
+
         game.make_move(move)
+
+        # Capture round-boundary state before advance() scores and resets the round.
+        # This matches the state MCTS evaluates at is_round_boundary leaf nodes:
+        # empty factories, committed pattern lines, pending scores not yet settled.
+        # Encoding uses next_player() to match MCTS child construction exactly.
+        if game.is_round_over() and not game.is_game_over():
+            boundary_game = game.clone()
+            boundary_game.next_player()
+            boundary_enc = encode_state(boundary_game)
+            null_policy = torch.zeros(MOVE_SPACE_SIZE)
+            history.append(
+                (boundary_game.current_player_index, boundary_enc, null_policy, False)
+            )
+
         game.advance()
 
         if game.is_game_over():
             break
 
-    return history
-
-
-# ── Parallel heuristic game collection ───────────────────────────────────────
-
-# A game record is a list of move records.
-# Each move record: (player_idx, spatial_list, flat_list, policy_list, vw, vd, va)
-# All tensors are stored as plain Python lists to survive multiprocessing pickle.
-_MoveRecord = tuple[int, list, list, list, float, float, float]
-_GameRecord = list[_MoveRecord]
-
-
-def _worker_play_games(
-    num_games: int,
-    worker_seed: int,
-    matchup_specs: list[tuple[str, str, float]],
-) -> tuple[list[_GameRecord], dict[str, int]]:
-    """Worker function: play num_games heuristic games, return serializable results.
-
-    Runs in a subprocess — no shared state with the main process.
-    matchup_specs uses agent class names (strings) rather than callables
-    because callables don't pickle reliably across processes.
-
-    Returns (game_records, stats_dict).
-    """
-    import random as random_module
-    from agents.alphabeta import AlphaBetaAgent
-    from agents.random import RandomAgent
-    from agents.efficient import EfficientAgent
-    from agents.cautious import CautiousAgent
-    from agents.greedy import GreedyAgent
-
-    def _make_agent(name: str) -> Agent:
-        if name == "random":
-            return RandomAgent()
-        if name == "efficient":
-            return EfficientAgent()
-        if name == "cautious":
-            return CautiousAgent()
-        if name == "greedy":
-            return GreedyAgent()
-        if name == "easy":
-            return AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10))
-        if name == "medium":
-            return AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10))
-        raise ValueError(f"Unknown agent name: {name}")
-
-    rng = random_module.Random(worker_seed)
-    weights = [w for _, _, w in matchup_specs]
-    total_weight = sum(weights)
-
-    wins_by_p0 = 0
-    wins_by_p1 = 0
-    ties = 0
-    game_records: list[_GameRecord] = []
-
-    for game_num in range(num_games):
-        # Sample matchup by weight
-        threshold = rng.random() * total_weight
-        cumulative = 0.0
-        name_a, name_b = matchup_specs[-1][0], matchup_specs[-1][1]
-        for a_name, b_name, weight in matchup_specs:
-            cumulative += weight
-            if threshold <= cumulative:
-                name_a, name_b = a_name, b_name
-                break
-
-        agent_a = _make_agent(name_a)
-        agent_b = _make_agent(name_b)
-
-        if game_num % 2 == 0:
-            agents: list[Agent] = [agent_a, agent_b]
+        # Notify AlphaZero agents of round boundaries and moves
+        if game.round != prev_round:
+            for agent in agents:
+                if isinstance(agent, AlphaZeroAgent):
+                    agent.reset_tree(game)
+            prev_round = game.round
         else:
-            agents = [agent_b, agent_a]
+            for agent in agents:
+                if isinstance(agent, AlphaZeroAgent):
+                    agent.advance(move)
 
-        game = Game()
-        game.setup_round()
-        history = _play_heuristic_game(game, agents)
-        scores = _compute_game_scores(game)
+    return history, _compute_game_scores(game)
 
-        if scores[0] > scores[1]:
-            wins_by_p0 += 1
-        elif scores[1] > scores[0]:
-            wins_by_p1 += 1
+
+def _history_to_records(
+    history: list[tuple[int, torch.Tensor, torch.Tensor, bool]],
+    scores: list[int],
+) -> _GameRecord:
+    """Convert a game history to serializable move records with value targets."""
+    records: _GameRecord = []
+    for player_idx, encoding, policy_vec, policy_valid in history:
+        vw = win_loss_value(scores, player_idx)
+        vd = score_differential_value(scores, player_idx)
+        va = total_score_value(scores, player_idx)
+        records.append(
+            (
+                player_idx,
+                encoding.tolist(),
+                policy_vec.tolist(),
+                vw,
+                vd,
+                va,
+                policy_valid,
+            )
+        )
+    return records
+
+
+def _push_records(buf: ReplayBuffer, records: _GameRecord) -> None:
+    """Push serializable move records into the replay buffer."""
+    for _player_idx, encoding_list, policy_list, vw, vd, va, policy_valid in records:
+        encoding = torch.tensor(encoding_list, dtype=torch.float32)
+        policy_vec = torch.tensor(policy_list, dtype=torch.float32)
+        buf.push(
+            encoding, policy_vec, vw, vd, va, policy_mask=1.0 if policy_valid else 0.0
+        )
+
+
+# ── Worker ────────────────────────────────────────────────────────────────────
+
+
+def _worker_play_mirror_pair(
+    spec_0: AgentSpec,
+    spec_1: AgentSpec,
+) -> tuple[_GameRecord, list[int], _GameRecord, list[int]]:
+    seed = random.randint(0, 2**31)
+    random.seed(seed)  # deterministic random state for game A
+    agent_0 = _build_agent(spec_0)
+    agent_1 = _build_agent(spec_1)
+
+    game_a = Game(seed=seed)
+    game_a.setup_round()
+    history_a, scores_a = _play_game(game_a, [agent_0, agent_1])
+    records_a = _history_to_records(history_a, scores_a)
+
+    agent_0b = _build_agent(spec_0)
+    agent_1b = _build_agent(spec_1)
+
+    game_b = Game(seed=seed)
+    game_b.setup_round()
+    history_b, scores_b = _play_game(game_b, [agent_1b, agent_0b])
+    records_b = _history_to_records(history_b, scores_b)
+
+    return records_a, scores_a, records_b, scores_b
+
+
+# ── Pool helpers ─────────────────────────────────────────────────────────────
+
+
+def _worker_ignore_sigint() -> None:
+    """Pool initializer that makes worker processes ignore SIGINT.
+
+    On Windows, Ctrl+C is broadcast to all processes in the console group,
+    so every worker receives the signal simultaneously and floods the terminal
+    with KeyboardInterrupt tracebacks before the main process can call
+    pool.terminate(). Setting SIGINT to SIG_IGN in each worker lets the main
+    process handle shutdown cleanly via pool.terminate() / pool.join().
+    """
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _worker_play_mirror_pair_tuple(
+    args: tuple[int, AgentSpec, AgentSpec],
+) -> tuple[int, _GameRecord, list[int], _GameRecord, list[int]]:
+    """Tuple-unpacking wrapper for imap_unordered. Returns pair index alongside
+    results so the main process can look up specs without passing them back.
+    """
+    pair_index, spec_0, spec_1 = args
+    records_a, scores_a, records_b, scores_b = _worker_play_mirror_pair(spec_0, spec_1)
+    return pair_index, records_a, scores_a, records_b, scores_b
+
+
+def _iter_pair_results(
+    sampled: list[tuple[AgentSpec, AgentSpec]],
+    num_workers: int,
+):
+    """Yield (spec_0, spec_1, records_a, scores_a, records_b, scores_b) as each
+    pair completes. Uses imap_unordered so results stream in as workers finish.
+    """
+    import multiprocessing as mp
+
+    args_list = [(i, s0, s1) for i, (s0, s1) in enumerate(sampled)]
+
+    if num_workers <= 1:
+        for i, spec_0, spec_1 in args_list:
+            records_a, scores_a, records_b, scores_b = _worker_play_mirror_pair(
+                spec_0, spec_1
+            )
+            yield spec_0, spec_1, records_a, scores_a, records_b, scores_b
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(
+            processes=num_workers,
+            initializer=_worker_ignore_sigint,
+        ) as pool:
+            try:
+                for result in pool.imap_unordered(
+                    _worker_play_mirror_pair_tuple, args_list
+                ):
+                    pair_index, records_a, scores_a, records_b, scores_b = result
+                    spec_0, spec_1 = sampled[pair_index]
+                    yield spec_0, spec_1, records_a, scores_a, records_b, scores_b
+            except KeyboardInterrupt:
+                pool.terminate()
+                pool.join()
+                raise
+
+
+# ── Unified parallel collection ───────────────────────────────────────────────
+
+
+def collect_parallel(
+    buf: ReplayBuffer,
+    spec_0: AgentSpec,
+    spec_1: AgentSpec,
+    num_pairs: int,
+    num_workers: int = 1,
+) -> dict[str, int]:
+    """Play mirror pairs and push examples into buf.
+
+    Each pair plays game A (spec_0 as p0) and game B (sides swapped) with
+    identical factory sequences. Both perspectives recorded from both games.
+
+    Falls back to sequential if num_workers <= 1.
+
+    Returns stats: wins_0, wins_1, ties, games_recorded.
+    """
+    wins_0 = 0
+    wins_1 = 0
+    ties = 0
+
+    for pair_num, (
+        spec_0,
+        spec_1,
+        records_a,
+        scores_a,
+        records_b,
+        scores_b,
+    ) in enumerate(
+        _iter_pair_results([(spec_0, spec_1)] * num_pairs, num_workers), start=1
+    ):
+        _push_records(buf, records_a)
+        _push_records(buf, records_b)
+
+        if scores_a[0] > scores_a[1]:
+            wins_0 += 1
+        elif scores_a[1] > scores_a[0]:
+            wins_1 += 1
         else:
             ties += 1
 
-        game_record: _GameRecord = []
-        for player_idx, spatial, flat, policy_vec in history:
-            vw = win_loss_value(scores, player_idx)
-            vd = score_differential_value(scores, player_idx)
-            va = total_score_value(scores, player_idx)
-            game_record.append(
-                (
-                    player_idx,
-                    spatial.tolist(),
-                    flat.tolist(),
-                    policy_vec.tolist(),
-                    vw,
-                    vd,
-                    va,
+        if scores_b[1] > scores_b[0]:
+            wins_0 += 1
+        elif scores_b[0] > scores_b[1]:
+            wins_1 += 1
+        else:
+            ties += 1
+
+        if num_pairs >= 10 and (pair_num) % (num_pairs // 10) == 0:
+            logger.info(
+                _format_pair_log(
+                    spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs
                 )
             )
-        game_records.append(game_record)
 
-    stats = {
-        "wins_by_p0": wins_by_p0,
-        "wins_by_p1": wins_by_p1,
+    games_recorded = num_pairs * 2
+    logger.info(
+        f"collect_parallel complete -- "
+        f"spec_0: {wins_0}W / spec_1: {wins_1}W / {ties}T -- "
+        f"{games_recorded} games recorded"
+    )
+    return {
+        "wins_0": wins_0,
+        "wins_1": wins_1,
         "ties": ties,
-        "games_recorded": num_games,
-    }
-    return game_records, stats
-
-
-def _matchups_to_specs(
-    matchups: list[MatchupSpec],
-) -> list[tuple[str, str, float]]:
-    """Convert callable matchup specs to serializable (name, name, weight) tuples.
-
-    The worker process reconstructs agents by name since callables don't
-    pickle reliably across processes.
-    """
-    from agents.alphabeta import AlphaBetaAgent
-    from agents.random import RandomAgent
-    from agents.efficient import EfficientAgent
-    from agents.cautious import CautiousAgent
-    from agents.greedy import GreedyAgent
-
-    _type_to_name = {
-        RandomAgent: "random",
-        EfficientAgent: "efficient",
-        CautiousAgent: "cautious",
-        GreedyAgent: "greedy",
+        "games_recorded": games_recorded,
     }
 
-    specs = []
-    for factory_a, factory_b, weight in matchups:
-        agent_a = factory_a()
-        agent_b = factory_b()
-        if isinstance(agent_a, AlphaBetaAgent):
-            name_a = "easy" if agent_a.depths == (2, 3, 7) else "medium"
-        else:
-            name_a = _type_to_name[type(agent_a)]
-        if isinstance(agent_b, AlphaBetaAgent):
-            name_b = "easy" if agent_b.depths == (2, 3, 7) else "medium"
-        else:
-            name_b = _type_to_name[type(agent_b)]
-        specs.append((name_a, name_b, weight))
-    return specs
+
+# ── Pretrain matchups ─────────────────────────────────────────────────────────
 
 
-def collect_heuristic_games_parallel(
+def _pretrain_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:
+    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
+    greedy = AgentSpec(type="greedy")
+    return [
+        (easy, easy, 0.8),
+        (greedy, greedy, 0.1),
+        (easy, greedy, 0.1),
+    ]
+
+
+def collect_ab_parallel(
     buf: ReplayBuffer,
-    num_games: int = 200,
-    matchups: list[MatchupSpec] | None = None,
-    num_workers: int = 4,
-) -> dict[str, int]:
-    """Parallel version of collect_heuristic_games using multiprocessing.
+    num_pairs: int,
+    num_workers: int = 1,
+) -> None:
+    """Collect ABeasy vs ABeasy mirror pairs and push into buf.
 
-    Splits num_games across num_workers subprocesses. Each worker plays
-    its share of games independently and returns serializable results.
-    The main process collects results and pushes tensors into the buffer.
-
-    Falls back to sequential collection if num_workers <= 1.
+    Used each iteration during az-vs-abeasy mode to maintain a supply of
+    high-quality, AZ-independent training data in the buffer.
     """
-    import multiprocessing as mp
-    import random
+    # easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
+    greedy = AgentSpec(type="greedy")
+    collect_parallel(
+        buf,
+        spec_0=greedy,
+        spec_1=greedy,
+        num_pairs=num_pairs,
+        num_workers=num_workers,
+    )
 
-    if num_workers <= 1:
-        return collect_heuristic_games(buf, num_games=num_games, matchups=matchups)
 
+def _default_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:
+    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
+    return [
+        (AgentSpec(type="random"), easy, 0.00),
+        (AgentSpec(type="efficient"), easy, 0.00),
+        (AgentSpec(type="cautious"), easy, 0.00),
+        (AgentSpec(type="greedy"), easy, 1.00),
+    ]
+
+
+def _sample_matchup(
+    matchups: list[tuple[AgentSpec, AgentSpec, float]],
+) -> tuple[AgentSpec, AgentSpec]:
+    """Sample one matchup according to weights."""
+    weights = [w for _, _, w in matchups]
+    total = sum(weights)
+    threshold = random.random() * total
+    cumulative = 0.0
+    for spec_0, spec_1, weight in matchups:
+        cumulative += weight
+        if threshold <= cumulative:
+            return spec_0, spec_1
+    spec_0, spec_1, _ = matchups[-1]
+    return spec_0, spec_1
+
+
+def collect_heuristic_parallel(
+    buf: ReplayBuffer,
+    num_pairs: int,
+    matchups: list[tuple[AgentSpec, AgentSpec, float]] | None = None,
+    num_workers: int = 1,
+) -> dict[str, int]:
+    """Collect heuristic mirror pairs sampled from a weighted matchup list.
+
+    Each pair samples independently, so a run of 100 pairs with 4 matchups
+    at equal weight produces ~25 pairs of each type.
+    """
     if matchups is None:
         matchups = _default_matchups()
 
-    specs = _matchups_to_specs(matchups)
+    wins_0 = 0
+    wins_1 = 0
+    ties = 0
+    games_recorded = 0
 
-    # Distribute games across workers as evenly as possible
-    base = num_games // num_workers
-    remainder = num_games % num_workers
-    game_counts = [base + (1 if i < remainder else 0) for i in range(num_workers)]
-    seeds = [random.randint(0, 2**31) for _ in range(num_workers)]
+    # Sample matchups first so workers get concrete specs
+    sampled = [_sample_matchup(matchups) for _ in range(num_pairs)]
 
-    args_list = [(count, seed, specs) for count, seed in zip(game_counts, seeds)]
+    for pair_num, (
+        spec_0,
+        spec_1,
+        records_a,
+        scores_a,
+        records_b,
+        scores_b,
+    ) in enumerate(_iter_pair_results(sampled, num_workers), start=1):
+        _push_records(buf, records_a)
+        _push_records(buf, records_b)
+        games_recorded += 2
 
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=num_workers) as pool:
-        results = pool.starmap(_worker_play_games, args_list)
+        if scores_a[0] > scores_a[1]:
+            wins_0 += 1
+        elif scores_a[1] > scores_a[0]:
+            wins_1 += 1
+        else:
+            ties += 1
 
-    # Aggregate stats and push all examples into the buffer
-    total_stats: dict[str, int] = {
-        "wins_by_p0": 0,
-        "wins_by_p1": 0,
-        "ties": 0,
-        "games_recorded": 0,
-    }
-    all_scores: list[float] = []
+        if scores_b[1] > scores_b[0]:
+            wins_0 += 1
+        elif scores_b[0] > scores_b[1]:
+            wins_1 += 1
+        else:
+            ties += 1
 
-    for game_records, stats in results:
-        for key in total_stats:
-            total_stats[key] += stats[key]
-        for game_record in game_records:
-            for player_idx, spatial_l, flat_l, policy_l, vw, vd, va in game_record:
-                spatial = torch.tensor(spatial_l, dtype=torch.float32)
-                flat = torch.tensor(flat_l, dtype=torch.float32)
-                policy_vec = torch.tensor(policy_l, dtype=torch.float32)
-                buf.push(spatial, flat, policy_vec, vw, vd, va)
-            if game_record:
-                all_scores.append(vw)  # last move's vw as a proxy
+        if num_pairs >= 10 and (pair_num) % (num_pairs // 10) == 0:
+            logger.info(
+                _format_pair_log(
+                    spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs
+                )
+            )
 
-    avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
     logger.info(
-        f"heuristic games complete (parallel, {num_workers} workers) -- "
-        f"p0: {total_stats['wins_by_p0']}W / "
-        f"p1: {total_stats['wins_by_p1']}W / {total_stats['ties']}T -- "
-        f"avg score proxy: {avg_score:.2f} -- "
-        f"{total_stats['games_recorded']} games recorded"
+        f"heuristic collection complete -- "
+        f"wins_0: {wins_0} / wins_1: {wins_1} / ties: {ties} -- "
+        f"{games_recorded} games recorded"
+    )
+    return {
+        "wins_0": wins_0,
+        "wins_1": wins_1,
+        "ties": ties,
+        "games_recorded": games_recorded,
+    }
+
+
+# ── Eval ──────────────────────────────────────────────────────────────────────
+
+
+def evaluate_parallel(
+    new_net: AzulNet,
+    old_net: AzulNet,
+    num_pairs: int,
+    simulations: int,
+    buf: ReplayBuffer | None,
+    num_workers: int = 1,
+) -> float:
+    """Evaluate new_net vs old_net using parallel mirror pairs.
+
+    Each pair plays game A (new as p0) and game B (new as p1) with the same
+    seed. All pairs run to completion — no early exit.
+
+    If buf is provided, all game history is pushed into the replay buffer.
+
+    Returns new net win rate over all games played.
+    """
+    new_spec = AgentSpec(
+        type="alphazero",
+        state_dict={k: v.cpu() for k, v in new_net.state_dict().items()},
+        simulations=simulations,
+        temperature=0.0,
+    )
+    old_spec = AgentSpec(
+        type="alphazero",
+        state_dict={k: v.cpu() for k, v in old_net.state_dict().items()},
+        simulations=simulations,
+        temperature=0.0,
     )
 
-    return total_stats
+    new_wins = 0.0
+    games_played = 0
+
+    for pair_num, (_, _, records_a, scores_a, records_b, scores_b) in enumerate(
+        _iter_pair_results([(new_spec, old_spec)] * num_pairs, num_workers), start=1
+    ):
+        games_played += 2
+
+        if scores_a[0] > scores_a[1]:
+            new_wins += 1.0
+        elif scores_a[0] == scores_a[1]:
+            new_wins += 0.5
+
+        if scores_b[1] > scores_b[0]:
+            new_wins += 1.0
+        elif scores_b[1] == scores_b[0]:
+            new_wins += 0.5
+
+        if num_pairs >= 10 and (pair_num) % (num_pairs // 10) == 0:
+            logger.info(
+                _format_pair_log(
+                    new_spec, old_spec, scores_a, scores_b, pair_num, num_pairs
+                )
+                + f"  ({new_wins / games_played:.0%})"
+            )
+
+        if buf is not None:
+            _push_records(buf, records_a)
+            _push_records(buf, records_b)
+
+    win_rate = new_wins / games_played if games_played else 0.0
+    logger.info(f"eval complete -- new net win rate: {win_rate * 100:.1f}%")
+    return win_rate

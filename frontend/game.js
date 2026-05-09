@@ -314,10 +314,10 @@ async function initMenu() {
       opt.disabled = true;
       replaySelect.appendChild(opt);
     } else {
-      const groups = { eval: [], human: [] };
+      const groups = { eval: [], human: [], training: [] };
       summaries.forEach(s => {
-        const bucket = groups[s.folder] ?? groups.human;
-        bucket.push(s);
+          const bucket = groups[s.folder] ?? groups.human;
+          bucket.push(s);
       });
 
       const addGroup = (label, items) => {
@@ -336,7 +336,7 @@ async function initMenu() {
           replaySelect.appendChild(opt);
         });
       };
-
+      addGroup("Training Games", groups.training);
       addGroup("Eval Games", groups.eval);
       addGroup("Human Games", groups.human);
     }

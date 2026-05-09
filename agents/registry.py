@@ -10,6 +10,10 @@ from agents.mcts import MCTSAgent
 from agents.minimax import MinimaxAgent
 from agents.random import RandomAgent
 from typing import Callable
+from agents.alphazero import AlphaZeroAgent
+from neural.model import AzulNet
+import torch
+from pathlib import Path
 
 # (name, label, factory, hidden)
 AGENT_REGISTRY: list[tuple[str, str, Callable, bool]] = [
@@ -24,31 +28,33 @@ AGENT_REGISTRY: list[tuple[str, str, Callable, bool]] = [
     (
         "alphabeta_easy",
         "Easy Bot",
-        lambda **_: AlphaBetaAgent(depths=(1, 2, 3), thresholds=(20, 10)),
+        lambda **_: AlphaBetaAgent(depth=1, threshold=4),
         False,
     ),
     (
         "alphabeta_medium",
         "Medium Bot",
-        lambda **_: AlphaBetaAgent(depths=(2, 3, 7), thresholds=(20, 10)),
+        lambda **_: AlphaBetaAgent(depth=2, threshold=6),
         False,
     ),
     (
         "alphabeta_hard",
         "Hard Bot",
-        lambda **_: AlphaBetaAgent(depths=(3, 5, 7), thresholds=(20, 10)),
+        lambda **_: AlphaBetaAgent(depth=3, threshold=8),
         False,
     ),
     (
         "alphabeta_extreme",
         "Extreme Bot",
-        lambda **_: AlphaBetaAgent(depths=(4, 6, 8), thresholds=(20, 10)),
+        lambda **_: AlphaBetaAgent(depth=4, threshold=10),
         False,
     ),
     (
-        "alphabeta_ludacris",
-        "Ludacris Bot",
-        lambda **_: AlphaBetaAgent(depths=(20, 20, 20), thresholds=(180, 180)),
+        "alphazero",
+        "AlphaZero",
+        lambda **kwargs: AlphaZeroAgent(
+            _load_az_net(), simulations=kwargs.get("simulations", 200)
+        ),
         False,
     ),
 ]
@@ -62,3 +68,12 @@ def make_agent(name: str, **kwargs) -> Agent | None:
     if name not in _FACTORIES:
         raise ValueError(f"Unknown agent: {name!r}")
     return _FACTORIES[name](**kwargs)
+
+
+def _load_az_net() -> AzulNet:
+    net = AzulNet()
+    path = Path("checkpoints/latest.pt")
+    if path.exists():
+        net.load_state_dict(torch.load(path, map_location="cpu"))
+    net.eval()
+    return net

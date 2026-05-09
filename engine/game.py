@@ -149,7 +149,7 @@ class Game:
         seed: int | None = None,
     ) -> None:
         self.seed: int = seed or random.randint(1, 2**31)
-        random.seed(self.seed)
+        self._rng: random.Random = random.Random(self.seed)
 
         names = player_names or [f"Player {i + 1}" for i in range(PLAYERS)]
         agent_list = agents or ["human"] * PLAYERS
@@ -164,12 +164,129 @@ class Game:
         self.discard: list[Tile] = []
         self.round: int = 0
         self.turn: int = 0
-        random.shuffle(self.bag)
+        self._rng.shuffle(self.bag)
 
     @property
     def current_player(self) -> Player:
         """The player whose turn it is."""
         return self.players[self.current_player_index]
+
+    # region Display --------------------------------------------------------
+
+    _PLAYER_COLUMN_GAP = "  "
+    _TABLE_LABEL_WIDTH = 3
+    _TABLE_CELL_WIDTH = 3
+
+    def __str__(self) -> str:
+        """Multi-line display of the full game state.
+
+        Three columns side by side, horizontally aligned row by row:
+          - Column 0: tile table (bag counts, colour header, F1-F5, center)
+          - Column 1+: one column per player (pattern lines, wall, floor)
+
+        Row alignment:
+          row 0  BAG row       name line
+          row 1  CLR header    score line
+          rows 2-6  F1-F5      pattern rows 1-5
+          row 7  CTR           floor line
+
+        The current player's name is prefixed with "> ".
+
+        Example:
+            Round 1  |  Bag: 80  Discard: 0
+            BAG 18 16 17 16 13  > Player 1 (human)        Player 2 (human)
+            CLR  B  Y  R  K  W   0+ 0- 0+ 0= 0             0+ 0- 0+ 0= 0
+            F1   .  1  .  1  2      .|.....                    .|.....
+            F2   1  1  1  1  .     ..|.....                   ..|.....
+            F3   .  2  .  1  1    ...|.....                  ...|.....
+            F4   1  .  1  .  2   ....|.....                 ....|.....
+            F5   .  .  1  1  2  .....|.....                .....|.....
+            CTR  .  .  .  .  .  F  .......|                  .......|
+        """
+        return "\n".join([self._format_round_line()] + self._format_all_columns())
+
+    def __repr__(self) -> str:
+        return str(self)
+
+    def _format_round_line(self) -> str:
+        """Return the game header line.
+
+        Format: {round}:{turn:02d} [{seed}]  P1: {name} ({agent}) vs P2: ...
+
+        Example: 1:03 [189204712]  P1: Alice (alphabeta_hard) vs P2: Bob (human)
+        """
+        player_turn = f"P{self.current_player_index + 1}: {self.current_player.name}"
+        return f"R{self.round}:T{self.turn:02d} [{self.seed}] {player_turn}"
+
+    def _tile_table_row(self, label: str, cells: list[str]) -> str:
+        """Format one row of the tile table: left-justified label + right-justified
+        cells."""
+        label_cell = label.ljust(self._TABLE_LABEL_WIDTH)
+        count_cells = "".join(c.rjust(self._TABLE_CELL_WIDTH) for c in cells)
+        return label_cell + count_cells
+
+    def _count_tiles(self, tile_list: list[Tile]) -> list[str]:
+        """Return per-colour count strings in COLOR_TILES order, dot for zero."""
+        return [
+            str(tile_list.count(color)) if tile_list.count(color) > 0 else "."
+            for color in COLOR_TILES
+        ]
+
+    def _build_tile_table_lines(self) -> list[str]:
+        """Return the 8 tile-table lines: BAG, CLR, F1-F5, CTR.
+
+        Aligns with Player.__str__ rows: BAG/name, CLR/score,
+        F1-F5/pattern-rows-1-5, CTR/floor.
+        """
+        first_player_cell = (
+            [TILE_CHAR[Tile.FIRST_PLAYER]] if Tile.FIRST_PLAYER in self.center else []
+        )
+        return [
+            self._tile_table_row("BAG", self._count_tiles(self.bag)),
+            self._tile_table_row("CLR", [TILE_CHAR[c] for c in COLOR_TILES]),
+            *[
+                self._tile_table_row(f"F-{i + 1}", self._count_tiles(factory))
+                for i, factory in enumerate(self.factories)
+            ],
+            self._tile_table_row(
+                "CTR", self._count_tiles(self.center) + first_player_cell
+            ),
+        ]
+
+    def _build_player_lines(self, player_index: int) -> list[str]:
+        """Return Player.__str__ lines for one player, prefixing the name
+        with "> " when that player is current."""
+        lines = str(self.players[player_index]).splitlines()
+        if player_index == self.current_player_index:
+            lines[0] = f">{lines[0][1:]}"
+        return lines
+
+    def _format_all_columns(self) -> list[str]:
+        """Zip tile-table and all player columns into aligned rows.
+
+        Each column except the last is padded to its natural maximum line
+        width before the gap is appended, so columns stay stable regardless
+        of tile counts or score values.
+        """
+        columns = [self._build_tile_table_lines()] + [
+            self._build_player_lines(i) for i in range(len(self.players))
+        ]
+        row_count = max(len(col) for col in columns)
+        column_widths = [max((len(line) for line in col), default=0) for col in columns]
+        rows = []
+        for row_index in range(row_count):
+            parts = []
+            for col_index, col in enumerate(columns):
+                line = col[row_index] if row_index < len(col) else ""
+                is_last_column = col_index == len(columns) - 1
+                padded = (
+                    line if is_last_column else line.ljust(column_widths[col_index])
+                )
+                parts.append(padded)
+            rows.append(self._PLAYER_COLUMN_GAP.join(parts))
+        return rows
+
+    # endregion
 
     # region Clone ----------------------------------------------------------
 
@@ -177,6 +294,8 @@ class Game:
         """Return a fast independent copy of this game."""
         g = object.__new__(Game)
         g.seed = self.seed
+        g._rng = random.Random()
+        g._rng.setstate(self._rng.getstate())
         g.current_player_index = self.current_player_index
         g.round = self.round
         g.turn = self.turn
@@ -197,7 +316,7 @@ class Game:
             return
         self.bag.extend(self.discard)
         self.discard.clear()
-        random.shuffle(self.bag)
+        self._rng.shuffle(self.bag)
         logger.debug("refilled bag from discard and shuffled")
 
     def _draw_from_bag(self, count: int = TILES_PER_FACTORY) -> list[Tile]:
@@ -269,6 +388,28 @@ class Game:
             count += len({t for t in factory if t != Tile.FIRST_PLAYER})
         count += len({t for t in self.center if t != Tile.FIRST_PLAYER})
         return count
+
+    def tile_availability(self) -> dict[Tile, tuple[int, int]]:
+        """Return tile counts and source counts across all active sources.
+
+        For each color tile, returns a tuple of:
+            (total_tiles, source_count)
+        where total_tiles is the total number of that color across all
+        non-empty factories and the center, and source_count is the number
+        of sources containing at least one tile of that color.
+
+        Used by the encoder and by agents that need to reason about what
+        tiles are available without reaching into game internals.
+        """
+        totals: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
+        source_counts: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
+        for source in [*self.factories, self.center]:
+            for color in COLOR_TILES:
+                count = source.count(color)
+                if count > 0:
+                    totals[color] += count
+                    source_counts[color] += 1
+        return {color: (totals[color], source_counts[color]) for color in COLOR_TILES}
 
     # endregion
 
@@ -343,3 +484,9 @@ class Game:
             player.score += player.bonus
 
     # endregion
+
+
+if __name__ == "__main__":
+    game = Game(seed=42)
+    game.setup_round()
+    print(game)

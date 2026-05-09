@@ -113,12 +113,11 @@ def _net_forward(
     legal: list,
 ) -> tuple[list[tuple], float, float, float]:
     """Return (policy_dist, value_win, value_diff, value_abs)."""
-    spatial, flat = encode_state(game)
-    spatial = spatial.unsqueeze(0)
-    flat = flat.unsqueeze(0)
+    encoding = encode_state(game)
+    encoding = encoding.unsqueeze(0)
     net.eval()
     with torch.no_grad():
-        logits, vw, vd, va = net(spatial, flat)
+        logits, vw, vd, va = net(encoding)
     value_win = vw.item()
     value_diff = vd.item()
     value_abs = va.item()

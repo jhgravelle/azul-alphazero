@@ -3,7 +3,7 @@
 # Azul AlphaZero — Project Plan
 
 > Last updated: 2026-05-07
-> Status: Phase 8 in progress. 8x complete — training pipeline overhaul: ABeasy pretrain, ABeasy vs ABeasy buffer injection, dropout, showcase recordings, Game/_AlphaBetaAgent RNG fix, log_encoded_states AZ diagnostics.
+> Status: Phase 8 in progress. 8z complete — PUCT exploration overhaul: unvisited exploitation uses parent net_value_diff, PUCT C lowered to 0.5.
 
 ---
 
@@ -61,6 +61,9 @@ We use mirrored game pairs (identical bag seed, both players swap sides) for bot
 
 **Deviation 6 — Pretrain phase**
 Before the main iteration loop, optionally collect ABeasy vs ABeasy mirror pairs and train for many steps. This gives the policy head a warm start — it learns to suppress floor moves and prefer pattern line placement before AZ ever plays a game. Without pretrain, early AZ games produce nearly uniform MCTS visit distributions (50 sims / 50+ legal moves = ~1 visit each), which train the policy head on noise.
+
+**Deviation 7 — Unvisited node exploitation prior**
+True AlphaZero initialises unvisited node exploitation at 0.0, relying on the exploration term alone to drive initial visits. Our implementation initialises unvisited nodes at the parent's `net_value_diff` instead. This means unvisited nodes are competitive from sim 1 — visit distribution naturally tracks policy priors early on (a move with prior 0.10 gets ~10% of early visits), then Q values gradually reshape the distribution as evidence accumulates. PUCT C is set to 0.5 so the value head is the primary signal and the policy prior acts as a tiebreaker among unvisited nodes.
 
 ---
 
@@ -414,6 +417,28 @@ Rewritten to run AZ vs AZ (or AB vs AB). Shows per-turn: encoded state grid, AB 
 **Simulation count finding.**
 At 50 sims with 50+ legal moves, each move gets ~1 visit — MCTS cannot differentiate and value head Q-signal never accumulates. Floor suppression requires ≥200 sims for the value head to act as a meaningful tiebreaker. Default raised to 200.
 
+#### 8z — PUCT Exploration Overhaul ✅
+
+**Problem:** With 80–100 legal moves in round 1 and near-uniform network priors, unvisited nodes had exploitation=0.0, making them look artificially bad. The exploration term `C * prior * sqrt(parent_visits)` had to grow very large before low-prior moves got their first visit. With 200 sims this was a real problem — high-prior moves monopolised visits even when their values were mediocre.
+
+**Fix — unvisited exploitation uses parent's `net_value_diff`.**
+`puct_score` gains a required `unvisited_exploitation: float` parameter. When `adjusted_visits == 0`, exploitation uses this value instead of 0.0. Callsites pass `node.net_value_diff` directly (no negation — the parent's perspective is already correct for evaluating children). The assert `node.net_value_diff is not None` documents the invariant: by the time we compute PUCT scores on children, the parent has already been evaluated by the network.
+
+**Effect:** Visit distribution naturally tracks policy priors from sim 1. A move with prior 0.10 gets ~10% of early visits rather than being suppressed until `sqrt(parent_visits)` rescues it. Q values then gradually reshape the distribution as evidence accumulates. Verified by manual simulation walkthrough: after 20 sims across 4 moves (priors 0.40/0.30/0.20/0.10), visit counts were A=9, B=6, C=3, D=2 — almost exactly proportional to priors.
+
+**PUCT C lowered from 1.5 to 0.5.**
+With the unvisited exploitation prior doing the coverage work, the exploration bonus is less critical. Lower C means the value head drives move selection and the policy prior acts primarily as a tiebreaker among unvisited nodes. C must remain > 0 to break ties on initial visits via the prior.
+
+**Changes:**
+
+| Location | Change |
+|---|---|
+| `search_tree.py` | `_PUCT_C = 0.5` (was 1.5) |
+| `AZNode.puct_score` | New required `unvisited_exploitation: float` parameter |
+| `SearchTree._select` | `assert node.net_value_diff is not None; unvisited_exploitation = node.net_value_diff` |
+| `SearchTree._select_with_virtual_loss` | Same assert + assignment before `max(eligible, ...)` call |
+| Existing tests | Three `puct_score()` callsites updated to pass `unvisited_exploitation=0.0` |
+
 #### 8k — Elo Ladder
 
 - Elo tracked live during training, logged per iteration
@@ -470,6 +495,7 @@ Implemented via `evaluate_parallel` in `trainer.py`. Uses same `_iter_pair_resul
 - [ ] Inspector serialization redesign (8h) — deferred in favour of training pipeline work
 - [ ] Delete `neural/zobrist.py` — replaced by move-path node keys (see 8h)
 - [ ] Single destination policy head (8y) — replace 3-head factorized policy with destination-only head
+- [ ] Experiment with PUCT C as a training parameter — higher early in training (weak value head), lower later
 
 ---
 
@@ -597,6 +623,21 @@ Architecture: `input_proj(125→64) → 1×ResBlock(64) → Dropout(p) → 6 hea
 
 ---
 
+## PUCT Score Design
+
+`AZNode.puct_score(parent_visits, unvisited_exploitation)` computes:
+
+```
+PUCT = Q + U
+Q = -(total_value + virtual_loss) / (visits + virtual_loss)   [visited]
+Q = unvisited_exploitation                                      [unvisited]
+U = C * prior * sqrt(parent_visits) / (1 + adjusted_visits)
+```
+
+`unvisited_exploitation` is always `node.net_value_diff` of the parent — the parent's network evaluation from the parent's own perspective. No negation needed: the parent's perspective is already correct for scoring its children. `C = 0.5` — value head drives, prior breaks ties.
+
+---
+
 ## Checkpoint Management
 
 - `checkpoints/latest.pt` — current training weights
@@ -646,6 +687,8 @@ Architecture: `input_proj(125→64) → 1×ResBlock(64) → Dropout(p) → 6 hea
 33. **50 simulations is too few for meaningful MCTS policy targets.** With 50 sims and 50+ legal moves, each move gets ~1 visit. PUCT collapses to prior-only selection and the value head never accumulates Q-signal. Floor suppression requires the value head to act as a tiebreaker — which only works at ≥200 sims. Use 200 sims minimum for training collection.
 34. **Three-head factorized policy can produce floor moves despite low floor dst probability.** The factored prior = softmax(src) × softmax(tile) × softmax(dst). A high src×tile product for a floor move can overcome a low dst[floor] value. This was observed with the pretrained net: dst predictions showed 0.05 Floor but AZ still played floor moves at 50 sims. A single destination-only head would be cleaner.
 35. **`showcase_game` net must be moved to CPU before inference.** The showcase game runs in the main process where `net` lives on CUDA, but `AlphaZeroAgent` constructs its policy_value_fn expecting CPU tensors (workers are CPU-only). Call `net.cpu()` before constructing agents, then `net.to(device)` after saving the recording.
+36. **Unvisited PUCT exploitation of 0.0 suppresses low-prior moves unfairly.** With 80+ legal moves and near-uniform priors, exploitation=0.0 made unvisited nodes look artificially bad — the exploration term had to grow via `sqrt(parent_visits)` before they got visited. Fix: pass `node.net_value_diff` as `unvisited_exploitation` so unvisited nodes start at the parent's position value. Visit distribution then naturally tracks policy priors from sim 1.
+37. **`puct_score` unvisited_exploitation sign requires no negation.** The parent's `net_value_diff` is from the parent's own perspective, which is the correct perspective for evaluating children's PUCT scores. Do not negate when passing to children — the double-negation in visited node exploitation (`-(total_value/visits)`) handles the perspective flip for visited nodes separately.
 
 ---
 
@@ -656,6 +699,7 @@ Architecture: `input_proj(125→64) → 1×ResBlock(64) → Dropout(p) → 6 hea
 - **Node-budget AlphaBeta** — cap total nodes explored rather than depth.
 - **Prior round board state snapshots** — one encoded state per completed round, up to 5.
 - **Single destination policy head** — replace 3-head factorized policy with destination-only head to cleanly suppress floor moves (see 8y).
+- **PUCT C as training parameter** — start higher (1.0) when value head is weak, lower (0.2) as net improves.
 
 ---
 
@@ -681,6 +725,7 @@ Architecture: `input_proj(125→64) → 1×ResBlock(64) → Dropout(p) → 6 hea
 
 | Date | Change |
 |---|---|
+| 2026-05-07 | **8z complete:** PUCT overhaul — unvisited exploitation uses parent `net_value_diff` instead of 0.0. Visit distribution tracks policy priors naturally from sim 1. `_PUCT_C` lowered from 1.5 to 0.5 — value head drives, prior breaks ties. Three existing `puct_score` callsites updated to pass `unvisited_exploitation=0.0`. |
 | 2026-05-07 | **8x complete:** Game instance RNG (`self._rng`) fixes AB vs AB mirror pair determinism. AlphaBetaAgent per-instance RNG fixes stochastic move sharing. AzulNet gains optional dropout (default 0.1). Pretrain switched to ABeasy vs ABeasy. `collect_ab_parallel` injects ABeasy pairs every iteration. `--heuristic-pairs-per-iter` and `--skip-eval-iterations` removed. Showcase recordings saved to `recordings/training/` per iteration. API and frontend updated to scan training folder. Pair log lines demoted to DEBUG. Default sims raised to 200. `log_encoded_states.py` rewritten for AZ vs AZ with net predictions. |
 | 2026-05-07 | **8w complete:** `Game.tile_availability()` added. AlphaBeta and Minimax redesigned: `depths`/`thresholds` → `depth`/`threshold`, source-adaptive depth. AlphaBeta gains stochastic move selection. UI presets updated. `AgentSpec` updated. Eval games no longer pushed to buffer during az-vs-abeasy phase. Tests moved to `tests/agents/`. 624 tests passing. |
 | 2026-05-06 | **8v complete:** mcts.py backprop perspective bug fixed (±1 convention unified). `_simulate` double legal_moves call fixed. `search_tree.py` refactored. `_empty_node_dict` schema completed. `ReplayBuffer.sample` type annotation fixed. Windows KeyboardInterrupt flood fixed. Stale tests updated. |

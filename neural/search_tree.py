@@ -27,11 +27,9 @@ import torch
 from engine.game import Game, Move, CENTER, FLOOR
 from neural.model import AzulNet
 from neural.trainer import _SCORE_DIFF_DIVISOR
-from neural.zobrist import ZobristTable
 
-_PUCT_C = 1.0
+_PUCT_C = 0.5
 
-_ZOBRIST = ZobristTable()
 
 # After this many moves in a game, switch from high-temperature (exploratory)
 # to low-temperature (decisive) move selection during self-play.
@@ -98,7 +96,7 @@ class AZNode:
 
     Attributes:
         game:            The game state at this node (owned by the node).
-        zobrist_hash:    Zobrist hash of game, used as the transposition table key.
+        key:    Zobrist hash of game, used as the transposition table key.
         parent:          Parent node (None for the root).
         move:            The move applied to reach this node (None for the root).
         prior:           Policy prior probability assigned by the neural network.
@@ -120,7 +118,7 @@ class AZNode:
     """
 
     game: Game
-    zobrist_hash: int = 0
+    key: int = 0
     parent: AZNode | None = None
     move: Move | None = None
     prior: float = 0.0
@@ -441,8 +439,6 @@ class SearchTree:
         new_game = self._root.game.clone()
         new_game.make_move(move)
         new_game.advance()
-        old_hash = _ZOBRIST.hash_state(new_game)
-        self._table.pop(old_hash, None)
         return self._make_node(new_game, parent=None, move=move, prior=0.0)
 
     def _prune_siblings(self, new_root: AZNode | None) -> None:
@@ -979,7 +975,7 @@ class SearchTree:
         )
 
         return {
-            "key": hex(node.zobrist_hash),
+            "key": hex(node.key),
             "move": _move_str(node.move) if node.move is not None else None,
             "visits": node.visits,
             "immediate": immediate,
@@ -1061,12 +1057,12 @@ class SearchTree:
         return serialized
 
     def _deduplicate_by_hash(self, nodes: list[AZNode]) -> list[AZNode]:
-        """Remove duplicate nodes that share the same Zobrist hash (transpositions)."""
-        seen_hashes: set[int] = set()
+        """Remove duplicate nodes by key."""
+        seen: set[int] = set()
         deduped: list[AZNode] = []
         for node in nodes:
-            if node.zobrist_hash not in seen_hashes:
-                seen_hashes.add(node.zobrist_hash)
+            if node.key not in seen:
+                seen.add(node.key)
                 deduped.append(node)
         return deduped
 
@@ -1137,20 +1133,20 @@ class SearchTree:
     ) -> AZNode:
         """Create a new AZNode, register it in the transposition table, and return
         it."""
-        zobrist_hash = _ZOBRIST.hash_state(game)
         node = AZNode(
             game=game,
-            zobrist_hash=zobrist_hash,
+            key=0,
             parent=parent,
             move=move,
             prior=prior,
         )
-        self._table[zobrist_hash] = node
+        node.key = id(node)
+        self._table[node.key] = node
         return node
 
     def _prune(self, node: AZNode) -> None:
         """Recursively remove node and all descendants from the transposition table."""
-        self._table.pop(node.zobrist_hash, None)
+        self._table.pop(node.key, None)
         for child in node.children:
             self._prune(child)
 

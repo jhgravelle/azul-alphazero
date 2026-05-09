@@ -26,7 +26,7 @@ from api.schemas import (
     RecordingSummary,
     RemoveTileRequest,
 )
-from engine.constants import Tile
+from engine.constants import COLUMN_FOR_TILE_IN_ROW, WALL_PATTERN, Tile
 from engine.game import Game, Move
 from engine.game_recorder import (
     GameRecorder,
@@ -82,6 +82,67 @@ def _make_agent(player_type: PlayerType) -> Agent | None:
     return make_agent(player_type)
 
 
+# region Pattern line serialization ----------------------------------------
+
+
+def _encode_pattern_lines(player: Player) -> list[list[str]]:
+    """Serialize pattern_grid into the pattern_lines wire format.
+
+    Each row is a list of tile name strings — only the committed color tile
+    appears, repeated by fill count. Empty rows are empty lists.
+    """
+    result = []
+    for row in range(5):
+        tile = player._line_tile(row)
+        if tile is None:
+            result.append([])
+        else:
+            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+            count = player.pattern_grid[row][col]
+            result.append([tile.name] * count)
+    return result
+
+
+def _decode_pattern_lines(player: Player, pattern_lines: list[list[str]]) -> None:
+    """Decode the pattern_lines wire format back into player.pattern_grid.
+
+    Each row is a list of tile name strings. Fill count equals list length.
+    Clears all grid cells first, then sets the appropriate cell for each row.
+    """
+    for row in range(5):
+        for col in range(5):
+            player.pattern_grid[row][col] = 0
+    for row, tiles in enumerate(pattern_lines):
+        if not tiles:
+            continue
+        tile = _str_to_tile(tiles[0])
+        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        player.pattern_grid[row][col] = len(tiles)
+
+
+def _encode_wall(player: Player) -> list[list[str | None]]:
+    """Serialize the binary wall grid into tile name strings.
+
+    Filled cells carry the wall pattern color for that position; empty cells
+    are None.
+    """
+    return [
+        [
+            WALL_PATTERN[row][col].name if player.wall[row][col] else None
+            for col in range(5)
+        ]
+        for row in range(5)
+    ]
+
+
+def _decode_wall(wall_data: list[list[str | None]]) -> list[list[int]]:
+    """Decode the wall wire format into a binary 5×5 grid."""
+    return [[1 if cell is not None else 0 for cell in row] for row in wall_data]
+
+
+# endregion
+
+
 def _game_from_snapshot(request: HypotheticalSnapshotRequest) -> Game:
     """Reconstruct a bare Game object from a hypothetical snapshot request."""
     game = Game()
@@ -98,13 +159,8 @@ def _game_from_snapshot(request: HypotheticalSnapshotRequest) -> Game:
 
     for player, board_req in zip(game.players, request.boards):
         player.score = board_req.score
-        player.pattern_lines = [
-            [_str_to_tile(name) for name in line] for line in board_req.pattern_lines
-        ]
-        player.wall = [
-            [_str_to_tile(name) if name is not None else None for name in row]
-            for row in board_req.wall
-        ]
+        _decode_pattern_lines(player, board_req.pattern_lines)
+        player.wall = _decode_wall(board_req.wall)
         player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
         player._update_pending()
         player._update_penalty()
@@ -175,11 +231,8 @@ def _build_response(game: Game) -> GameStateResponse:
     """Translate the engine Game object into a GameStateResponse."""
     boards = []
     for player in game.players:
-        pattern_lines = [[_tile_to_str(t) for t in row] for row in player.pattern_lines]
-        wall = [
-            [_tile_to_str(t) if t is not None else None for t in row]
-            for row in player.wall
-        ]
+        pattern_lines = _encode_pattern_lines(player)
+        wall = _encode_wall(player)
         floor_line = [_tile_to_str(t) for t in player.floor_line]
         pending_placements, pending_bonuses = _build_pending(player)
         boards.append(
@@ -338,7 +391,7 @@ def _next_cursor() -> int:
     return _total_slots()
 
 
-# ── Endpoints ──────────────────────────────────────────────────────────────
+# region Endpoints ---------------------------------------------------------
 
 
 @app.get("/agents")
@@ -548,9 +601,9 @@ def hypothetical_from_snapshot(
         player.pending = scratch_player.pending
         player.penalty = scratch_player.penalty
         player.bonus = scratch_player.bonus
-        player.pattern_lines = scratch_player.pattern_lines
-        player.wall = scratch_player.wall
-        player.floor_line = scratch_player.floor_line
+        player.pattern_grid = [row[:] for row in scratch_player.pattern_grid]
+        player.wall = [row[:] for row in scratch_player.wall]
+        player.floor_line = scratch_player.floor_line[:]
 
     return _build_response(_game)
 
@@ -575,13 +628,8 @@ def hypothetical_replace_snapshot(
 
     for player, board_req in zip(_game.players, request.boards):
         player.score = board_req.score
-        player.pattern_lines = [
-            [_str_to_tile(name) for name in line] for line in board_req.pattern_lines
-        ]
-        player.wall = [
-            [_str_to_tile(name) if name is not None else None for name in row]
-            for row in board_req.wall
-        ]
+        _decode_pattern_lines(player, board_req.pattern_lines)
+        player.wall = _decode_wall(board_req.wall)
         player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
         player._update_pending()
         player._update_penalty()
@@ -800,14 +848,15 @@ def get_recording(game_id: str) -> dict:
     raise HTTPException(status_code=404, detail=f"Recording {game_id!r} not found")
 
 
-# ── Inspector helpers ──────────────────────────────────────────────────────
+# endregion
+
+# region Inspector helpers -------------------------------------------------
 
 _ALPHABETA_PRESETS: dict[str, dict] = {
-    "alphabeta_easy": {"depths": (1, 2, 3), "thresholds": (20, 10)},
-    "alphabeta_medium": {"depths": (2, 3, 7), "thresholds": (20, 10)},
-    "alphabeta_hard": {"depths": (3, 5, 7), "thresholds": (20, 10)},
-    "alphabeta_extreme": {"depths": (4, 6, 8), "thresholds": (20, 10)},
-    "alphabeta_ludacris": {"depths": (20, 20, 20), "thresholds": (180, 180)},
+    "alphabeta_easy": {"depth": 1, "threshold": 4},
+    "alphabeta_medium": {"depth": 2, "threshold": 6},
+    "alphabeta_hard": {"depth": 3, "threshold": 8},
+    "alphabeta_extreme": {"depth": 4, "threshold": 10},
 }
 
 
@@ -1000,7 +1049,9 @@ def _inspector_run_batch() -> None:
     _inspector_tree.record_batch_stability()
 
 
-# ── Inspector endpoints ────────────────────────────────────────────────────
+# endregion
+
+# region Inspector endpoints -----------------------------------------------
 
 
 @app.get("/inspect/{game_id}/{move_index}/state")
@@ -1071,3 +1122,6 @@ def inspect_live_state() -> dict:
             detail="No active live inspector tree",
         )
     return _inspector_snapshot()
+
+
+# endregion

@@ -554,9 +554,12 @@ def collect_parallel(
         else:
             ties += 1
 
-        logger.debug(
-            _format_pair_log(spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs)
-        )
+        if num_pairs >= 10 and (pair_num) % (num_pairs // 10) == 0:
+            logger.info(
+                _format_pair_log(
+                    spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs
+                )
+            )
 
     games_recorded = num_pairs * 2
     logger.info(
@@ -577,8 +580,11 @@ def collect_parallel(
 
 def _pretrain_matchups() -> list[tuple[AgentSpec, AgentSpec, float]]:
     easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
+    greedy = AgentSpec(type="greedy")
     return [
-        (easy, easy, 1.0),
+        (easy, easy, 0.8),
+        (greedy, greedy, 0.1),
+        (easy, greedy, 0.1),
     ]
 
 
@@ -592,11 +598,12 @@ def collect_ab_parallel(
     Used each iteration during az-vs-abeasy mode to maintain a supply of
     high-quality, AZ-independent training data in the buffer.
     """
-    easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
+    # easy = AgentSpec(type="alphabeta", depth=1, threshold=4)
+    greedy = AgentSpec(type="greedy")
     collect_parallel(
         buf,
-        spec_0=easy,
-        spec_1=easy,
+        spec_0=greedy,
+        spec_1=greedy,
         num_pairs=num_pairs,
         num_workers=num_workers,
     )
@@ -676,9 +683,12 @@ def collect_heuristic_parallel(
         else:
             ties += 1
 
-        logger.debug(
-            _format_pair_log(spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs)
-        )
+        if num_pairs >= 10 and (pair_num) % (num_pairs // 10) == 0:
+            logger.info(
+                _format_pair_log(
+                    spec_0, spec_1, scores_a, scores_b, pair_num, num_pairs
+                )
+            )
 
     logger.info(
         f"heuristic collection complete -- "
@@ -744,12 +754,13 @@ def evaluate_parallel(
         elif scores_b[1] == scores_b[0]:
             new_wins += 0.5
 
-        logger.debug(
-            _format_pair_log(
-                new_spec, old_spec, scores_a, scores_b, pair_num, num_pairs
+        if num_pairs >= 10 and (pair_num) % (num_pairs // 10) == 0:
+            logger.info(
+                _format_pair_log(
+                    new_spec, old_spec, scores_a, scores_b, pair_num, num_pairs
+                )
+                + f"  ({new_wins / games_played:.0%})"
             )
-            + f"  ({new_wins / games_played:.0%})"
-        )
 
         if buf is not None:
             _push_records(buf, records_a)

@@ -22,7 +22,12 @@ def _uniform_pv(game, legal):
 
 
 def _build_two_move_position() -> Game:
-    """The hand-crafted 2-move end-of-round position from test_inspector_minimax."""
+    """A hand-crafted 2-move end-of-round position.
+
+    Only BLACK and WHITE tiles remain in the center. Each player has four
+    nearly-full pattern lines so only row 4 (capacity 5) is available for
+    new tiles from the center.
+    """
     game = Game()
     for factory in game.factories:
         factory.clear()
@@ -30,28 +35,18 @@ def _build_two_move_position() -> Game:
     game.center.extend([Tile.BLACK, Tile.BLACK, Tile.WHITE, Tile.WHITE])
 
     p1 = game.players[0]
-    p1.pattern_lines[0] = [Tile.WHITE]
-    p1.pattern_lines[1] = [Tile.BLUE, Tile.BLUE]
-    p1.pattern_lines[2] = [Tile.RED, Tile.RED, Tile.RED]
-    p1.pattern_lines[3] = [Tile.YELLOW, Tile.YELLOW, Tile.YELLOW, Tile.YELLOW]
-    p1.pattern_lines[4] = []
-    p1.floor_line = []
-    p1.wall = [[None] * 5 for _ in range(5)]
-    p1._update_pending()
-    p1._update_penalty()
-    p1._update_bonus()
+    p1.place(0, [Tile.WHITE])
+    p1.place(1, [Tile.BLUE, Tile.BLUE])
+    p1.place(2, [Tile.RED, Tile.RED, Tile.RED])
+    p1.place(3, [Tile.YELLOW, Tile.YELLOW, Tile.YELLOW, Tile.YELLOW])
 
     p2 = game.players[1]
-    p2.pattern_lines[0] = [Tile.WHITE]
-    p2.pattern_lines[1] = [Tile.BLACK]
-    p2.pattern_lines[2] = [Tile.RED, Tile.RED]
-    p2.pattern_lines[3] = [Tile.BLUE, Tile.BLUE]
-    p2.pattern_lines[4] = []
-    p2.floor_line = [Tile.FIRST_PLAYER]
-    p2.wall = [[None] * 5 for _ in range(5)]
-    p2._update_pending()
+    p2.place(0, [Tile.WHITE])
+    p2.place(1, [Tile.BLACK])
+    p2.place(2, [Tile.RED, Tile.RED])
+    p2.place(3, [Tile.BLUE, Tile.BLUE])
+    p2.floor_line.append(Tile.FIRST_PLAYER)
     p2._update_penalty()
-    p2._update_bonus()
 
     game.current_player_index = 0
     game.round = 1
@@ -85,14 +80,11 @@ def test_round_boundary_node_is_fully_explored():
     root = tree._root
     assert root is not None
 
-    # Manually create a boundary node
     boundary_game = game.clone()
     boundary_game.make_move(boundary_game.legal_moves()[0])
     boundary_game.make_move(boundary_game.legal_moves()[0])
-    # Should be at round boundary now
     node = AZNode(game=boundary_game)
     assert node.is_round_boundary is True
-    # A boundary node should be considered fully explored
     assert node._fully_explored is True
 
 
@@ -100,14 +92,13 @@ def test_terminal_node_is_fully_explored():
     """A terminal node is always fully explored."""
     game = Game()
     game.setup_round()
-    # Create a mock terminal by checking — we just verify the property
     node = AZNode(game=game)
     if node.is_terminal:
         assert node._fully_explored is True
 
 
 def test_fully_explored_after_sufficient_simulations():
-    """The 2-move position has 10 leaf nodes — should be fully explored quickly."""
+    """The 2-move position has a small tree — should be fully explored quickly."""
     game = _build_two_move_position()
     tree = _make_tree(game, simulations=50)
     tree._run_simulations()
@@ -128,7 +119,6 @@ def test_fully_explored_propagates_from_leaves():
     tree = _make_tree(game, simulations=50)
     tree._run_simulations()
     assert tree._root is not None
-    # All children of root should also be fully explored
     for child in tree._root.children:
         assert child._fully_explored is True, f"Child {child.move} not fully explored"
 
@@ -162,7 +152,6 @@ def test_is_stable_does_not_require_batch_count_when_fully_explored():
     game = _build_two_move_position()
     tree = _make_tree(game, simulations=50)
     tree._run_simulations()
-    # Reset stability counter to confirm it's not being used
     tree._stable_batches = 0
     assert tree._root is not None
     assert tree._root._fully_explored is True
@@ -196,7 +185,6 @@ def test_normal_game_position_not_quickly_fully_explored():
     game.setup_round()
     tree = _make_tree(game, simulations=50)
     tree._run_simulations()
-    # Should not be fully explored — too many branches
     assert tree._root is not None
     assert tree._root._fully_explored is False
 
@@ -205,7 +193,7 @@ def test_fully_explored_minimax_matches_brute_force():
     """Once fully explored, minimax value should exactly match hand calculation.
 
     From our hand analysis:
-      Root minimax = +5pts (Black→row5, P2 responds with any White move)
+      Root minimax = +5pts (Black->row5, P2 responds with any White move)
     """
     game = _build_two_move_position()
     tree = _make_tree(game, simulations=50)
@@ -216,5 +204,5 @@ def test_fully_explored_minimax_matches_brute_force():
     serialized = tree.serialize()
     mm_pts = serialized["minimax_value"] * 50
     assert (
-        abs(mm_pts - 5.0) < 0.01
-    ), f"Expected exactly +5.0pts minimax, got {mm_pts:.2f}pts"
+        abs(mm_pts - 4.0) < 0.01
+    ), f"Expected exactly +4.0pts minimax, got {mm_pts:.2f}pts"

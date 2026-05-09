@@ -25,7 +25,7 @@ from neural.trainer import (
     AgentSpec,
     Trainer,
     collect_parallel,
-    collect_ab_parallel,
+    # collect_ab_parallel,
     evaluate_parallel,
     _pretrain_matchups,
     collect_heuristic_parallel,
@@ -57,7 +57,7 @@ def setup_logging() -> Path:
     console.setFormatter(fmt)
 
     fh = logging.FileHandler(log_path, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
 
     root.addHandler(console)
@@ -253,7 +253,7 @@ def _run_training_steps(
     num_steps: int,
     diff_only: bool,
     value_only: bool = False,
-    log_interval: int = 500,
+    log_interval: int = 10000,
 ) -> tuple[float, dict[str, float]]:
     """Run num_steps training steps, log at intervals.
 
@@ -295,11 +295,11 @@ def main() -> None:
     parser.add_argument(
         "--simulations",
         type=int,
-        default=200,
+        default=400,
         help="MCTS simulations per move (self-play and eval)",
     )
     parser.add_argument(
-        "--eval-games", type=int, default=48, help="eval mirror pairs per iteration"
+        "--eval-games", type=int, default=200, help="eval mirror pairs per iteration"
     )
     parser.add_argument("--win-threshold", type=float, default=0.55)
     parser.add_argument("--buffer-size", type=int, default=500_000)
@@ -337,7 +337,7 @@ def main() -> None:
     parser.add_argument(
         "--dropout",
         type=float,
-        default=0.1,
+        default=0.3,
         help="dropout probability on trunk output (0.0 to disable)",
     )
     args = parser.parse_args()
@@ -368,7 +368,7 @@ def main() -> None:
         num_pretrain_pairs = args.buffer_size // 100
         num_pretrain_steps = num_pretrain_pairs * 5
         logger.info(
-            "pretrain -- collecting %d ABeasy vs ABeasy pairs (%d workers)...",
+            "pretrain -- collecting %d pretrain pairs (%d workers)...",
             num_pretrain_pairs,
             args.workers,
         )
@@ -397,8 +397,8 @@ def main() -> None:
 
     iter_results: list[IterResult] = []
     az_vs_az_mode = False
-    ab_easy_spec = AgentSpec(type="alphabeta", depth=1, threshold=4)
-
+    ab_easy_spec = AgentSpec(type="alphabeta", depth=2, threshold=6)
+    # greedy_spec = AgentSpec(type="greedy")
     # ── Main iteration loop ────────────────────────────────────────────────
     for iteration in range(1, args.iterations + 1):
         t0 = time.time()
@@ -425,7 +425,7 @@ def main() -> None:
             )
         else:
             logger.info(
-                "generating %d AZ vs ABeasy mirror pairs...", args.games_per_iter
+                "generating %d AZ vs Greedy mirror pairs...", args.games_per_iter
             )
             stats = collect_parallel(
                 buf,
@@ -441,7 +441,7 @@ def main() -> None:
                 else 0.0
             )
             logger.info(
-                "AZ win rate vs ABeasy: %.1f%%  (%dW / %dL / %dT)",
+                "AZ win rate vs Greedy: %.1f%%  (%dW / %dL / %dT)",
                 az_win_rate * 100,
                 stats["wins_0"],
                 stats["wins_1"],
@@ -455,15 +455,15 @@ def main() -> None:
                 )
                 az_vs_az_mode = True
 
-            logger.info(
-                "generating %d ABeasy vs ABeasy mirror pairs...",
-                args.games_per_iter,
-            )
-            collect_ab_parallel(
-                buf,
-                num_pairs=args.games_per_iter,
-                num_workers=args.workers,
-            )
+            # logger.info(
+            #     "generating %d ABeasy vs ABeasy mirror pairs...",
+            #     args.games_per_iter,
+            # )
+            # collect_ab_parallel(
+            #     buf,
+            #     num_pairs=args.games_per_iter,
+            #     num_workers=args.workers,
+            # )
 
         logger.info("buffer size after collection: %d", len(buf))
 
@@ -508,7 +508,7 @@ def main() -> None:
             num_workers=args.workers,
         )
         logger.info("new net win rate vs best: %.1f%%", win_rate * 100)
-
+        logger.info("buffer size after collection: %d", len(buf))
         # ── 5. Promote or reset ────────────────────────────────────────────
         if win_rate >= args.win_threshold:
             generation += 1

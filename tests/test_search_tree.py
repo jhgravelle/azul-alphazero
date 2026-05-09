@@ -642,7 +642,3 @@ class TestPuctScore:
         node_high = _make_node(prior=0.40)
         node_low = _make_node(prior=0.10)
         assert node_high.puct_score(4, 0.50) > node_low.puct_score(4, 0.50)
-
-    def test_puct_c_is_1_point_0(self):
-        """Confirm exploration constant is set to 1.0."""
-        assert _PUCT_C == 1.0

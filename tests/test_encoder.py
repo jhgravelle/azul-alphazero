@@ -64,7 +64,7 @@ def test_my_wall_reflects_placed_tile():
     game = fresh_game()
     blue = Tile.BLUE
     wall_col = COLUMN_FOR_TILE_IN_ROW[blue][0]
-    game.current_player.wall[0][wall_col] = blue
+    game.current_player.wall[0][wall_col] = 1
 
     encoding = encode_state(game)
     flat_idx = 0 * BOARD_SIZE + wall_col
@@ -77,7 +77,7 @@ def test_opponent_wall_reflects_opponent_tiles():
     opponent_index = 1 - game.current_player_index
     yellow = Tile.YELLOW
     wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][2]
-    game.players[opponent_index].wall[2][wall_col] = yellow
+    game.players[opponent_index].wall[2][wall_col] = 1
 
     encoding = encode_state(game)
     flat_idx = 2 * BOARD_SIZE + wall_col
@@ -97,7 +97,7 @@ def test_pattern_line_empty_at_game_start():
 def test_pattern_line_partial_fill():
     game = fresh_game()
     red = Tile.RED
-    game.current_player.pattern_lines[2] = [red, red]
+    game.current_player.place(2, [red, red])
     wall_col = COLUMN_FOR_TILE_IN_ROW[red][2]
 
     encoding = encode_state(game)
@@ -108,7 +108,7 @@ def test_pattern_line_partial_fill():
 def test_pattern_line_full_ratio():
     game = fresh_game()
     yellow = Tile.YELLOW
-    game.current_player.pattern_lines[1] = [yellow, yellow]
+    game.current_player.place(1, [yellow, yellow])
     wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][1]
 
     encoding = encode_state(game)
@@ -119,9 +119,9 @@ def test_pattern_line_full_ratio():
 def test_pattern_line_suppressed_when_wall_filled():
     game = fresh_game()
     yellow = Tile.YELLOW
-    game.current_player.pattern_lines[1] = [yellow, yellow]
+    game.current_player.place(1, [yellow, yellow])
     wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][1]
-    game.current_player.wall[1][wall_col] = yellow
+    game.current_player.wall[1][wall_col] = 1
 
     encoding = encode_state(game)
     flat_idx = 1 * BOARD_SIZE + wall_col

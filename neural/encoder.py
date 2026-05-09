@@ -103,12 +103,12 @@ MAX_SOURCES: float = 5.0
 def _encode_wall_flattened(
     encoding: torch.Tensor,
     offset: int,
-    wall: list[list[Tile | None]],
+    wall: list[list[int]],
 ) -> None:
     """Write 1.0 for each occupied wall cell into flattened positions."""
     for row in range(BOARD_SIZE):
         for wall_col in range(BOARD_SIZE):
-            if wall[row][wall_col] is not None:
+            if wall[row][wall_col]:
                 flat_idx = row * BOARD_SIZE + wall_col
                 encoding[offset + flat_idx] = 1.0
 
@@ -117,19 +117,21 @@ def _encode_pattern_line_fill_ratio_flattened(
     encoding: torch.Tensor,
     offset: int,
     player: Player,
-    wall: list[list[Tile | None]],
+    wall: list[list[int]],
 ) -> None:
     """Write pattern line fill ratio into flattened positions."""
     for row in range(BOARD_SIZE):
-        line = player.pattern_lines[row]
-        if not line:
+        tile = player._line_tile(row)
+        if tile is None:
             continue
-        committed_color = line[0]
-        wall_col = COLUMN_FOR_TILE_IN_ROW[committed_color][row]
-        if wall[row][wall_col] is not None:
+        wall_col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        if wall[row][wall_col]:
             continue
         capacity = row + 1
-        fill_ratio = len(line) / capacity
+        fill_count = player.pattern_grid[row][wall_col]
+        if fill_count == 0:
+            continue
+        fill_ratio = fill_count / capacity
         flat_idx = row * BOARD_SIZE + wall_col
         encoding[offset + flat_idx] = fill_ratio
 

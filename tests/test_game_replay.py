@@ -48,31 +48,25 @@ def test_replay_to_move_zero_is_initial_state():
     record = _record_full_game()
     game = replay_to_move(record, 0)
 
-    # Factories should be filled (5 factories × 4 tiles = 20 tiles placed)
     total_factory_tiles = sum(len(f) for f in game.factories)
     assert total_factory_tiles == 20
 
-    # No moves made yet — all pattern lines empty
+    # No moves made yet — all pattern grid cells empty
     for player in game.players:
-        for line in player.pattern_lines:
-            assert len(line) == 0
+        for row in player.pattern_grid:
+            assert sum(row) == 0
 
-    # Round 1
     assert game.round == 1
 
 
 def test_replay_to_move_one_matches_first_recorded_move():
     """move_index=1 should reflect the state after exactly one move."""
     record = _record_full_game()
-    # first_move_record = record.rounds[0].moves[0]
 
     game = replay_to_move(record, 1)
 
-    # The factory or center that was the source should have fewer tiles,
-    # OR the destination pattern line should have tiles — at least one player
-    # board has changed.
     total_pattern_tiles = sum(
-        len(line) for player in game.players for line in player.pattern_lines
+        sum(row) for player in game.players for row in player.pattern_grid
     )
     total_floor_tiles = sum(len(player.floor_line) for player in game.players)
     assert total_pattern_tiles + total_floor_tiles > 0

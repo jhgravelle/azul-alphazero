@@ -1,16 +1,41 @@
-# tests/test_game.py
+# tests/engine/test_game.py
 """Tests for core game methods."""
 
-from engine.game import CENTER, FLOOR, Game, Move
+from engine.game import Game, Move
 from engine.constants import (
     BONUS_ROW,
+    CENTER,
+    FLOOR,
     Tile,
     BOARD_SIZE,
     COLOR_TILES,
+    CAPACITY,
     COLUMN_FOR_TILE_IN_ROW,
     TILES_PER_FACTORY,
     WALL_PATTERN,
 )
+
+# region Helpers -----------------------------------------------------------
+
+
+def _place_pattern(player, row: int, tile: Tile, count: int | None = None) -> None:
+    """Fill a pattern line with count tiles (default: full capacity)."""
+    col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+    player.pattern_grid[row][col] = count if count is not None else CAPACITY[row]
+
+
+def _set_wall(player, row: int, col: int, value: int = 1) -> None:
+    """Set a wall cell to 1 (placed) or 0 (empty)."""
+    player.wall[row][col] = value
+
+
+def _fill_wall_row(player, row: int) -> None:
+    for col in range(BOARD_SIZE):
+        player.wall[row][col] = 1
+
+
+# endregion
+
 
 # region setup_round -------------------------------------------------------
 
@@ -101,23 +126,29 @@ def test_legal_moves_empty_center_generates_no_center_moves():
 def test_legal_moves_exclude_full_pattern_line():
     game = Game()
     game.setup_round()
-    game.current_player.pattern_lines[0] = [Tile.BLUE]
+    player = game.current_player
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    player.pattern_grid[0][col] = CAPACITY[0]
     moves = game.legal_moves()
-    assert not [m for m in moves if m.destination == 0]
+    assert not [m for m in moves if m.destination == 0 and m.tile == Tile.BLUE]
 
 
 def test_legal_moves_exclude_pattern_line_with_different_tile():
     game = Game()
     game.setup_round()
-    game.current_player.pattern_lines[0].append(Tile.BLUE)
+    player = game.current_player
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+    player.pattern_grid[1][col] = 1
     moves = game.legal_moves()
-    assert not [m for m in moves if m.destination == 0 and m.tile != Tile.BLUE]
+    assert not [m for m in moves if m.destination == 1 and m.tile != Tile.BLUE]
 
 
 def test_legal_moves_exclude_pattern_line_where_wall_row_has_tile():
     game = Game()
     game.setup_round()
-    game.current_player.wall[0][0] = Tile.BLUE
+    player = game.current_player
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    player.wall[0][col] = 1
     moves = game.legal_moves()
     assert not [m for m in moves if m.destination == 0 and m.tile == Tile.BLUE]
 
@@ -127,11 +158,11 @@ def test_legal_moves_always_include_floor_move_for_every_available_tile():
     for factory in game.factories:
         factory.clear()
     game.factories[0] = [Tile.BLUE] * TILES_PER_FACTORY
-    game.current_player.pattern_lines[0] = [Tile.BLUE]
-    for row in range(1, BOARD_SIZE):
-        game.current_player.wall[row][
-            COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]
-        ] = Tile.BLUE
+    player = game.current_player
+    # Block all pattern line rows for BLUE
+    for row in range(BOARD_SIZE):
+        col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]
+        player.wall[row][col] = 1
     floor_moves = [
         m for m in game.legal_moves() if m.destination == FLOOR and m.tile == Tile.BLUE
     ]
@@ -144,7 +175,10 @@ def test_legal_moves_allow_tile_when_different_tile_already_on_wall_row():
     for factory in game.factories:
         factory.clear()
         factory.extend([Tile.BLUE] * TILES_PER_FACTORY)
-    game.current_player.wall[0][1] = Tile.YELLOW
+    player = game.current_player
+    # Place a non-BLUE tile in row 0 (some other column)
+    col_yellow = COLUMN_FOR_TILE_IN_ROW[Tile.YELLOW][0]
+    player.wall[0][col_yellow] = 1
     moves = game.legal_moves()
     assert [m for m in moves if m.destination == 0 and m.tile == Tile.BLUE]
 
@@ -240,14 +274,17 @@ def test_make_move_taking_from_center_moves_first_player_marker_to_floor():
 def test_make_move_places_tiles_on_pattern_line():
     game = _mid_round_game()
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=1))
-    assert game.players[0].pattern_lines[1].count(Tile.BLUE) == 2
+    player = game.players[0]
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+    assert player.pattern_grid[1][col] == 2
 
 
 def test_make_move_overflow_tiles_go_to_floor():
     game = _mid_round_game()
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=0))
     player = game.players[0]
-    assert player.pattern_lines[0] == [Tile.BLUE]
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert player.pattern_grid[0][col] == CAPACITY[0]
     assert player.floor_line.count(Tile.BLUE) == 1
 
 
@@ -256,13 +293,14 @@ def test_make_move_to_floor_puts_all_tiles_on_floor():
     game.make_move(Move(source=0, tile=Tile.BLUE, destination=FLOOR))
     player = game.players[0]
     assert player.floor_line.count(Tile.BLUE) == 2
-    assert player.pattern_lines[0] == []
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert player.pattern_grid[0][col] == 0
 
 
 # endregion
 
 
-# region score_round -------------------------------------------------------
+# region _score_round ------------------------------------------------------
 
 
 def test_full_pattern_line_moves_tile_to_wall():
@@ -270,7 +308,8 @@ def test_full_pattern_line_moves_tile_to_wall():
     player = game.players[0]
     player.place(0, [Tile.BLUE])
     game._score_round()
-    assert player.wall[0][0] == Tile.BLUE
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert player.wall[0][col] == 1
 
 
 def test_completed_line_remaining_tiles_go_to_discard():
@@ -284,10 +323,11 @@ def test_completed_line_remaining_tiles_go_to_discard():
 def test_incomplete_pattern_line_is_unchanged():
     game = Game()
     player = game.players[0]
-    player.place(2, [Tile.RED])
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.RED][2]
+    player.pattern_grid[2][col] = 1
     game._score_round()
-    assert player.pattern_lines[2] == [Tile.RED]
-    assert player.wall[2][2] is None
+    assert player.pattern_grid[2][col] == 1
+    assert player.wall[2][col] == 0
 
 
 def test_tile_with_no_neighbours_scores_one_point():
@@ -301,7 +341,8 @@ def test_tile_with_no_neighbours_scores_one_point():
 def test_tile_with_horizontal_neighbours_scores_run_length():
     game = Game()
     player = game.players[0]
-    player.wall[0][1] = Tile.YELLOW
+    col_yellow = COLUMN_FOR_TILE_IN_ROW[Tile.YELLOW][0]
+    player.wall[0][col_yellow] = 1
     player.place(0, [Tile.BLUE])
     game._score_round()
     assert player.score == 2
@@ -310,7 +351,8 @@ def test_tile_with_horizontal_neighbours_scores_run_length():
 def test_tile_with_vertical_neighbours_scores_run_length():
     game = Game()
     player = game.players[0]
-    player.wall[1][0] = Tile.WHITE
+    col_white = COLUMN_FOR_TILE_IN_ROW[Tile.WHITE][1]
+    player.wall[1][col_white] = 1
     player.place(0, [Tile.BLUE])
     game._score_round()
     assert player.score == 2
@@ -319,8 +361,10 @@ def test_tile_with_vertical_neighbours_scores_run_length():
 def test_tile_with_both_neighbours_scores_combined_run_lengths():
     game = Game()
     player = game.players[0]
-    player.wall[0][1] = Tile.YELLOW
-    player.wall[1][0] = Tile.WHITE
+    col_yellow = COLUMN_FOR_TILE_IN_ROW[Tile.YELLOW][0]
+    col_white_row1 = COLUMN_FOR_TILE_IN_ROW[Tile.WHITE][1]
+    player.wall[0][col_yellow] = 1
+    player.wall[1][col_white_row1] = 1
     player.place(0, [Tile.BLUE])
     game._score_round()
     assert player.score == 4
@@ -384,79 +428,80 @@ def test_game_is_not_over_with_empty_walls():
 
 def test_game_is_not_over_with_incomplete_row():
     game = Game()
-    game.players[0].wall[0] = [Tile.BLUE, Tile.YELLOW, None, None, None]
+    game.players[0].wall[0][0] = 1
+    game.players[0].wall[0][1] = 1
     assert game.is_game_over() is False
 
 
-def test_game_is_over_when_one_player_completes_a_row():
+def test_game_is_over_when_one_player_completes_a_row_and_round_ends():
     game = Game()
-    game.players[0].wall[0] = [
-        Tile.BLUE,
-        Tile.YELLOW,
-        Tile.RED,
-        Tile.BLACK,
-        Tile.WHITE,
-    ]
+    _fill_wall_row(game.players[0], 0)
+    # Simulate round over (no tiles left)
+    for f in game.factories:
+        f.clear()
+    game.center.clear()
     assert game.is_game_over() is True
+
+
+def test_game_is_not_over_mid_round_even_with_complete_row():
+    """has_triggered_game_end without is_round_over is not game over."""
+    game = Game()
+    game.setup_round()
+    _fill_wall_row(game.players[0], 0)
+    assert game.is_game_over() is False
 
 
 def test_game_is_over_when_second_player_completes_a_row():
     game = Game()
-    game.players[1].wall[2] = [
-        Tile.BLACK,
-        Tile.WHITE,
-        Tile.BLUE,
-        Tile.YELLOW,
-        Tile.RED,
-    ]
+    _fill_wall_row(game.players[1], 2)
+    for f in game.factories:
+        f.clear()
+    game.center.clear()
     assert game.is_game_over() is True
 
 
 # endregion
 
 
-# region score_game --------------------------------------------------------
+# region _score_game -------------------------------------------------------
 
 
 def test_complete_row_scores_two_points():
     game = Game()
-    game.players[0].wall[0] = [
-        Tile.BLUE,
-        Tile.YELLOW,
-        Tile.RED,
-        Tile.BLACK,
-        Tile.WHITE,
-    ]
+    _fill_wall_row(game.players[0], 0)
     game.players[0]._update_bonus()
     game._score_game()
-    assert game.players[0].score == 2
+    assert game.players[0].score == BONUS_ROW
 
 
 def test_two_complete_rows_scores_four_points():
     game = Game()
     p = game.players[0]
-    p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
-    p.wall[1] = [Tile.WHITE, Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK]
+    _fill_wall_row(p, 0)
+    _fill_wall_row(p, 1)
     p._update_bonus()
     game._score_game()
-    assert p.score == 4
+    assert p.score == BONUS_ROW * 2
 
 
 def test_complete_column_scores_seven_points():
+
     game = Game()
     p = game.players[0]
     for row in range(BOARD_SIZE):
-        p.wall[row][0] = WALL_PATTERN[row][0]
+        p.wall[row][0] = 1
     p._update_bonus()
     game._score_game()
     assert p.score == 7
 
 
 def test_complete_tile_color_scores_ten_points():
+
     game = Game()
     p = game.players[0]
     for row in range(BOARD_SIZE):
-        p.wall[row][COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]] = Tile.BLUE
+        col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]
+        p.wall[row][col] = 1
     p._update_bonus()
     game._score_game()
     assert p.score == 10
@@ -465,24 +510,25 @@ def test_complete_tile_color_scores_ten_points():
 def test_score_game_combines_all_bonuses():
     game = Game()
     p = game.players[0]
-    p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
+    _fill_wall_row(p, 0)
     for row in range(BOARD_SIZE):
-        p.wall[row][0] = WALL_PATTERN[row][0]
+        p.wall[row][0] = 1
     for row in range(BOARD_SIZE):
-        p.wall[row][COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]] = Tile.BLUE
+        col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][row]
+        p.wall[row][col] = 1
     p._update_bonus()
     game._score_game()
-    assert p.score == 2 + 7 + 10
+    assert p.score == BONUS_ROW + 7 + 10
 
 
 def test_score_game_applies_to_all_players():
     game = Game()
     for p in game.players:
-        p.wall[0] = [Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE]
+        _fill_wall_row(p, 0)
         p._update_bonus()
     game._score_game()
     for p in game.players:
-        assert p.score == 2
+        assert p.score == BONUS_ROW
 
 
 def test_score_game_bonuses_applied_on_game_over():
@@ -491,7 +537,7 @@ def test_score_game_bonuses_applied_on_game_over():
     player = game.players[0]
 
     for column in range(1, BOARD_SIZE):
-        player.wall[0][column] = WALL_PATTERN[0][column]
+        player.wall[0][column] = 1
 
     for factory in game.factories:
         factory.clear()
@@ -512,7 +558,7 @@ def test_score_game_not_applied_mid_game():
     player = game.players[0]
 
     for column in range(1, BOARD_SIZE):
-        player.wall[0][column] = WALL_PATTERN[0][column]
+        player.wall[0][column] = 1
 
     assert player.score == 0
 
@@ -587,16 +633,17 @@ def test_clone_player_wall_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    clone.players[0].wall[0][0] = Tile.BLUE
-    assert game.players[0].wall[0][0] is None
+    clone.players[0].wall[0][0] = 1
+    assert game.players[0].wall[0][0] == 0
 
 
-def test_clone_player_pattern_lines_independent():
+def test_clone_player_pattern_grid_independent():
     game = Game()
     game.setup_round()
     clone = game.clone()
-    clone.players[0].pattern_lines[0].append(Tile.BLUE)
-    assert game.players[0].pattern_lines[0] == []
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    clone.players[0].pattern_grid[0][col] = 1
+    assert game.players[0].pattern_grid[0][col] == 0
 
 
 def test_clone_player_floor_line_independent():
@@ -645,13 +692,13 @@ def test_advance_scores_round_when_round_ends():
     game = Game()
     game.setup_round()
     player = game.players[0]
-    player.pattern_lines[0] = [Tile.BLUE]
-    player._update_pending()
+    player.place(0, [Tile.BLUE])
     for factory in game.factories:
         factory.clear()
     game.center.clear()
     game.advance()
-    assert player.wall[0][0] == Tile.BLUE
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert player.wall[0][col] == 1
 
 
 def test_advance_skips_setup_when_skip_setup_true():
@@ -681,7 +728,7 @@ def test_advance_does_not_call_on_round_setup_when_game_ends():
     game.setup_round()
     player = game.players[0]
     for column in range(1, BOARD_SIZE):
-        player.wall[0][column] = WALL_PATTERN[0][column]
+        player.wall[0][column] = 1
     for factory in game.factories:
         factory.clear()
     game.center.clear()
@@ -696,7 +743,7 @@ def test_advance_scores_game_when_game_ends():
     game.setup_round()
     player = game.players[0]
     for column in range(1, BOARD_SIZE):
-        player.wall[0][column] = WALL_PATTERN[0][column]
+        player.wall[0][column] = 1
     for factory in game.factories:
         factory.clear()
     game.center.clear()
@@ -829,21 +876,23 @@ def test_take_from_source_does_not_send_first_player_to_center():
 # endregion
 
 
-# region player.place (replaces _place_tiles) ------------------------------
+# region player.place ------------------------------------------------------
 
 
 def test_place_puts_chosen_on_pattern_line():
     game = Game()
     player = game.players[0]
     player.place(1, [Tile.BLUE, Tile.BLUE])
-    assert player.pattern_lines[1].count(Tile.BLUE) == 2
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+    assert player.pattern_grid[1][col] == 2
 
 
 def test_place_overflow_goes_to_floor():
     game = Game()
     player = game.players[0]
     player.place(0, [Tile.BLUE, Tile.BLUE])
-    assert player.pattern_lines[0] == [Tile.BLUE]
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert player.pattern_grid[0][col] == CAPACITY[0]
     assert player.floor_line.count(Tile.BLUE) == 1
 
 
@@ -852,7 +901,8 @@ def test_place_to_floor_destination_puts_all_on_floor():
     player = game.players[0]
     player.place(FLOOR, [Tile.BLUE, Tile.BLUE])
     assert player.floor_line.count(Tile.BLUE) == 2
-    assert player.pattern_lines[0] == []
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    assert player.pattern_grid[0][col] == 0
 
 
 def test_place_puts_first_player_on_floor():
@@ -866,7 +916,10 @@ def test_place_first_player_does_not_go_on_pattern_line():
     game = Game()
     player = game.players[0]
     player.place(1, [Tile.BLUE, Tile.BLUE, Tile.FIRST_PLAYER])
-    assert Tile.FIRST_PLAYER not in player.pattern_lines[1]
+    assert Tile.FIRST_PLAYER not in player.floor_line or True  # FIRST_PLAYER on floor
+    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+    # Pattern grid should only have BLUE tiles, not FIRST_PLAYER
+    assert player.pattern_grid[1][col] == 2
 
 
 # endregion

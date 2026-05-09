@@ -157,10 +157,10 @@ class AlphaBetaAgent(Agent):
         moving_player_index = game.current_player_index
         if move.destination == -2:
             return -10.0 if moving_player_index == root_player_index else 10.0
-        from engine.constants import CAPACITY, COLUMN_FOR_TILE_IN_ROW
+        from engine.constants import CAPACITY, COL_FOR_TILE_ROW
 
         capacity = CAPACITY[move.destination]
-        col = COLUMN_FOR_TILE_IN_ROW[move.tile][move.destination]
+        col = COL_FOR_TILE_ROW[move.tile][move.destination]
         filled = game.current_player.pattern_grid[move.destination][col]
         fills_line = filled + 1 >= capacity
         if fills_line:

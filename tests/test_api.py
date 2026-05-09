@@ -4,7 +4,7 @@
 
 import pytest
 import json
-from engine.constants import COLUMN_FOR_TILE_IN_ROW, WALL_PATTERN
+from engine.constants import COL_FOR_TILE_ROW, TILE_FOR_ROW_COL
 from engine.game import Game
 from fastapi.testclient import TestClient
 
@@ -1235,7 +1235,7 @@ def _encode_pattern_lines_for_snapshot(player) -> list[list[str]]:
         if tile is None:
             result.append([])
         else:
-            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+            col = COL_FOR_TILE_ROW[tile][row]
             count = player.pattern_grid[row][col]
             result.append([tile.name] * count)
     return result
@@ -1251,7 +1251,7 @@ def _make_snapshot(game) -> dict:
                 "score": p.score,
                 "wall": [
                     [
-                        WALL_PATTERN[row][col].name if p.wall[row][col] else None
+                        TILE_FOR_ROW_COL[row][col].name if p.wall[row][col] else None
                         for col in range(5)
                     ]
                     for row in range(5)

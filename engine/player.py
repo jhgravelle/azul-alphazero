@@ -3,21 +3,25 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from engine.constants import (
-    BOARD_SEPARATOR,
-    BOARD_SIZE,
+    BLANK,
+    SEPARATOR,
+    COL_FOR_CHAR_ROW,
+    EMPTY,
+    SIZE,
     BONUS_COLUMN,
     BONUS_ROW,
     BONUS_TILE,
     CAPACITY,
-    CELLS_BY_COLUMN,
+    CELLS_BY_COL,
     CELLS_BY_ROW,
     CELLS_BY_TILE,
-    COLUMN_FOR_TILE_IN_ROW,
+    SPACE,
+    TILE_FOR_CHAR,
+    COL_FOR_TILE_ROW,
     CUMULATIVE_FLOOR_PENALTIES,
     FLOOR,
-    FLOOR_PENALTIES,
-    TILE_CHAR,
-    WALL_PATTERN,
+    CHAR_FOR_TILE,
+    TILE_FOR_ROW_COL,
     Tile,
 )
 
@@ -74,11 +78,11 @@ class Player:
     penalty: int = 0
     bonus: int = 0
     pattern_grid: list[list[int]] = field(
-        default_factory=lambda: [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        default_factory=lambda: [[0] * SIZE for _ in range(SIZE)]
     )
     floor_line: list[Tile] = field(default_factory=list)
     wall: list[list[int]] = field(
-        default_factory=lambda: [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        default_factory=lambda: [[0] * SIZE for _ in range(SIZE)]
     )
 
     # region Earned score ---------------------------------------------------
@@ -139,7 +143,7 @@ class Player:
         """
         bonus_features = [
             (CELLS_BY_ROW, BONUS_ROW),
-            (CELLS_BY_COLUMN, BONUS_COLUMN),
+            (CELLS_BY_COL, BONUS_COLUMN),
             (CELLS_BY_TILE, BONUS_TILE),
         ]
         self.bonus = sum(
@@ -155,9 +159,9 @@ class Player:
 
     def _line_tile(self, row: int) -> Tile | None:
         """Return the committed color of a pattern line, or None if empty."""
-        for col in range(BOARD_SIZE):
+        for col in range(SIZE):
             if self.pattern_grid[row][col] > 0:
-                return WALL_PATTERN[row][col]
+                return TILE_FOR_ROW_COL[row][col]
         return None
 
     def _cell_completion(self, row: int, col: int) -> int:
@@ -184,8 +188,8 @@ class Player:
         """Return all wall cells that will be placed at the end of this round."""
         return [
             (row, col)
-            for row in range(BOARD_SIZE)
-            for col in range(BOARD_SIZE)
+            for row in range(SIZE)
+            for col in range(SIZE)
             if self.pattern_grid[row][col] == CAPACITY[row]
         ]
 
@@ -204,7 +208,7 @@ class Player:
         left, right = col - 1, col + 1
         while left >= 0 and self.wall[row][left]:
             left -= 1
-        while right < BOARD_SIZE and self.wall[row][right]:
+        while right < SIZE and self.wall[row][right]:
             right += 1
         horizontal = right - left - 1
         horizontal = horizontal if horizontal > 1 else 0
@@ -215,7 +219,7 @@ class Player:
             self.wall[above][col] or self.pattern_grid[above][col] == CAPACITY[row]
         ):
             above -= 1
-        while below < BOARD_SIZE and self.wall[below][col]:
+        while below < SIZE and self.wall[below][col]:
             below += 1
         vertical = below - above - 1
         vertical = vertical if vertical > 1 else 0
@@ -234,7 +238,7 @@ class Player:
         - The pattern line is not already at full capacity.
         - The pattern line is empty, or already committed to the same color.
         """
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        col = COL_FOR_TILE_ROW[tile][row]
         if self.wall[row][col] == 1:
             return False
         line_tile = self._line_tile(row)
@@ -259,12 +263,12 @@ class Player:
             All tiles to be added to the game discard pile.
         """
         discard: list[Tile] = []
-        for row in range(BOARD_SIZE):
+        for row in range(SIZE):
             if not max(self.pattern_grid[row]) == CAPACITY[row]:
                 continue
             tile = self._line_tile(row)
             assert tile
-            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+            col = COL_FOR_TILE_ROW[tile][row]
             self.wall[row][col] = True
             discard.extend([tile] * (CAPACITY[row] - 1))
             self.pattern_grid[row][col] = 0
@@ -291,7 +295,7 @@ class Player:
         overflow_tile = None
         if destination != FLOOR and tiles:
             overflow_tile = tiles[0]
-            col = COLUMN_FOR_TILE_IN_ROW[overflow_tile][destination]
+            col = COL_FOR_TILE_ROW[overflow_tile][destination]
             count = len(tiles)
             filled = self.pattern_grid[destination][col]
             overflow = max(0, filled + count - CAPACITY[destination])
@@ -352,7 +356,7 @@ class Player:
         Returns a list of three lists: rows, columns, and tile colors.
         Each value is a fraction in 0..1. Used as neural network features.
         """
-        features = [CELLS_BY_ROW, CELLS_BY_COLUMN, CELLS_BY_TILE]
+        features = [CELLS_BY_ROW, CELLS_BY_COL, CELLS_BY_TILE]
         return [
             [self._completion_progress(cells) for cells in feature]
             for feature in features
@@ -362,78 +366,76 @@ class Player:
 
     # region Display --------------------------------------------------------
 
-    def _format_score_line(self) -> str:
-        """Format the scoring component line: score+pending-penalty+bonus=earned.
+    def _format_header(self) -> str:
+        """Format the header as a fixed 23-character string.
 
-        Each value is padded to 2 characters. penalty is shown negated so
-        the displayed number is positive (e.g. -0 unambiguously marks the
-        penalty slot even when no tiles are on the floor).
+        Six leading spaces are reserved for Game to overwrite with context
+        (e.g. 'P1: ' or '> '). Player name is left-justified to 8 characters,
+        truncated with ellipsis if over budget. Score and earned are shown
+        as 'score(earned)' right-justified at the end.
+        """
+        name = self.name if len(self.name) <= 8 else self.name[:7] + "…"
+        return f"      {name:<8} {self.score:>3d}({self.earned:>3d})"
+
+    def _format_score_line(self) -> str:
+        """Format the scoring component line as a fixed 23-character string.
+
+        Each value is right-justified to 3 characters. Operators have a
+        leading space only. Penalty is shown negated so the displayed
+        number is always positive.
         """
         return (
-            f"{self.score:>2d}"
-            f" + {self.pending:>2d}"
-            f" - {-self.penalty:>2d}"
-            f" + {self.bonus:>2d}"
-            f" = {self.earned:>2d}"
+            f"{self.score:>3d}"
+            f" +{self.pending:>3d}"
+            f" -{-self.penalty:>3d}"
+            f" +{self.bonus:>3d}"
+            f" ={self.earned:>3d}"
         )
 
     def _format_row(self, row: int) -> str:
-        """Return a formatted string for one pattern line and its wall row.
+        """Return a fixed 23-character string for one pattern line and wall row.
 
-        Pattern line is right-aligned to BOARD_SIZE with dots for empty
-        slots. Wall row shows placed tiles with dots for empty cells.
-        The two halves are joined by BOARD_SEPARATOR.
+        Pattern side is right-justified to 6 unspaced characters so that
+        after spacing every character the separator lands at position 12.
+        Wall shows placed tile character for filled cells, dot for empty.
         """
-        empty = TILE_CHAR[None] * (CAPACITY[row] - max(self.pattern_grid[row]))
-        filled = TILE_CHAR[self._line_tile(row)] * max(self.pattern_grid[row])
-        pattern = "".join([*empty, *filled]).rjust(BOARD_SIZE)
+        empty = CHAR_FOR_TILE[None] * (CAPACITY[row] - max(self.pattern_grid[row]))
+        filled = CHAR_FOR_TILE[self._line_tile(row)] * max(self.pattern_grid[row])
+        pattern = "".join([*empty, *filled]).rjust(6)
         wall = "".join(
             (
-                TILE_CHAR[WALL_PATTERN[row][col]]
-                if self.pattern_grid[row][col]
-                else TILE_CHAR[None]
+                CHAR_FOR_TILE[TILE_FOR_ROW_COL[row][col]]
+                if self.wall[row][col]
+                else CHAR_FOR_TILE[None]
             )
-            for col in range(BOARD_SIZE)
+            for col in range(SIZE)
         )
-        chars = BOARD_SEPARATOR.join([pattern, wall])
-        return " ".join([c for c in chars])
+        chars = SEPARATOR.join([pattern, wall])
+        return " ".join(c for c in chars)
 
     def _format_floor(self) -> str:
-        """Format the floor line for display.
+        """Return a fixed 23-character string for the floor line.
 
-        Shows up to 7 penalty slots (dots for empty), then BOARD_SEPARATOR
-        and any overflow tiles beyond slot 7. Overflow tiles incur no
-        additional penalty but are shown for debugging visibility.
+        Shows up to 7 penalty slots with spaced dots for empty tiles, then
+        ' |' and any overflow tiles left-justified in the remaining 8 chars.
         """
-        length = len(FLOOR_PENALTIES)
-        tile_strs = " ".join(TILE_CHAR[tile] for tile in self.floor_line)
-        slots = tile_strs[:length].ljust(length, TILE_CHAR[None])
-        overflow = tile_strs[length:]
-        chars = BOARD_SEPARATOR.join([slots, overflow])
-        return " ".join([c for c in chars])
+        penalty_slots = 7
+        floor_chars = [CHAR_FOR_TILE[tile] for tile in self.floor_line]
+        slots = floor_chars[:penalty_slots]
+        overflow = floor_chars[penalty_slots:]
+        slots_str = "".join(
+            slots + [CHAR_FOR_TILE[None]] * (penalty_slots - len(slots))
+        )
+        overflow_str = "".join(overflow)
+        return f"{slots_str:>11} {SEPARATOR} {overflow_str:<9}"
 
     def __str__(self) -> str:
-        """Multi-line monospaced display of the player board.
-
-        Example output:
-            Alice (alphabeta_hard(...))
-             5+ 3- 1+ 0= 7
-                R|..R..
-               .Y|.....
-              ...|.....
-             WWWW|..W..
-            ....K|.....
-            FR.....|
-        """
+        """Multi-line monospaced 23-character-wide display of the player board."""
         return "\n".join(
             [
-                f"{self.name} ({self.agent})".rjust((BOARD_SIZE + 1) * 4),
-                self._format_score_line().rjust((BOARD_SIZE + 1) * 4),
-                "\n".join(
-                    self._format_row(row).rjust((BOARD_SIZE + 1) * 4)
-                    for row in range(BOARD_SIZE)
-                ),
-                self._format_floor().rjust((BOARD_SIZE + 1) * 4),
+                self._format_header(),
+                "\n".join(self._format_row(row) for row in range(SIZE)),
+                self._format_floor(),
             ]
         )
 
@@ -441,6 +443,94 @@ class Player:
         return str(self)
 
     # endregion
+
+    # region From String
+    @classmethod
+    def from_string(cls, text: str) -> "Player":
+        """Reconstruct a Player from the output of __str__.
+
+        Parses name and score from the header line, pattern_grid and wall
+        from the five board rows, and floor_line from the floor line.
+        Calls _update_pending, _update_bonus, and _update_penalty to
+        recompute cached scoring components, then asserts that the
+        recomputed earned matches the value parsed from the header.
+
+        Raises:
+            ValueError: if the string does not match the expected format.
+            AssertionError: if recomputed earned does not match parsed earned.
+        """
+        lines = text.strip().splitlines()
+        if len(lines) != 7:
+            raise ValueError(f"Expected 7 lines, got {len(lines)}")
+
+        name, score, earned = cls._parse_header(lines[0])
+        pattern_grid, wall = cls._parse_board_rows(lines[1:6])
+        floor_line = cls._parse_floor(lines[6])
+
+        player = cls(name=name, score=score)
+        player.pattern_grid = pattern_grid
+        player.wall = wall
+        player.floor_line = floor_line
+        player._update_pending()
+        player._update_bonus()
+        player._update_penalty()
+
+        assert (
+            player.earned == earned
+        ), f"Recomputed earned {player.earned} does not match parsed earned {earned}"
+        return player
+
+    @staticmethod
+    def _parse_header(line: str) -> tuple[str, int, int]:
+        """Parse name, score, and earned from the header line.
+
+        Score and earned are always at the end in the format ' NNN(NNN)'.
+        Name is everything before that suffix, stripped of padding.
+        """
+        name = line[:-9].strip()
+        score = int(line[-8:-5])
+        earned = int(line[-4:-1])
+        return name, score, earned
+
+    @staticmethod
+    def _parse_board_rows(lines: list[str]) -> tuple[list[list[int]], list[list[int]]]:
+        """Parse pattern_grid and wall from the five board row lines.
+
+        Each line has a spaced pattern side, ' | ', and a spaced wall side.
+        Pattern side chars are tile characters or dots. Wall side chars are
+        tile characters (placed) or dots (empty)., any character other than
+        empty marks the wall as filled.  Convienient for hand entered states.
+        """
+        pattern_grid = [[0] * SIZE for _ in range(SIZE)]
+        wall = [[0] * SIZE for _ in range(SIZE)]
+        for row, line in enumerate(lines):
+            pattern_str, wall_str = line.replace(SPACE, BLANK).split(SEPARATOR)
+            if TILE_FOR_CHAR.get(pattern_str[-1]):
+                col = COL_FOR_CHAR_ROW[pattern_str[-1]][row]
+                pattern_grid[row][col] = len(pattern_str.replace(EMPTY, BLANK))
+            assert (
+                len(wall_str) == SIZE
+            ), f"Expected wall string of length {SIZE}, got {len(wall_str)}"
+            wall[row] = [0 if c == EMPTY else 1 for c in wall_str]
+        return pattern_grid, wall
+
+    @staticmethod
+    def _parse_floor(line: str) -> list[Tile]:
+        """Parse floor_line from the floor line.
+
+        Expected format: slots (up to 7) then ' | ' then overflow tiles.
+        Dots are empty slots and are skipped.
+        """
+        line = line.replace(EMPTY, BLANK)
+        line = line.replace(SPACE, BLANK)
+        line = line.replace(SEPARATOR, BLANK)
+        return [
+            tile
+            for c in line
+            if c in TILE_FOR_CHAR and (tile := TILE_FOR_CHAR[c]) is not None
+        ]
+
+    # end region
 
     # region Clone ----------------------------------------------------------
 
@@ -468,6 +558,10 @@ class Player:
 
 
 if __name__ == "__main__":
-    player = Player("Joe")
+    player = Player("Alexandria")
     player.place(3, [Tile.BLACK] * 2)
+    player.place(FLOOR, [Tile.BLACK] * 9)
     print(player)
+    s = str(player)
+    player2 = Player.from_string(s)
+    print(player2)

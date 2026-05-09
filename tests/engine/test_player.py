@@ -3,10 +3,10 @@
 
 from engine.constants import (
     CAPACITY,
-    COLUMN_FOR_TILE_IN_ROW,
+    COL_FOR_TILE_ROW,
     FLOOR,
     FLOOR_PENALTIES,
-    WALL_PATTERN,
+    TILE_FOR_ROW_COL,
     Tile,
 )
 from engine.player import Player
@@ -21,7 +21,7 @@ def make_player(**kwargs) -> Player:
 
 def complete_pattern_line(player: Player, row: int, tile: Tile) -> None:
     """Fill a pattern line to capacity with the given tile color."""
-    col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+    col = COL_FOR_TILE_ROW[tile][row]
     player.pattern_grid[row][col] = CAPACITY[row]
 
 
@@ -40,7 +40,7 @@ def fill_wall_column(player: Player, col: int) -> None:
 def fill_wall_tile_color(player: Player, tile: Tile) -> None:
     """Place all five instances of a tile color on the wall."""
     for row in range(5):
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        col = COL_FOR_TILE_ROW[tile][row]
         player.wall[row][col] = 1
 
 
@@ -111,7 +111,7 @@ def test_is_tile_valid_for_row_empty_line_accepts_any_color():
 def test_is_tile_valid_for_row_rejects_when_wall_cell_already_filled():
     """Wall cell is already filled — cannot place here."""
     player = make_player()
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][0]
     player.wall[0][col] = 1
     assert player.is_tile_valid_for_row(Tile.BLUE, 0) is False
 
@@ -126,7 +126,7 @@ def test_is_tile_valid_for_row_rejects_when_line_is_full():
 def test_is_tile_valid_for_row_rejects_wrong_color_when_committed():
     """Pattern line is committed to one color, reject wrong color."""
     player = make_player()
-    col_blue = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+    col_blue = COL_FOR_TILE_ROW[Tile.BLUE][1]
     player.pattern_grid[1][col_blue] = 1
     # Row 1 is now committed to BLUE, YELLOW is invalid
     assert player.is_tile_valid_for_row(Tile.YELLOW, 1) is False
@@ -135,7 +135,7 @@ def test_is_tile_valid_for_row_rejects_wrong_color_when_committed():
 def test_is_tile_valid_for_row_accepts_matching_color_with_space():
     """Pattern line committed to color with room remaining — accept."""
     player = make_player()
-    col_blue = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+    col_blue = COL_FOR_TILE_ROW[Tile.BLUE][1]
     player.pattern_grid[1][col_blue] = 1  # Row 1 capacity is 2
     # BLUE matches and has space (1 of 2 filled)
     assert player.is_tile_valid_for_row(Tile.BLUE, 1) is True
@@ -151,7 +151,7 @@ def test_place_fills_pattern_line():
     """place() increments the count in the pattern grid."""
     player = make_player()
     player.place(0, [Tile.BLUE])
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][0]
     assert player.pattern_grid[0][col] == 1
 
 
@@ -160,7 +160,7 @@ def test_place_overflow_goes_to_floor():
     player = make_player()
     # Row 0 has capacity 1 — sending 2 tiles means 1 overflows
     player.place(0, [Tile.BLUE, Tile.BLUE])
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][0]
     assert player.pattern_grid[0][col] == CAPACITY[0]
     assert Tile.BLUE in player.floor_line
 
@@ -177,7 +177,7 @@ def test_place_first_player_always_goes_to_floor():
     player = make_player()
     player.place(0, [Tile.FIRST_PLAYER, Tile.BLUE])
     assert Tile.FIRST_PLAYER in player.floor_line
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][0]
     assert player.pattern_grid[0][col] == 1
 
 
@@ -227,7 +227,7 @@ def test_place_first_player_with_multiple_color_tiles():
     player = make_player()
     # Row 1 has capacity 2
     player.place(1, [Tile.FIRST_PLAYER, Tile.BLUE, Tile.BLUE])
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][1]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][1]
     assert player.pattern_grid[1][col] == CAPACITY[1]
     assert player.floor_line == [Tile.FIRST_PLAYER]
 
@@ -236,7 +236,7 @@ def test_place_updates_pending_with_adjacency():
     """Completing a pattern line updates pending with adjacency score."""
     player = make_player()
     # Center tile is WALL_PATTERN[2][2]
-    center_tile = WALL_PATTERN[2][2]
+    center_tile = TILE_FOR_ROW_COL[2][2]
     # Pre-fill the four orthogonal neighbors on the wall
     player.wall[1][2] = 1
     player.wall[2][1] = 1
@@ -258,7 +258,7 @@ def test_process_round_end_moves_full_line_to_wall():
     player = make_player()
     complete_pattern_line(player, 0, Tile.BLUE)
     player.process_round_end()
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][0]
     assert player.wall[0][col] == 1
 
 
@@ -267,14 +267,14 @@ def test_process_round_end_clears_completed_pattern_line():
     player = make_player()
     complete_pattern_line(player, 0, Tile.BLUE)
     player.process_round_end()
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][0]
     assert player.pattern_grid[0][col] == 0
 
 
 def test_process_round_end_leaves_incomplete_line_alone():
     """process_round_end() leaves incomplete lines untouched."""
     player = make_player()
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.RED][2]
+    col = COL_FOR_TILE_ROW[Tile.RED][2]
     player.pattern_grid[2][col] = 1
     player.process_round_end()
     assert player.pattern_grid[2][col] == 1
@@ -336,7 +336,7 @@ def test_has_triggered_game_end_true_when_row_pending():
     # Fill 4 of 5 cells in row 0, then complete the missing tile via pattern line
     for col in range(4):
         player.wall[0][col] = 1
-    missing_tile = WALL_PATTERN[0][4]
+    missing_tile = TILE_FOR_ROW_COL[0][4]
     complete_pattern_line(player, 0, missing_tile)
     assert player.has_triggered_game_end() is True
 
@@ -382,7 +382,7 @@ def test_encode_completion_progress_partial_progress():
     """Partial wall row progress is between 0 and 1."""
     player = make_player()
     # Row 2 has capacity 3 — place 1 tile via pattern line
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.RED][2]
+    col = COL_FOR_TILE_ROW[Tile.RED][2]
     player.pattern_grid[2][col] = 1
     rows, _cols, _tiles = player.encode_completion_progress()
     assert 0.0 < rows[2] < 1.0
@@ -402,7 +402,7 @@ def test_encode_completion_progress_with_adjacency():
     player.wall[0][0] = 1
     player.wall[1][0] = 1
     # Complete a pattern line for row 2 (which has WALL_PATTERN[2][0] as target)
-    tile_at_row2_col0 = WALL_PATTERN[2][0]
+    tile_at_row2_col0 = TILE_FOR_ROW_COL[2][0]
     complete_pattern_line(player, 2, tile_at_row2_col0)
     result = player.encode_completion_progress()
     assert result is not None
@@ -411,7 +411,7 @@ def test_encode_completion_progress_with_adjacency():
 def test_encode_completion_progress_placed_wall_cell_counts_as_full():
     """A placed wall cell counts as full capacity in _cell_completion."""
     player = make_player()
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.BLUE][0]
+    col = COL_FOR_TILE_ROW[Tile.BLUE][0]
     player.wall[0][col] = 1
     player.place(1, [Tile.BLUE])
     rows, cols, tiles = player.encode_completion_progress()
@@ -443,7 +443,7 @@ def test_clone_wall_is_independent():
 def test_clone_pattern_grid_is_independent():
     player = make_player()
     clone = player.clone()
-    col = COLUMN_FOR_TILE_IN_ROW[Tile.RED][0]
+    col = COL_FOR_TILE_ROW[Tile.RED][0]
     clone.pattern_grid[0][col] = 1
     assert player.pattern_grid[0][col] == 0
 

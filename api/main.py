@@ -26,7 +26,7 @@ from api.schemas import (
     RecordingSummary,
     RemoveTileRequest,
 )
-from engine.constants import COLUMN_FOR_TILE_IN_ROW, WALL_PATTERN, Tile
+from engine.constants import COL_FOR_TILE_ROW, TILE_FOR_ROW_COL, Tile
 from engine.game import Game, Move
 from engine.game_recorder import (
     GameRecorder,
@@ -97,7 +97,7 @@ def _encode_pattern_lines(player: Player) -> list[list[str]]:
         if tile is None:
             result.append([])
         else:
-            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+            col = COL_FOR_TILE_ROW[tile][row]
             count = player.pattern_grid[row][col]
             result.append([tile.name] * count)
     return result
@@ -116,7 +116,7 @@ def _decode_pattern_lines(player: Player, pattern_lines: list[list[str]]) -> Non
         if not tiles:
             continue
         tile = _str_to_tile(tiles[0])
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        col = COL_FOR_TILE_ROW[tile][row]
         player.pattern_grid[row][col] = len(tiles)
 
 
@@ -128,7 +128,7 @@ def _encode_wall(player: Player) -> list[list[str | None]]:
     """
     return [
         [
-            WALL_PATTERN[row][col].name if player.wall[row][col] else None
+            TILE_FOR_ROW_COL[row][col].name if player.wall[row][col] else None
             for col in range(5)
         ]
         for row in range(5)

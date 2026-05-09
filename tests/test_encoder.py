@@ -28,7 +28,7 @@ from neural.encoder import (
     format_encoding,
 )
 from engine.game import CENTER, FLOOR, Game, Move
-from engine.constants import BOARD_SIZE, COLOR_TILES, COLUMN_FOR_TILE_IN_ROW, Tile
+from engine.constants import SIZE, COLOR_TILES, COL_FOR_TILE_ROW, Tile
 
 
 def fresh_game() -> Game:
@@ -63,11 +63,11 @@ def test_wall_empty_at_game_start():
 def test_my_wall_reflects_placed_tile():
     game = fresh_game()
     blue = Tile.BLUE
-    wall_col = COLUMN_FOR_TILE_IN_ROW[blue][0]
+    wall_col = COL_FOR_TILE_ROW[blue][0]
     game.current_player.wall[0][wall_col] = 1
 
     encoding = encode_state(game)
-    flat_idx = 0 * BOARD_SIZE + wall_col
+    flat_idx = 0 * SIZE + wall_col
     assert encoding[OFF_MY_WALL + flat_idx].item() == 1.0
     assert encoding[OFF_MY_WALL : OFF_MY_WALL + 25].sum().item() == 1.0
 
@@ -76,11 +76,11 @@ def test_opponent_wall_reflects_opponent_tiles():
     game = fresh_game()
     opponent_index = 1 - game.current_player_index
     yellow = Tile.YELLOW
-    wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][2]
+    wall_col = COL_FOR_TILE_ROW[yellow][2]
     game.players[opponent_index].wall[2][wall_col] = 1
 
     encoding = encode_state(game)
-    flat_idx = 2 * BOARD_SIZE + wall_col
+    flat_idx = 2 * SIZE + wall_col
     assert encoding[OFF_OPP_WALL + flat_idx].item() == 1.0
     assert encoding[OFF_MY_WALL : OFF_MY_WALL + 25].sum().item() == 0.0
 
@@ -98,10 +98,10 @@ def test_pattern_line_partial_fill():
     game = fresh_game()
     red = Tile.RED
     game.current_player.place(2, [red, red])
-    wall_col = COLUMN_FOR_TILE_IN_ROW[red][2]
+    wall_col = COL_FOR_TILE_ROW[red][2]
 
     encoding = encode_state(game)
-    flat_idx = 2 * BOARD_SIZE + wall_col
+    flat_idx = 2 * SIZE + wall_col
     assert encoding[OFF_MY_PATTERN + flat_idx].item() == pytest.approx(2 / 3)
 
 
@@ -109,10 +109,10 @@ def test_pattern_line_full_ratio():
     game = fresh_game()
     yellow = Tile.YELLOW
     game.current_player.place(1, [yellow, yellow])
-    wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][1]
+    wall_col = COL_FOR_TILE_ROW[yellow][1]
 
     encoding = encode_state(game)
-    flat_idx = 1 * BOARD_SIZE + wall_col
+    flat_idx = 1 * SIZE + wall_col
     assert encoding[OFF_MY_PATTERN + flat_idx].item() == pytest.approx(1.0)
 
 
@@ -120,11 +120,11 @@ def test_pattern_line_suppressed_when_wall_filled():
     game = fresh_game()
     yellow = Tile.YELLOW
     game.current_player.place(1, [yellow, yellow])
-    wall_col = COLUMN_FOR_TILE_IN_ROW[yellow][1]
+    wall_col = COL_FOR_TILE_ROW[yellow][1]
     game.current_player.wall[1][wall_col] = 1
 
     encoding = encode_state(game)
-    flat_idx = 1 * BOARD_SIZE + wall_col
+    flat_idx = 1 * SIZE + wall_col
     assert encoding[OFF_MY_PATTERN + flat_idx].item() == 0.0
 
 

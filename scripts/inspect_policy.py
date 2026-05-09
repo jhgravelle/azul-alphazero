@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 
 from engine.game import Game, CENTER, FLOOR
-from engine.constants import WALL_PATTERN, Tile
+from engine.constants import TILE_FOR_ROW_COL, Tile
 from agents.alphabeta import AlphaBetaAgent
 from neural.model import AzulNet
 from neural.encoder import encode_state, encode_move, MOVE_SPACE_SIZE
@@ -54,7 +54,7 @@ def _format_board(board, label: str) -> str:
         lines.append(
             _format_wall_row(
                 board.wall[row],
-                WALL_PATTERN[row],
+                TILE_FOR_ROW_COL[row],
                 board.pattern_lines[row],
             )
         )

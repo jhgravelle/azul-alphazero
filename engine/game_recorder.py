@@ -12,12 +12,12 @@ from engine.constants import (
     BONUS_COLUMN,
     BONUS_ROW,
     BONUS_TILE,
-    CELLS_BY_COLUMN,
+    CELLS_BY_COL,
     CELLS_BY_ROW,
     CELLS_BY_TILE,
-    COLUMN_FOR_TILE_IN_ROW,
+    COL_FOR_TILE_ROW,
     PLAYERS,
-    WALL_PATTERN,
+    TILE_FOR_ROW_COL,
 )
 from engine.game import Game, Move, Tile
 from engine.player import Player
@@ -62,7 +62,7 @@ def _pending_placement_details(player: Player) -> list[dict[str, Any]]:
         tile = player._line_tile(row)
         if tile is None:
             continue
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        col = COL_FOR_TILE_ROW[tile][row]
         if player.pattern_grid[row][col] < CAPACITY[row]:
             continue
         wall[row][col] = 1
@@ -76,19 +76,19 @@ def _score_placement(wall: list[list[int]], row: int, col: int) -> int:
 
     Precondition: wall[row][col] must already be set before calling.
     """
-    from engine.constants import BOARD_SIZE
+    from engine.constants import SIZE
 
     h_start, h_end = col, col
     while h_start - 1 >= 0 and wall[row][h_start - 1]:
         h_start -= 1
-    while h_end + 1 < BOARD_SIZE and wall[row][h_end + 1]:
+    while h_end + 1 < SIZE and wall[row][h_end + 1]:
         h_end += 1
     h = h_end - h_start + 1
 
     v_start, v_end = row, row
     while v_start - 1 >= 0 and wall[v_start - 1][col]:
         v_start -= 1
-    while v_end + 1 < BOARD_SIZE and wall[v_end + 1][col]:
+    while v_end + 1 < SIZE and wall[v_end + 1][col]:
         v_end += 1
     v = v_end - v_start + 1
 
@@ -105,7 +105,7 @@ def _pending_bonus_details(
             bonuses.append(
                 {"bonus_type": "row", "index": row_idx, "bonus_points": BONUS_ROW}
             )
-    for col_idx, cells in enumerate(CELLS_BY_COLUMN):
+    for col_idx, cells in enumerate(CELLS_BY_COL):
         if all(wall[r][c] for r, c in cells):
             bonuses.append(
                 {"bonus_type": "column", "index": col_idx, "bonus_points": BONUS_COLUMN}
@@ -127,7 +127,7 @@ def _build_post_placement_wall(player: Player) -> list[list[int]]:
         tile = player._line_tile(row)
         if tile is None:
             continue
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        col = COL_FOR_TILE_ROW[tile][row]
         if player.pattern_grid[row][col] >= CAPACITY[row]:
             wall[row][col] = 1
     return wall
@@ -145,12 +145,12 @@ def _player_to_dict(player: Player) -> dict[str, Any]:
         if tile is None:
             pattern_lines.append([])
         else:
-            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+            col = COL_FOR_TILE_ROW[tile][row]
             count = player.pattern_grid[row][col]
             pattern_lines.append([tile.name] * count)
     wall = [
         [
-            WALL_PATTERN[row][col].name if player.wall[row][col] else None
+            TILE_FOR_ROW_COL[row][col].name if player.wall[row][col] else None
             for col in range(5)
         ]
         for row in range(5)

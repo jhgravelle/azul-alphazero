@@ -45,9 +45,9 @@ import torch
 import torch.nn.functional as F
 
 from engine.constants import (
-    BOARD_SIZE,
+    SIZE,
     COLOR_TILES,
-    COLUMN_FOR_TILE_IN_ROW,
+    COL_FOR_TILE_ROW,
     CUMULATIVE_FLOOR_PENALTIES,
     PLAYERS,
     TILES_PER_COLOR,
@@ -60,13 +60,13 @@ from engine.player import Player
 
 NUM_FACTORIES: int = 2 * PLAYERS + 1
 NUM_SOURCES: int = NUM_FACTORIES + 1  # factories + center
-NUM_DESTINATIONS: int = BOARD_SIZE + 1  # pattern lines + floor
-MOVE_SPACE_SIZE: int = NUM_SOURCES * BOARD_SIZE * NUM_DESTINATIONS
+NUM_DESTINATIONS: int = SIZE + 1  # pattern lines + floor
+MOVE_SPACE_SIZE: int = NUM_SOURCES * SIZE * NUM_DESTINATIONS
 
 # ── Encoding constants ────────────────────────────────────────────────────
 
 NUM_COLORS: int = len(COLOR_TILES)  # 5
-BOARD_CELLS: int = BOARD_SIZE * BOARD_SIZE  # 25
+BOARD_CELLS: int = SIZE * SIZE  # 25
 
 OFF_MY_PATTERN: int = 0  # 25 values
 OFF_MY_WALL: int = 25  # 25 values
@@ -106,10 +106,10 @@ def _encode_wall_flattened(
     wall: list[list[int]],
 ) -> None:
     """Write 1.0 for each occupied wall cell into flattened positions."""
-    for row in range(BOARD_SIZE):
-        for wall_col in range(BOARD_SIZE):
+    for row in range(SIZE):
+        for wall_col in range(SIZE):
             if wall[row][wall_col]:
-                flat_idx = row * BOARD_SIZE + wall_col
+                flat_idx = row * SIZE + wall_col
                 encoding[offset + flat_idx] = 1.0
 
 
@@ -120,11 +120,11 @@ def _encode_pattern_line_fill_ratio_flattened(
     wall: list[list[int]],
 ) -> None:
     """Write pattern line fill ratio into flattened positions."""
-    for row in range(BOARD_SIZE):
+    for row in range(SIZE):
         tile = player._line_tile(row)
         if tile is None:
             continue
-        wall_col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        wall_col = COL_FOR_TILE_ROW[tile][row]
         if wall[row][wall_col]:
             continue
         capacity = row + 1
@@ -132,7 +132,7 @@ def _encode_pattern_line_fill_ratio_flattened(
         if fill_count == 0:
             continue
         fill_ratio = fill_count / capacity
-        flat_idx = row * BOARD_SIZE + wall_col
+        flat_idx = row * SIZE + wall_col
         encoding[offset + flat_idx] = fill_ratio
 
 
@@ -197,11 +197,11 @@ def _idx_to_source(idx: int) -> int:
 
 
 def _dest_to_idx(destination: int) -> int:
-    return BOARD_SIZE if destination == FLOOR else destination
+    return SIZE if destination == FLOOR else destination
 
 
 def _idx_to_dest(idx: int) -> int:
-    return FLOOR if idx == BOARD_SIZE else idx
+    return FLOOR if idx == SIZE else idx
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -247,15 +247,13 @@ def encode_move(move: Move, _game: Game) -> int:
     color_idx = COLOR_TILES.index(move.tile)
     dest_idx = _dest_to_idx(move.destination)
     return (
-        source_idx * (BOARD_SIZE * NUM_DESTINATIONS)
-        + color_idx * NUM_DESTINATIONS
-        + dest_idx
+        source_idx * (SIZE * NUM_DESTINATIONS) + color_idx * NUM_DESTINATIONS + dest_idx
     )
 
 
 def decode_move(index: int, _game: Game) -> Move:
     """Decode an integer index back into a Move."""
-    source_idx, remainder = divmod(index, BOARD_SIZE * NUM_DESTINATIONS)
+    source_idx, remainder = divmod(index, SIZE * NUM_DESTINATIONS)
     color_idx, dest_idx = divmod(remainder, NUM_DESTINATIONS)
     return Move(
         source=_idx_to_source(source_idx),
@@ -305,7 +303,7 @@ def flat_policy_to_3head_targets(
     """
     B = flat_policy.shape[0]
     # Reshape to (B, NUM_SOURCES=7, BOARD_SIZE=5, NUM_DESTINATIONS=6)
-    p3 = flat_policy.view(B, NUM_SOURCES, BOARD_SIZE, NUM_DESTINATIONS)
+    p3 = flat_policy.view(B, NUM_SOURCES, SIZE, NUM_DESTINATIONS)
 
     tile_targets = p3.sum(dim=1).sum(dim=2)  # (B, 5)
     dst_targets = p3.sum(dim=1).sum(dim=1)  # (B, 6)

@@ -2,13 +2,13 @@
 """Regression test: is_round_boundary must not fire when tiles remain in center."""
 
 from engine.game import Game, Move, CENTER
-from engine.constants import Tile, COLUMN_FOR_TILE_IN_ROW
+from engine.constants import Tile, COL_FOR_TILE_ROW
 from neural.search_tree import AZNode
 
 
 def _place_wall(wall: list[list[int]], row: int, tile: Tile) -> None:
     """Place a tile on the wall by its color and row."""
-    col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+    col = COL_FOR_TILE_ROW[tile][row]
     wall[row][col] = 1
 
 

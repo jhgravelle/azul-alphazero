@@ -25,7 +25,7 @@ COLOR_TILES: list[Tile] = [
 
 # --- Board dimensions and counts ---
 
-BOARD_SIZE = 5  # also equal to the number of tile colors
+SIZE = 5  # also equal to the number of tile colors
 PLAYERS = 2  # number of players in a new GameState
 TILES_PER_COLOR = (
     20  # number of tiles of each color in the bag at the start of the game
@@ -39,16 +39,8 @@ BONUS_TILE = 10  # points for placing all 5 tiles of a color on the wall
 
 CENTER = -1  # sentinel source: tiles from the center
 FLOOR = -2  # sentinel destination: tiles go to the floor line
-CAPACITY: list[int] = [
-    row + 1 for row in range(BOARD_SIZE)
-]  # max tiles per pattern line row
+CAPACITY: list[int] = [row + 1 for row in range(SIZE)]  # max tiles per pattern line row
 
-# --- Wall pattern ---
-
-WALL_PATTERN: list[list[Tile]] = [
-    [COLOR_TILES[(col - row) % BOARD_SIZE] for col in range(BOARD_SIZE)]
-    for row in range(BOARD_SIZE)
-]
 
 # --- Helper constants for scoring ---
 
@@ -63,42 +55,60 @@ CUMULATIVE_FLOOR_PENALTIES: list[int] = (
     [0] + _cumulative + [_max_penalty] * (_MAX_FLOOR - len(FLOOR_PENALTIES) + 1)
 )
 
-# COLUMN_FOR_TILE_IN_ROW[tile][row] returns the column index for that tile
-# on the given wall row. Precomputed from WALL_PATTERN to avoid repeated
-# .index() calls in hot scoring paths.
-COLUMN_FOR_TILE_IN_ROW: dict[Tile, list[int]] = {
-    tile: [WALL_PATTERN[row].index(tile) for row in range(BOARD_SIZE)]
-    for tile in COLOR_TILES
-}
-
-# --- Cell groups for bonus scoring and completion progress ---
-
-CELLS_BY_ROW: list[list[tuple[int, int]]] = [
-    [(row, col) for col in range(BOARD_SIZE)] for row in range(BOARD_SIZE)
-]
-CELLS_BY_COLUMN: list[list[tuple[int, int]]] = [
-    [(row, col) for row in range(BOARD_SIZE)] for col in range(BOARD_SIZE)
-]
-CELLS_BY_TILE: list[list[tuple[int, int]]] = [
-    [(row, WALL_PATTERN[row].index(tile)) for row in range(BOARD_SIZE)]
-    for tile in COLOR_TILES
-]
-
 # --- Display ---
 
-BOARD_SEPARATOR = "|"
+SPACE = " "
+BLANK = ""
+EMPTY = "."
+SEPARATOR = "|"
 MOVE_SOURCE_CENTER = "C"  # center pool source in move strings
 MOVE_DEST_FLOOR = "F"  # floor destination in move strings
 MOVE_MARKER_NORMAL = "-"  # no first-player tile taken
 MOVE_MARKER_FIRST_PLAYER = "+"  # first-player tile also taken
 MOVE_MARKER_UNKNOWN = "?"  # move not yet executed (count=0)
-CHAR_TILE: dict[str, Tile | None] = {
+
+# --- Conversions ---
+
+TILE_FOR_CHAR: dict[str, Tile | None] = {
     "B": Tile.BLUE,
     "Y": Tile.YELLOW,
     "R": Tile.RED,
     "K": Tile.BLACK,
     "W": Tile.WHITE,
     "F": Tile.FIRST_PLAYER,
-    ".": None,
+    EMPTY: None,
 }
-TILE_CHAR: dict[Tile | None, str] = {tile: char for char, tile in CHAR_TILE.items()}
+TILE_FOR_ROW_COL: list[list[Tile]] = [
+    [COLOR_TILES[(col - row) % SIZE] for col in range(SIZE)] for row in range(SIZE)
+]
+CHAR_FOR_TILE: dict[Tile | None, str] = {
+    tile: char for char, tile in TILE_FOR_CHAR.items()
+}
+CHAR_FOR_ROW_COL: list[list[str]] = [
+    [CHAR_FOR_TILE[TILE_FOR_ROW_COL[row][col]] for col in range(SIZE)]
+    for row in range(SIZE)
+]
+COL_FOR_CHAR_ROW: dict[str, list[int]] = {
+    char: [
+        next(col for col in range(SIZE) if TILE_FOR_ROW_COL[row][col] == tile)
+        for row in range(SIZE)
+    ]
+    for char, tile in TILE_FOR_CHAR.items()
+    if tile is not None and tile != Tile.FIRST_PLAYER
+}
+COL_FOR_TILE_ROW: dict[Tile, list[int]] = {
+    tile: [TILE_FOR_ROW_COL[row].index(tile) for row in range(SIZE)]
+    for tile in COLOR_TILES
+}
+
+# --- Cell groups for bonus scoring and completion progress ---
+CELLS_BY_ROW: list[list[tuple[int, int]]] = [
+    [(row, col) for col in range(SIZE)] for row in range(SIZE)
+]
+CELLS_BY_COL: list[list[tuple[int, int]]] = [
+    [(row, col) for row in range(SIZE)] for col in range(SIZE)
+]
+CELLS_BY_TILE: list[list[tuple[int, int]]] = [
+    [(row, TILE_FOR_ROW_COL[row].index(tile)) for row in range(SIZE)]
+    for tile in COLOR_TILES
+]

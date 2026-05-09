@@ -8,7 +8,7 @@ from agents.greedy import GreedyAgent
 from engine.game import Game
 from agents.base import Agent
 from agents.random import RandomAgent
-from engine.constants import COLUMN_FOR_TILE_IN_ROW, Tile
+from engine.constants import COL_FOR_TILE_ROW, Tile
 from engine.game import FLOOR
 
 
@@ -270,7 +270,7 @@ def test_efficient_policy_distribution_prefers_partial_lines_when_available():
     dist = EfficientAgent().policy_distribution(game)
     for move, _ in dist:
         assert move.destination >= 0
-        col = COLUMN_FOR_TILE_IN_ROW[move.tile][move.destination]
+        col = COL_FOR_TILE_ROW[move.tile][move.destination]
         assert player.pattern_grid[move.destination][col] > 0
 
 
@@ -288,9 +288,7 @@ def test_efficient_policy_distribution_covers_all_preferred_moves():
         m
         for m in legal
         if m.destination >= 0
-        and player.pattern_grid[m.destination][
-            COLUMN_FOR_TILE_IN_ROW[m.tile][m.destination]
-        ]
+        and player.pattern_grid[m.destination][COL_FOR_TILE_ROW[m.tile][m.destination]]
         > 0
     ]
     dist = EfficientAgent().policy_distribution(game)

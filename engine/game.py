@@ -6,9 +6,9 @@ import random
 from dataclasses import dataclass
 
 from engine.constants import (
-    BOARD_SIZE,
+    SIZE,
     CENTER,
-    CHAR_TILE,
+    TILE_FOR_CHAR,
     COLOR_TILES,
     FLOOR,
     MOVE_DEST_FLOOR,
@@ -18,7 +18,7 @@ from engine.constants import (
     MOVE_SOURCE_CENTER,
     NUMBER_OF_FACTORIES,
     PLAYERS,
-    TILE_CHAR,
+    CHAR_FOR_TILE,
     TILES_PER_COLOR,
     TILES_PER_FACTORY,
     Tile,
@@ -72,7 +72,7 @@ class Move:
         dest_str = (
             MOVE_DEST_FLOOR if self.destination == FLOOR else str(self.destination + 1)
         )
-        return f"{self.count}{TILE_CHAR[self.tile]}{marker}{source_str}{dest_str}"
+        return f"{self.count}{CHAR_FOR_TILE[self.tile]}{marker}{source_str}{dest_str}"
 
     def __repr__(self) -> str:
         return str(self)
@@ -105,7 +105,7 @@ class Move:
         """
         try:
             count = int(s[:-4])
-            tile = CHAR_TILE[s[-4]]
+            tile = TILE_FOR_CHAR[s[-4]]
             if tile is None:
                 raise ValueError(f"invalid tile char: {s[-4]!r}")
             took_first = s[-3] == MOVE_MARKER_FIRST_PLAYER
@@ -239,11 +239,13 @@ class Game:
         F1-F5/pattern-rows-1-5, CTR/floor.
         """
         first_player_cell = (
-            [TILE_CHAR[Tile.FIRST_PLAYER]] if Tile.FIRST_PLAYER in self.center else []
+            [CHAR_FOR_TILE[Tile.FIRST_PLAYER]]
+            if Tile.FIRST_PLAYER in self.center
+            else []
         )
         return [
             self._tile_table_row("BAG", self._count_tiles(self.bag)),
-            self._tile_table_row("CLR", [TILE_CHAR[c] for c in COLOR_TILES]),
+            self._tile_table_row("CLR", [CHAR_FOR_TILE[c] for c in COLOR_TILES]),
             *[
                 self._tile_table_row(f"F-{i + 1}", self._count_tiles(factory))
                 for i, factory in enumerate(self.factories)
@@ -368,7 +370,7 @@ class Game:
         for source_index, source_tiles in sources:
             tile_options = {t for t in source_tiles if t in COLOR_TILES}
             for tile in tile_options:
-                for destination in [*range(BOARD_SIZE), FLOOR]:
+                for destination in [*range(SIZE), FLOOR]:
                     if self._is_valid_destination(
                         self.current_player, tile, destination
                     ):

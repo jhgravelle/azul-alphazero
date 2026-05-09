@@ -5,7 +5,7 @@ Run from project root:
 """
 
 import timeit
-from engine.constants import Tile, BOARD_SIZE, WALL_PATTERN
+from engine.constants import Tile, SIZE, TILE_FOR_ROW_COL
 from engine.scoring import score_placement
 
 # ---------------------------------------------------------------------------
@@ -17,14 +17,14 @@ def score_placement_2(wall: list[list[Tile | None]], row: int, col: int) -> int:
     h_start, h_end = col, col
     while h_start - 1 >= 0 and wall[row][h_start - 1] is not None:
         h_start -= 1
-    while h_end + 1 < BOARD_SIZE and wall[row][h_end + 1] is not None:
+    while h_end + 1 < SIZE and wall[row][h_end + 1] is not None:
         h_end += 1
     h = h_end - h_start + 1
 
     v_start, v_end = row, row
     while v_start - 1 >= 0 and wall[v_start - 1][col] is not None:
         v_start -= 1
-    while v_end + 1 < BOARD_SIZE and wall[v_end + 1][col] is not None:
+    while v_end + 1 < SIZE and wall[v_end + 1][col] is not None:
         v_end += 1
     v = v_end - v_start + 1
 
@@ -37,7 +37,7 @@ def score_placement_2(wall: list[list[Tile | None]], row: int, col: int) -> int:
 
 
 def _make_wall() -> list[list[Tile | None]]:
-    return [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    return [[None] * SIZE for _ in range(SIZE)]
 
 
 cases = {}
@@ -58,10 +58,10 @@ cases["center_plus"] = (w, 2, 2)
 
 # Full row + full column through (2,2)
 w = _make_wall()
-for col in range(BOARD_SIZE):
-    w[2][col] = WALL_PATTERN[2][col]
-for row in range(BOARD_SIZE):
-    w[row][2] = WALL_PATTERN[row][2]
+for col in range(SIZE):
+    w[2][col] = TILE_FOR_ROW_COL[2][col]
+for row in range(SIZE):
+    w[row][2] = TILE_FOR_ROW_COL[row][2]
 cases["full_cross"] = (w, 2, 2)
 
 # ---------------------------------------------------------------------------

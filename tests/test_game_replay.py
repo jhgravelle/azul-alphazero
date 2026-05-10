@@ -53,7 +53,7 @@ def test_replay_to_move_zero_is_initial_state():
 
     # No moves made yet — all pattern grid cells empty
     for player in game.players:
-        for row in player.pattern_grid:
+        for row in player._pattern_grid:
             assert sum(row) == 0
 
     assert game.round == 1
@@ -66,9 +66,9 @@ def test_replay_to_move_one_matches_first_recorded_move():
     game = replay_to_move(record, 1)
 
     total_pattern_tiles = sum(
-        sum(row) for player in game.players for row in player.pattern_grid
+        sum(row) for player in game.players for row in player._pattern_grid
     )
-    total_floor_tiles = sum(len(player.floor_line) for player in game.players)
+    total_floor_tiles = sum(len(player._floor_line) for player in game.players)
     assert total_pattern_tiles + total_floor_tiles > 0
 
 

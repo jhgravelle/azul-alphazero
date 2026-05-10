@@ -48,7 +48,6 @@ from engine.constants import (
     SIZE,
     COLOR_TILES,
     COL_FOR_TILE_ROW,
-    CUMULATIVE_FLOOR_PENALTIES,
     PLAYERS,
     TILES_PER_COLOR,
     Tile,
@@ -91,9 +90,7 @@ FLAT_SIZE: int = 125
 
 # ── Normalization constants ────────────────────────────────────────────────
 
-MAX_SCORE_DIVISOR: float = 100.0
-EARNED_DIVISOR: float = 100.0
-FLOOR_PENALTY_DIVISOR: float = 14.0
+SCORING_DIVISOR: float = 100.0
 MAX_BAG_TILES: float = float(TILES_PER_COLOR)  # 20
 MAX_SOURCES: float = 5.0
 
@@ -128,7 +125,7 @@ def _encode_pattern_line_fill_ratio_flattened(
         if wall[row][wall_col]:
             continue
         capacity = row + 1
-        fill_count = player.pattern_grid[row][wall_col]
+        fill_count = player._pattern_grid[row][wall_col]
         if fill_count == 0:
             continue
         fill_ratio = fill_count / capacity
@@ -145,10 +142,10 @@ def _encode_flat_scores(
     opp_player: Player,
 ) -> None:
     """Write official scores and earned values."""
-    flat[OFF_MY_SCORE] = my_player.score / MAX_SCORE_DIVISOR
-    flat[OFF_MY_EARNED] = my_player.earned / EARNED_DIVISOR
-    flat[OFF_OPP_SCORE] = opp_player.score / MAX_SCORE_DIVISOR
-    flat[OFF_OPP_EARNED] = opp_player.earned / EARNED_DIVISOR
+    flat[OFF_MY_SCORE] = my_player.score / SCORING_DIVISOR
+    flat[OFF_MY_EARNED] = my_player.earned / SCORING_DIVISOR
+    flat[OFF_OPP_SCORE] = opp_player.score / SCORING_DIVISOR
+    flat[OFF_OPP_EARNED] = opp_player.earned / SCORING_DIVISOR
 
 
 def _encode_flat_floor_penalties(
@@ -157,12 +154,8 @@ def _encode_flat_floor_penalties(
     opp_player: Player,
 ) -> None:
     """Write floor penalty values normalized by max penalty."""
-    flat[OFF_MY_FLOOR] = (
-        CUMULATIVE_FLOOR_PENALTIES[len(my_player.floor_line)] / FLOOR_PENALTY_DIVISOR
-    )
-    flat[OFF_OPP_FLOOR] = (
-        CUMULATIVE_FLOOR_PENALTIES[len(opp_player.floor_line)] / FLOOR_PENALTY_DIVISOR
-    )
+    flat[OFF_MY_FLOOR] = my_player.penalty / SCORING_DIVISOR
+    flat[OFF_OPP_FLOOR] = opp_player.penalty / SCORING_DIVISOR
 
 
 def _encode_flat_first_player_tokens(
@@ -171,8 +164,8 @@ def _encode_flat_first_player_tokens(
     opp_player: Player,
 ) -> None:
     """Write first-player token flags for each player."""
-    flat[OFF_MY_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in my_player.floor_line else 0.0
-    flat[OFF_OPP_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in opp_player.floor_line else 0.0
+    flat[OFF_MY_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in my_player._floor_line else 0.0
+    flat[OFF_OPP_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in opp_player._floor_line else 0.0
 
 
 def _encode_flat_game_tiles(flat: torch.Tensor, game: Game) -> None:
@@ -224,13 +217,13 @@ def encode_state(game: Game) -> torch.Tensor:
 
     encoding = torch.zeros(FLAT_SIZE, dtype=torch.float32)
 
-    _encode_wall_flattened(encoding, OFF_MY_WALL, my_player.wall)
-    _encode_wall_flattened(encoding, OFF_OPP_WALL, opp_player.wall)
+    _encode_wall_flattened(encoding, OFF_MY_WALL, my_player._wall)
+    _encode_wall_flattened(encoding, OFF_OPP_WALL, opp_player._wall)
     _encode_pattern_line_fill_ratio_flattened(
-        encoding, OFF_MY_PATTERN, my_player, my_player.wall
+        encoding, OFF_MY_PATTERN, my_player, my_player._wall
     )
     _encode_pattern_line_fill_ratio_flattened(
-        encoding, OFF_OPP_PATTERN, opp_player, opp_player.wall
+        encoding, OFF_OPP_PATTERN, opp_player, opp_player._wall
     )
 
     _encode_flat_scores(encoding, my_player, opp_player)

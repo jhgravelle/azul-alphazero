@@ -1251,13 +1251,13 @@ def _make_snapshot(game) -> dict:
                 "score": p.score,
                 "wall": [
                     [
-                        TILE_FOR_ROW_COL[row][col].name if p.wall[row][col] else None
+                        TILE_FOR_ROW_COL[row][col].name if p._wall[row][col] else None
                         for col in range(5)
                     ]
                     for row in range(5)
                 ],
                 "pattern_lines": _encode_pattern_lines_for_snapshot(p),
-                "floor_line": [t.name for t in p.floor_line],
+                "floor_line": [t.name for t in p._floor_line],
             }
             for p in game.players
         ],

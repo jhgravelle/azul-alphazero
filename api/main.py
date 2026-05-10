@@ -98,7 +98,7 @@ def _encode_pattern_lines(player: Player) -> list[list[str]]:
             result.append([])
         else:
             col = COL_FOR_TILE_ROW[tile][row]
-            count = player.pattern_grid[row][col]
+            count = player._pattern_grid[row][col]
             result.append([tile.name] * count)
     return result
 
@@ -111,13 +111,13 @@ def _decode_pattern_lines(player: Player, pattern_lines: list[list[str]]) -> Non
     """
     for row in range(5):
         for col in range(5):
-            player.pattern_grid[row][col] = 0
+            player._pattern_grid[row][col] = 0
     for row, tiles in enumerate(pattern_lines):
         if not tiles:
             continue
         tile = _str_to_tile(tiles[0])
         col = COL_FOR_TILE_ROW[tile][row]
-        player.pattern_grid[row][col] = len(tiles)
+        player._pattern_grid[row][col] = len(tiles)
 
 
 def _encode_wall(player: Player) -> list[list[str | None]]:
@@ -128,7 +128,7 @@ def _encode_wall(player: Player) -> list[list[str | None]]:
     """
     return [
         [
-            TILE_FOR_ROW_COL[row][col].name if player.wall[row][col] else None
+            TILE_FOR_ROW_COL[row][col].name if player._wall[row][col] else None
             for col in range(5)
         ]
         for row in range(5)
@@ -160,8 +160,8 @@ def _game_from_snapshot(request: HypotheticalSnapshotRequest) -> Game:
     for player, board_req in zip(game.players, request.boards):
         player.score = board_req.score
         _decode_pattern_lines(player, board_req.pattern_lines)
-        player.wall = _decode_wall(board_req.wall)
-        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+        player._wall = _decode_wall(board_req.wall)
+        player._floor_line = [_str_to_tile(name) for name in board_req.floor_line]
         player._update_pending()
         player._update_penalty()
         player._update_bonus()
@@ -233,7 +233,7 @@ def _build_response(game: Game) -> GameStateResponse:
     for player in game.players:
         pattern_lines = _encode_pattern_lines(player)
         wall = _encode_wall(player)
-        floor_line = [_tile_to_str(t) for t in player.floor_line]
+        floor_line = [_tile_to_str(t) for t in player._floor_line]
         pending_placements, pending_bonuses = _build_pending(player)
         boards.append(
             BoardResponse(
@@ -601,9 +601,9 @@ def hypothetical_from_snapshot(
         player.pending = scratch_player.pending
         player.penalty = scratch_player.penalty
         player.bonus = scratch_player.bonus
-        player.pattern_grid = [row[:] for row in scratch_player.pattern_grid]
-        player.wall = [row[:] for row in scratch_player.wall]
-        player.floor_line = scratch_player.floor_line[:]
+        player._pattern_grid = [row[:] for row in scratch_player._pattern_grid]
+        player._wall = [row[:] for row in scratch_player._wall]
+        player._floor_line = scratch_player._floor_line[:]
 
     return _build_response(_game)
 
@@ -629,8 +629,8 @@ def hypothetical_replace_snapshot(
     for player, board_req in zip(_game.players, request.boards):
         player.score = board_req.score
         _decode_pattern_lines(player, board_req.pattern_lines)
-        player.wall = _decode_wall(board_req.wall)
-        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+        player._wall = _decode_wall(board_req.wall)
+        player._floor_line = [_str_to_tile(name) for name in board_req.floor_line]
         player._update_pending()
         player._update_penalty()
         player._update_bonus()

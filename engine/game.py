@@ -145,18 +145,12 @@ class Game:
     def __init__(
         self,
         player_names: list[str] | None = None,
-        agents: list[str] | None = None,
         seed: int | None = None,
     ) -> None:
         self.seed: int = seed or random.randint(1, 2**31)
         self._rng: random.Random = random.Random(self.seed)
-
         names = player_names or [f"Player {i + 1}" for i in range(PLAYERS)]
-        agent_list = agents or ["human"] * PLAYERS
-
-        self.players: list[Player] = [
-            Player(name=name, agent=agent) for name, agent in zip(names, agent_list)
-        ]
+        self.players: list[Player] = [Player(name=name) for name in names]
         self.current_player_index: int = 0
         self.factories: list[list[Tile]] = [[] for _ in range(NUMBER_OF_FACTORIES)]
         self.center: list[Tile] = []
@@ -464,7 +458,7 @@ class Game:
     def _score_round(self) -> None:
         """Score the end of a round for all players."""
         for index, player in enumerate(self.players):
-            if Tile.FIRST_PLAYER in player.floor_line:
+            if Tile.FIRST_PLAYER in player._floor_line:
                 self.current_player_index = index
             self.discard.extend(player.process_round_end())
 

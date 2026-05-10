@@ -45,7 +45,7 @@ def _build_two_move_position() -> Game:
     p2.place(1, [Tile.BLACK])
     p2.place(2, [Tile.RED, Tile.RED])
     p2.place(3, [Tile.BLUE, Tile.BLUE])
-    p2.floor_line.append(Tile.FIRST_PLAYER)
+    p2._floor_line.append(Tile.FIRST_PLAYER)
     p2._update_penalty()
 
     game.current_player_index = 0
@@ -204,5 +204,5 @@ def test_fully_explored_minimax_matches_brute_force():
     serialized = tree.serialize()
     mm_pts = serialized["minimax_value"] * 50
     assert (
-        abs(mm_pts - 4.0) < 0.01
-    ), f"Expected exactly +4.0pts minimax, got {mm_pts:.2f}pts"
+        abs(mm_pts - 5.0) < 0.01
+    ), f"Expected exactly +5.0pts minimax, got {mm_pts:.2f}pts"

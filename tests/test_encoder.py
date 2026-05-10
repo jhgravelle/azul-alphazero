@@ -64,7 +64,7 @@ def test_my_wall_reflects_placed_tile():
     game = fresh_game()
     blue = Tile.BLUE
     wall_col = COL_FOR_TILE_ROW[blue][0]
-    game.current_player.wall[0][wall_col] = 1
+    game.current_player._wall[0][wall_col] = 1
 
     encoding = encode_state(game)
     flat_idx = 0 * SIZE + wall_col
@@ -77,7 +77,7 @@ def test_opponent_wall_reflects_opponent_tiles():
     opponent_index = 1 - game.current_player_index
     yellow = Tile.YELLOW
     wall_col = COL_FOR_TILE_ROW[yellow][2]
-    game.players[opponent_index].wall[2][wall_col] = 1
+    game.players[opponent_index]._wall[2][wall_col] = 1
 
     encoding = encode_state(game)
     flat_idx = 2 * SIZE + wall_col
@@ -121,7 +121,7 @@ def test_pattern_line_suppressed_when_wall_filled():
     yellow = Tile.YELLOW
     game.current_player.place(1, [yellow, yellow])
     wall_col = COL_FOR_TILE_ROW[yellow][1]
-    game.current_player.wall[1][wall_col] = 1
+    game.current_player._wall[1][wall_col] = 1
 
     encoding = encode_state(game)
     flat_idx = 1 * SIZE + wall_col
@@ -147,7 +147,7 @@ def test_official_score_normalized():
 
 def test_floor_penalty_normalized():
     game = fresh_game()
-    game.current_player.floor_line.extend([Tile.BLUE, Tile.RED])
+    game.current_player._floor_line.extend([Tile.BLUE, Tile.RED])
     game.current_player._update_penalty()
 
     encoding = encode_state(game)
@@ -157,7 +157,7 @@ def test_floor_penalty_normalized():
 
 def test_first_player_token_on_my_floor():
     game = fresh_game()
-    game.current_player.floor_line.append(Tile.FIRST_PLAYER)
+    game.current_player._floor_line.append(Tile.FIRST_PLAYER)
 
     encoding = encode_state(game)
     assert encoding[OFF_MY_FP_TOKEN].item() == 1.0
@@ -167,7 +167,7 @@ def test_first_player_token_on_my_floor():
 def test_first_player_token_on_opponent_floor():
     game = fresh_game()
     opponent_index = 1 - game.current_player_index
-    game.players[opponent_index].floor_line.append(Tile.FIRST_PLAYER)
+    game.players[opponent_index]._floor_line.append(Tile.FIRST_PLAYER)
 
     encoding = encode_state(game)
     assert encoding[OFF_MY_FP_TOKEN].item() == 0.0

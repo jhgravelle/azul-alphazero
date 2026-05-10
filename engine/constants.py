@@ -1,9 +1,7 @@
 # engine/constants.py
-
 """Constants and enums used throughout the Azul engine."""
 
 from enum import Enum, auto
-from itertools import accumulate
 
 
 class Tile(Enum):
@@ -24,7 +22,6 @@ COLOR_TILES: list[Tile] = [
 ]  # the 5 colors of tiles
 
 # --- Board dimensions and counts ---
-
 SIZE = 5  # also equal to the number of tile colors
 PLAYERS = 2  # number of players in a new GameState
 TILES_PER_COLOR = (
@@ -33,30 +30,16 @@ TILES_PER_COLOR = (
 NUMBER_OF_FACTORIES = PLAYERS * 2 + 1  # number of factories in a new GameState
 TILES_PER_FACTORY = 4  # number of tiles placed in each factory at the start of a round
 FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3]
+FLOOR_SIZE = len(FLOOR_PENALTIES)  # number of penalty slots on the floor line
 BONUS_ROW = 2  # points for completing a row on the wall
 BONUS_COLUMN = 7  # points for completing a column on the wall
 BONUS_TILE = 10  # points for placing all 5 tiles of a color on the wall
-
 CENTER = -1  # sentinel source: tiles from the center
 FLOOR = -2  # sentinel destination: tiles go to the floor line
 CAPACITY: list[int] = [row + 1 for row in range(SIZE)]  # max tiles per pattern line row
 
 
-# --- Helper constants for scoring ---
-
-# CUMULATIVE_FLOOR_PENALTIES[n] is the total penalty for n tiles on the floor.
-# Indexed 0..NUMBER_OF_FACTORIES * TILES_PER_FACTORY so any floor size can be
-# looked up directly without capping: CUMULATIVE_FLOOR_PENALTIES[len(floor_line)]
-# Penalties beyond len(FLOOR_PENALTIES) repeat the maximum value.
-_MAX_FLOOR = NUMBER_OF_FACTORIES * TILES_PER_FACTORY  # theoretical max tiles on floor
-_cumulative = list(accumulate(FLOOR_PENALTIES))
-_max_penalty = _cumulative[-1]
-CUMULATIVE_FLOOR_PENALTIES: list[int] = (
-    [0] + _cumulative + [_max_penalty] * (_MAX_FLOOR - len(FLOOR_PENALTIES) + 1)
-)
-
 # --- Display ---
-
 SPACE = " "
 BLANK = ""
 EMPTY = "."
@@ -68,7 +51,6 @@ MOVE_MARKER_FIRST_PLAYER = "+"  # first-player tile also taken
 MOVE_MARKER_UNKNOWN = "?"  # move not yet executed (count=0)
 
 # --- Conversions ---
-
 TILE_FOR_CHAR: dict[str, Tile | None] = {
     "B": Tile.BLUE,
     "Y": Tile.YELLOW,

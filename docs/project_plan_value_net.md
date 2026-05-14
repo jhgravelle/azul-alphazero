@@ -1,1407 +1,472 @@
-Azul AlphaZero → Value Net Learning — Project Plan (Updated)
-
-Status: Phase redesign complete (pivot from AlphaZero to supervised value learning)
-Last updated: 2026-05-09
-Goal: Build a superhuman Azul bot via learned value function + AlphaBeta search
-
-
-Vision Shift
-Original goal: AlphaZero-style self-play training → strong bot
-Reality: Neural policy head stagnated (gen 1–2). MCTS distributions near-random. Training signal corrupted.
-New approach: Abandon policy learning. Use supervised value learning instead.
-
-AlphaBeta search provides ground-truth position evaluation
-Train neural value net to match AB evaluations
-Integrate learned value into AB search
-Iterate: each generation's net produces better supervision for the next
-
-Expected outcome: 90%+ win rate vs AB hard. Superhuman Azul play.
-
-Architecture: AlphaBeta + Learned Value
-Classical AlphaBeta search with two evaluation options:
-
-Hand-Coded Eval (baseline):
-  value = player.earned_differential (current score advantage)
-  
-Learned Value (gen-0+):
-  encoding = encode_game(position)
-  value = value_net(encoding)  [trained on AB supervision]
-  
-Integration:
-  AlphaBetaWithLearnedValue(depth=3, threshold=8, net_path="gen_0000.pt")
-    ├─ Searches to depth 3 or until round boundary
-    ├─ Uses net prediction at leaf nodes (instead of hand-coded eval)
-    └─ Returns best move
-Why this works:
-
-AlphaBeta is fast, deterministic, correct
-Hand-coded eval has constant signal but limited strategic understanding
-Neural value net learns to refine evaluation (cleanness, column strategy, end-game dynamics)
-Generational improvement: gen-1 net sees better AB evaluations, produces better supervision for gen-2
-
-
-Feature Engineering (LOCKED)
-Player-Specific Features (Per Player: 35 values)
-Columns (7 values)
-
-5 column completion ratios (per column, normalized: filled / 5)
-1 max column completion
-1 second-max column completion
-
-Rows (8 values)
-
-5 row completion ratios (per row, normalized: filled / capacity)
-1 top row (highest completion)
-1 second-top row
-1 third-top row
-
-Pattern Lines (15 values)
-
-5 pattern line fill ratios (current tiles / capacity per row)
-1 total pattern tiles (sum of all pattern line tiles / 15)
-5 pattern line cleanness (1.0 if wall color not placed, 0.0 if blocked)
-5 pattern lines will be empty (1.0 if won't complete this round, 0.0 if will)
-
-Line Flexibility (5 values)
-
-5 incomplete lines per color (max count capped at 3, normalized)
-
-Subtotal: 35 values per player × 2 = 70 values
-
-Game-Level Features (6 values)
-
-1 I hold first-player token (1.0 / 0.0)
-1 Opponent holds first-player token (1.0 / 0.0)
-1 Can I end game this round (1.0 / 0.0)
-1 Can opponent end game this round (1.0 / 0.0)
-1 Rounds remaining (round_num / 6)
-1 Padding/reserved
-
-Subtotal: 6 values
-
-Static State Features (35 values)
-Tile Availability (5 values)
-
-Per color: tiles_remaining / 20
-
-Source Counts (5 values)
-
-Per color: source_count / 5
-
-Bag Contents (5 values)
-
-Per color: count_in_bag / 20
-
-Official Scores (5 values)
-
-My official score / 100
-Opponent official score / 100
-Padding × 3
-
-Earned Scores (5 values)
-
-My earned score / 100 (can be negative: [-0.14, 2+])
-Opponent earned score / 100 (can be negative)
-Padding × 3
-
-Floor Penalties (5 values)
-
-My penalty / 100 (range: [-0.14, 0.0])
-Opponent penalty / 100 (range: [-0.14, 0.0])
-Padding × 3
-
-Bonus Points (5 values)
-
-My bonus / 100
-Opponent bonus / 100
-Padding × 3
-
-Subtotal: 35 values
-
-Total Encoding: 111 values
-0–69:     Player features (35 per player × 2)
-70–75:    Game-level features (6)
-76–80:    Tile availability (5)
-81–85:    Source counts (5)
-86–90:    Bag contents (5)
-91–95:    Official scores (5)
-96–100:   Earned scores (5)
-101–105:  Floor penalties (5)
-106–110:  Bonus points (5)
-
-Total: 111 values
-Normalization Principles:
-
-All divisors use 100 for human interpretability (0.66 = 66 points)
-Scores, earned, bonuses: raw division by 100 (can exceed 1.0 in late game)
-Penalties: raw division by 100 (range [-0.14, 0.0], negative values allowed)
-Ratios: division by their max (0.0–1.0 range)
-No post-processing, no shifts, no inversions
-Network learns to adjust negative values as needed
-
-
-Data Generation Strategy
-Phase 0: Supervision Data (Days 1–2)
-Algorithm: Game playthrough with exhaustive search at round boundaries
-pythondef generate_supervision_data(supervisor_agent, num_examples, output_file=None, threshold=5):
-    """
-    Generate supervision examples from random games.
-    
-    For smoke test (gen-0): store in RAM (< 10k examples)
-    For scaling (gen-1+): stream to disk (Option 3 hybrid approach)
-    
-    Args:
-        supervisor_agent: AlphaBetaAgent or AlphaBetaWithLearnedValue
-        num_examples: target number of training examples
-        output_file: if provided, stream to disk; if None, keep in RAM
-        threshold: exhaustive search when <= this many moves remain in round
-    
-    Returns:
-        training_data: list of (encoding, value) tuples (if RAM mode)
-        OR output_file path (if disk mode)
-    """
-    training_data = []  # RAM mode (gen-0 smoke test)
-    examples_collected = 0
-    
-    for game_idx in range(num_games_estimate):
-        game = Game(seed=random())
-        
-        while not game.is_game_over():
-            # Play randomly until near round boundary
-            while not game.is_round_over():
-                moves = game.legal_moves()
-                game.make_move(random.choice(moves))
-                game.advance(skip_setup=True)
-                
-                # Check: within threshold of round end?
-                remaining_moves = estimate_remaining_moves(game)
-                if remaining_moves <= threshold:  # threshold=5 or 6
-                    # Run exhaustive AB search to round boundary
-                    ab = AlphaBetaAgent(depth=999, threshold=0)  # Force full search
-                    ab_tree = ab.build_complete_tree(game)
-                    
-                    # Extract all visited nodes
-                    for node in ab_tree.all_nodes():
-                        if node.was_visited:  # Skip pruned branches
-                            encoding = encode_game(node.game_state)
-                            value = node.value
-                            
-                            training_data.append((encoding, value))
-                            examples_collected += 1
-                            
-                            # For disk streaming (gen-1+):
-                            # if examples_collected % 1000 == 0:
-                            #     _flush_to_disk(training_data, output_file, append=True)
-                            #     training_data = []
-            
-            # Round boundary reached; continue to next round
-            game.advance()
-        
-        # Game over
-        if examples_collected >= num_examples:
-            break
-    
-    # Final flush for disk mode
-    if output_file and training_data:
-        _flush_to_disk(training_data, output_file, append=True)
-    
-    return training_data if not output_file else output_file
-Key points:
-
-Play full random games to natural termination
-When ≤ 5 moves remain in a round: exhaustive AB search (depth=999, threshold=0)
-AB's pruning is trusted: if a branch is pruned, assume generalization will also skip it
-Collect all visited nodes from the AB tree
-Transitive benefit: depth-4 search implicitly gives us depth-3, depth-2, depth-1 data
-
-Storage modes:
-
-Gen-0 (smoke test): RAM-only, ~7 MB for 10k examples
-Gen-1+ (scaling): Stream to disk every 1000 examples, load via PyTorch DataLoader
-
-Wall time estimate:
-
-5k examples: 1–2 hours
-10k examples: 4–6 hours (overnight acceptable)
-20k examples: 12+ hours (full day)
-
-Smoke test approach: Start with 5k–10k, evaluate win rate. Scale up for later generations if needed.
-
-Training Pipeline: Value Net
-Phase 1: Supervised Value Learning (Days 2–4)
-Architecture:
-pythonclass AzulValueNet(nn.Module):
-    """
-    Neural value network for Azul position evaluation.
-    
-    Architecture:
-      input (111) → Linear (64) → ResBlock (64) → Dropout (0.1)
-                 → value_head (64 → 32 → 1)
-    
-    Output: Single scalar value per position
-      - Represents: (my_earned - opponent_earned) / 100.0
-      - Range: approximately [-0.14, 3.0+]
-    """
-    
-    def __init__(self, input_size=111, hidden_dim=64, dropout=0.1):
-        super().__init__()
-        self.trunk = nn.Sequential(
-            nn.Linear(input_size, hidden_dim),
-            ResBlock(hidden_dim),
-            nn.Dropout(dropout),
-        )
-        self.value_head = nn.Sequential(
-            nn.Linear(hidden_dim, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
-        )
-    
-    def forward(self, encoding):
-        """
-        Args:
-            encoding: (batch_size, 111) tensor
-        
-        Returns:
-            value: (batch_size,) tensor of scalar values
-        """
-        trunk_out = self.trunk(encoding)
-        value = self.value_head(trunk_out).squeeze(-1)
-        return value
-Training Loop:
-pythondef train_value_net(train_loader, val_loader, max_epochs=200, 
-                    early_stopping_patience=20, lr=1e-3, 
-                    save_dir="checkpoints/gen_0000/", device='cuda'):
-    """
-    Supervised training: minimize MSE between net predictions and AB labels.
-    
-    Args:
-        train_loader: DataLoader with (encoding, ab_value) pairs
-        val_loader: DataLoader for validation
-        max_epochs: maximum epochs (early stopping usually stops earlier)
-        early_stopping_patience: stop if val_loss doesn't improve for N epochs
-        lr: learning rate
-        save_dir: where to save checkpoint and logs
-        device: 'cuda' or 'cpu'
-    
-    Returns:
-        best_checkpoint_path: path to model with best val_loss
-    """
-    net = AzulValueNet(input_size=111).to(device)
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
-    loss_fn = nn.MSELoss()
-    
-    best_val_loss = float('inf')
-    patience_counter = 0
-    training_log = []
-    
-    for epoch in range(max_epochs):
-        # ========== Training Phase ==========
-        net.train()
-        train_loss = 0.0
-        
-        for batch_encoding, batch_values in train_loader:
-            batch_encoding = batch_encoding.to(device)
-            batch_values = batch_values.to(device)
-            
-            optimizer.zero_grad()
-            pred = net(batch_encoding)
-            loss = loss_fn(pred, batch_values)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-        
-        train_loss /= len(train_loader)
-        
-        # ========== Validation Phase ==========
-        net.eval()
-        val_loss = 0.0
-        val_mae = 0.0
-        val_preds = []
-        val_targets = []
-        
-        with torch.no_grad():
-            for batch_encoding, batch_values in val_loader:
-                batch_encoding = batch_encoding.to(device)
-                batch_values = batch_values.to(device)
-                
-                pred = net(batch_encoding)
-                loss = loss_fn(pred, batch_values)
-                val_loss += loss.item()
-                val_mae += torch.abs(pred - batch_values).mean().item()
-                
-                val_preds.extend(pred.cpu().numpy())
-                val_targets.extend(batch_values.cpu().numpy())
-        
-        val_loss /= len(val_loader)
-        val_mae /= len(val_loader)
-        
-        # Compute Pearson correlation
-        val_preds = np.array(val_preds)
-        val_targets = np.array(val_targets)
-        val_correlation = np.corrcoef(val_preds, val_targets)[0, 1]
-        if np.isnan(val_correlation):
-            val_correlation = 0.0
-        
-        # ========== Logging ==========
-        log_entry = {
-            'epoch': epoch,
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'val_mae': val_mae,
-            'val_correlation': val_correlation,
-            'learning_rate': lr,
-        }
-        training_log.append(log_entry)
-        
-        print(f"Epoch {epoch:3d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
-              f"mae={val_mae:.4f} | corr={val_correlation:.3f}")
-        
-        # ========== Early Stopping ==========
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            best_checkpoint = f"{save_dir}/best_checkpoint.pt"
-            torch.save(net.state_dict(), best_checkpoint)
-            print(f"  → New best val_loss={val_loss:.4f}, saved checkpoint")
-        else:
-            patience_counter += 1
-            if patience_counter >= early_stopping_patience:
-                print(f"Early stopping at epoch {epoch} (patience exhausted)")
-                break
-    
-    # ========== Save Summary ==========
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Save training log
-    import csv
-    with open(f"{save_dir}/training_log.csv", 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=training_log[0].keys())
-        writer.writeheader()
-        writer.writerows(training_log)
-    
-    # Save summary
-    with open(f"{save_dir}/summary.txt", 'w') as f:
-        f.write(f"Generation Training Summary\n")
-        f.write(f"Best epoch: {training_log.index(min(training_log, key=lambda x: x['val_loss']))}\n")
-        f.write(f"Best val_loss: {best_val_loss:.6f}\n")
-        f.write(f"Final train_loss: {training_log[-1]['train_loss']:.6f}\n")
-        f.write(f"Final val_correlation: {training_log[-1]['val_correlation']:.4f}\n")
-        f.write(f"Total epochs: {len(training_log)}\n")
-    
-    # Generate plots
-    plot_training_curves(training_log, save_dir)
-    
-    return best_checkpoint
-Hyperparameters:
-
-Input size: 111 (encoder size, locked)
-Hidden dim: 64 (small, effective)
-Dropout: 0.1 (mild regularization)
-Learning rate: 1e-3 (standard for supervised regression)
-Batch size: 128
-Train/val split: 80/20
-Max epochs: 200
-Early stopping patience: 20 epochs
-
-Logging (per epoch):
-
-train_loss, val_loss, val_mae, val_correlation, learning_rate
-Save to CSV: checkpoints/gen_NNNN/training_log.csv
-
-Checkpointing:
-
-Save best checkpoint at lowest val_loss
-Save final summary: summary.txt (best_epoch, best_val_loss, final_metrics)
-
-Visualization (post-training):
-
-loss_curves.png — train vs val loss over epochs
-metrics_curves.png — val MAE + val correlation
-All generated by matplotlib, saved to checkpoints/gen_NNNN/
-
-
-Evaluation & Generational Loop
-Phase 2: Evaluation (Every generation)
-Test 1: vs Hand-Coded AlphaBeta
-pythondef evaluate_agents(agent_a, agent_b, num_mirror_pairs=100, verbose=True):
-    """
-    Run mirrored pair evaluation.
-    
-    For each pair:
-      Game 1: agent_a (player 0) vs agent_b (player 1), bag_seed S
-      Game 2: agent_b (player 0) vs agent_a (player 1), bag_seed S (sides swapped)
-    
-    This controls for first-player advantage and randomness.
-    
-    Args:
-        agent_a: first agent
-        agent_b: second agent
-        num_mirror_pairs: number of mirrored pairs to play (2 games per pair)
-        verbose: print progress
-    
-    Returns:
-        win_rate: fraction of games won by agent_a (0.0 to 1.0)
-    """
-    wins = 0
-    total_games = 0
-    
-    for pair_idx in range(num_mirror_pairs):
-        bag_seed = random()
-        
-        # Game 1: A vs B (A is player 0)
-        game1 = Game(seed=bag_seed)
-        winner1_idx = play_game(game1, [agent_a, agent_b])
-        if winner1_idx == 0:
-            wins += 1
-        total_games += 1
-        
-        # Game 2: B vs A (A is player 1, sides swapped)
-        game2 = Game(seed=bag_seed)
-        winner2_idx = play_game(game2, [agent_b, agent_a])
-        if winner2_idx == 1:  # A won (player 1 in this game)
-            wins += 1
-        total_games += 1
-        
-        if verbose and (pair_idx + 1) % 10 == 0:
-            print(f"Completed {pair_idx + 1}/{num_mirror_pairs} pairs "
-                  f"({total_games} games, {wins}/{total_games} wins for A)")
-    
-    win_rate = wins / total_games
-    return win_rate
-Test 2: vs AlphaBeta Hard (Progression Tracking)
-python# Every generation, also test against AB hard
-win_rate_vs_hard = evaluate_agents(
-    AlphaBetaWithLearnedValue(depth=3, net_path=f"gen_{generation:04d}.pt"),
-    AlphaBetaAgent(depth=3, threshold=8),  # AB hard
-    num_mirror_pairs=100,
-    verbose=True
-)
-Parameters:
-
-Format: 100 mirrored pairs (200 games, controls for luck)
-Depth: configurable, defaults to same as supervision depth (3)
-Win rate threshold: 55% to declare "success"
-
-Phase 3: Generational Loop (Days 5–14)
-pythondef generational_loop(max_generations=10):
-    """
-    Automated generational loop: supervise → train → eval → decide.
-    
-    Each generation:
-      1. Generate supervision data using current best net (or hand-coded for gen-0)
-      2. Train new net on supervision
-      3. Evaluate new net vs baseline and vs AB hard
-      4. Log results, decide if improvement warrants next generation
-    
-    Stopping criteria:
-      - max_generations reached
-      - < 2% improvement for 3 consecutive generations (plateau)
-      - User keyboard interrupt (graceful stop)
-    """
-    win_rates = {}
-    plateau_counter = 0
-    
-    for generation in range(max_generations):
-        print(f"\n{'='*60}")
-        print(f"Generation {generation}")
-        print(f"{'='*60}")
-        
-        # ========== Step 1: Generate Supervision ==========
-        if generation == 0:
-            supervisor = AlphaBetaAgent(depth=3, threshold=0)
-            print(f"Supervisor: Hand-coded AlphaBeta (depth=3, full search to round end)")
-        else:
-            supervisor = AlphaBetaWithLearnedValue(
-                depth=3,
-                threshold=0,
-                net_path=f"checkpoints/gen_{generation-1:04d}/best_checkpoint.pt"
-            )
-            print(f"Supervisor: gen_{generation-1:04d} value net (depth=3)")
-        
-        target_examples = 10000 if generation < 3 else 15000  # Scale up after smoke test
-        print(f"Generating {target_examples} supervision examples...")
-        
-        try:
-            train_data, val_data = generate_supervision_data(
-                supervisor,
-                num_examples=target_examples,
-                output_file=None if generation == 0 else f"checkpoints/gen_{generation:04d}/train_data.pt",
-                threshold=5,
-            )
-            print(f"Generated {len(train_data)} training examples")
-        except KeyboardInterrupt:
-            print(f"Interrupted during data generation. Stopping.")
-            break
-        
-        # ========== Step 2: Train Value Net ==========
-        print(f"Training gen_{generation:04d} value net...")
-        
-        try:
-            best_checkpoint = train_value_net(
-                train_data,
-                val_data,
-                max_epochs=200,
-                early_stopping_patience=20,
-                lr=1e-3,
-                save_dir=f"checkpoints/gen_{generation:04d}/",
-            )
-            print(f"Training complete. Best checkpoint: {best_checkpoint}")
-        except KeyboardInterrupt:
-            print(f"Interrupted during training. Stopping.")
-            break
-        
-        # ========== Step 3: Evaluate vs Baseline ==========
-        print(f"Evaluating gen_{generation:04d} vs hand-coded AB...")
-        
-        try:
-            win_rate_baseline = evaluate_agents(
-                AlphaBetaWithLearnedValue(depth=3, net_path=best_checkpoint),
-                AlphaBetaAgent(depth=3, threshold=8),
-                num_mirror_pairs=100,
-                verbose=True,
-            )
-            print(f"Gen {generation} vs hand-coded: {win_rate_baseline*100:.1f}%")
-        except KeyboardInterrupt:
-            print(f"Interrupted during evaluation. Stopping.")
-            break
-        
-        # ========== Step 4: Evaluate vs AB Hard ==========
-        print(f"Evaluating gen_{generation:04d} vs AB hard...")
-        
-        try:
-            win_rate_hard = evaluate_agents(
-                AlphaBetaWithLearnedValue(depth=3, net_path=best_checkpoint),
-                AlphaBetaAgent(depth=3, threshold=8),
-                num_mirror_pairs=100,
-                verbose=True,
-            )
-            print(f"Gen {generation} vs AB hard: {win_rate_hard*100:.1f}%")
-        except KeyboardInterrupt:
-            print(f"Interrupted during evaluation. Stopping.")
-            break
-        
-        win_rates[generation] = {
-            'vs_baseline': win_rate_baseline,
-            'vs_hard': win_rate_hard,
-        }
-        
-        # ========== Step 5: Analyze Progress ==========
-        if generation > 0:
-            prev_rate = win_rates[generation-1]['vs_baseline']
-            improvement = win_rate_baseline - prev_rate
-            print(f"\nImprovement over gen {generation-1}: {improvement*100:+.1f}%")
-            
-            if improvement < 0.02:  # < 2% improvement
-                plateau_counter += 1
-                print(f"Plateau warning ({plateau_counter}/3)")
-                if plateau_counter >= 3:
-                    print(f"Plateau detected for 3 consecutive generations. Stopping.")
-                    break
-            else:
-                plateau_counter = 0  # Reset if we see improvement
-        
-        # ========== Step 6: User Confirmation ==========
-        print(f"\n{'='*60}")
-        if generation < max_generations - 1:
-            try:
-                prompt = f"Proceed to gen {generation+1}? (y/n/skip): "
-                response = input(prompt).lower().strip()
-                if response == 'n':
-                    print(f"Stopping at gen {generation}.")
-                    break
-                elif response == 'skip':
-                    print(f"Skipping eval games for gen {generation+1}.")
-                    # (could implement skipping here)
-            except KeyboardInterrupt:
-                print(f"\nInterrupted. Saving results up to gen {generation}...")
-                break
-    
-    # ========== Summary ==========
-    print(f"\n{'='*60}")
-    print(f"Training Complete")
-    print(f"{'='*60}")
-    for gen, rates in sorted(win_rates.items()):
-        print(f"Gen {gen:2d}: baseline={rates['vs_baseline']*100:5.1f}%, "
-              f"hard={rates['vs_hard']*100:5.1f}%")
-    
-    # Find best generation
-    best_gen = max(win_rates.keys(), key=lambda g: win_rates[g]['vs_hard'])
-    print(f"\nBest generation: Gen {best_gen} (vs AB hard: {win_rates[best_gen]['vs_hard']*100:.1f}%)")
-    print(f"Checkpoint: checkpoints/gen_{best_gen:04d}/best_checkpoint.pt")
-Key decisions:
-
-Max generations: 10 (hard cap)
-Data per generation:
-
-Gen 0–2: 10k examples (speed, smoke test)
-Gen 3+: 15k–20k examples (refinement)
-
-
-Plateau detection: < 2% improvement vs previous gen, 3 times in a row
-Keyboard interrupt: Graceful stop with Ctrl+C, saves results
-Evaluation: Every generation, 100 mirror pairs vs baseline + vs hard
-
-
-Web Dashboard: Training Orchestration
-Phase 5b: Training Dashboard (Days 6–8, parallel to Phase 5)
-Architecture:
-Frontend (Vanilla JS):
-  ├─ Single-page dashboard (training_dashboard.html)
-  ├─ Live polling of /training/status (every 2 seconds)
-  ├─ Real-time metric updates, plots, controls
-  └─ Manual start/stop/pause for each phase
-
-Backend (FastAPI):
-  ├─ Extended api/main.py with /training/* endpoints
-  ├─ File-based state persistence (pipeline_state.json)
-  ├─ Serves plots and generation history
-  └─ Handles start/stop/pause signals
-
-Orchestrator (Background Worker):
-  ├─ Watches pipeline state file
-  ├─ Runs generation → training → eval sequence
-  ├─ Updates state in real-time
-  └─ Graceful signal handling
-Storage: File-based (per generation)
-checkpoints/
-├─ pipeline_state.json           ← Current pipeline state
-├─ training_settings.json        ← User settings
-└─ gen_NNNN/
-   ├─ status.json               ← Phase, progress, metrics
-   ├─ best_checkpoint.pt
-   ├─ training_log.csv
-   ├─ loss_curves.png
-   ├─ metrics_curves.png
-   ├─ summary.txt
-   └─ live_metrics.json         ← Rolling window
-Frontend: frontend/training_dashboard.html
-Single-page HTML5 dashboard with:
-
-Status card: Current phase (idle/generating/training/evaluating), progress bar
-Live metrics: Games collected, epoch, train loss, val loss, correlation
-Control panel: Start/stop buttons for each phase (enabled based on phase)
-Settings form: Target examples, depth, LR, batch size (editable, saved to backend)
-Generation table: History of all generations with stats
-Plots: Loss curves and metrics curves (auto-updated)
-
-Key features:
-
-Vanilla JS (no build tools needed)
-Live polling of /training/status endpoint
-Graceful error handling
-Responsive layout
-
-Backend Endpoints: Extended api/main.py
-python@app.get("/training/status")
-async def get_training_status() -> TrainingStatus:
-    """Get current pipeline status, metrics, and generation history."""
-    # Returns: phase, current_gen, progress, games_collected, epoch,
-    #          train/val loss, correlation, generation list, latest plots
-
-@app.post("/training/start_generation")
-async def start_generation() -> Dict:
-    """Signal pipeline to start data generation."""
-
-@app.post("/training/stop_generation")
-async def stop_generation() -> Dict:
-    """Signal pipeline to stop data generation."""
-
-@app.post("/training/start_training")
-async def start_training() -> Dict:
-    """Signal pipeline to start training."""
-
-@app.post("/training/stop_training")
-async def stop_training() -> Dict:
-    """Signal pipeline to stop training."""
-
-@app.post("/training/start_evaluation")
-async def start_evaluation() -> Dict:
-    """Signal pipeline to start evaluation."""
-
-@app.get("/training/generation/{gen_id}/plot/{plot_name}")
-async def get_generation_plot(gen_id: int, plot_name: str) -> FileResponse:
-    """Serve plot image (loss_curves.png or metrics_curves.png)."""
-
-@app.post("/training/settings")
-async def save_training_settings(settings: TrainingSettings) -> Dict:
-    """Save training hyperparameters."""
-
-@app.get("/training/settings")
-async def get_training_settings() -> TrainingSettings:
-    """Fetch current settings."""
-Orchestrator: scripts/training_dashboard_worker.py
-Background process that:
-
-Watches checkpoints/pipeline_state.json for control signals
-Detects phase changes (idle → generating, etc.)
-Runs appropriate script (generate_ab_supervision.py, train_value_net.py, evaluate_agents.py)
-Updates status.json in real-time with progress
-Handles graceful stop/pause on signal
-
-Can be run as:
-bashpython scripts/training_dashboard_worker.py
-Or as a background daemon during main API startup.
-
-Feature Extraction Architecture
-Player Features
-Player owns and maintains all player-specific features:
-python# engine/player.py
-
-class Player:
-    def __init__(self, player_idx: int):
-        # Board state
-        self.wall: List[List[int]] = [[0] * 5 for _ in range(5)]
-        self.pattern_lines: List[List[Tile]] = [[] for _ in range(5)]
-        self.floor: List[Tile] = []
-        
-        # Scoring caches
-        self.score = 0
-        self.pending = 0
-        self.penalty = 0
-        self.bonus = 0
-        
-        # Feature caches (updated on state change)
-        self._column_completion_ratios = np.array([0.0] * 5, dtype=np.float32)
-        self._row_completion_ratios = np.array([0.0] * 5, dtype=np.float32)
-        self._pattern_line_fill_ratios = np.array([0.0] * 5, dtype=np.float32)
-        self._pattern_line_cleanness = np.array([0.0] * 5, dtype=np.float32)
-        self._pattern_lines_will_be_empty = np.array([0.0] * 5, dtype=np.float32)
-        self._incomplete_lines_per_color = np.array([0.0] * 5, dtype=np.float32)
-        self._max_column_completion = 0.0
-        self._second_max_column_completion = 0.0
-        self._top_row = 0.0
-        self._second_top_row = 0.0
-        self._third_top_row = 0.0
-        self._total_pattern_tiles = 0.0
-    
-    # Property access (read-only)
-    @property
-    def column_completion_ratios(self) -> np.ndarray:
-        return self._column_completion_ratios.copy()
-    
-    # ... more properties ...
-    
-    # Feature updates (called when state changes)
-    def _update_column_features(self):
-        """Recalculate column-based features."""
-        for col in range(5):
-            filled = sum(self.wall[row][col] for row in range(5))
-            self._column_completion_ratios[col] = filled / 5.0
-        
-        self._max_column_completion = float(np.max(self._column_completion_ratios))
-        self._second_max_column_completion = float(
-            np.partition(self._column_completion_ratios, -2)[-2]
-        )
-    
-    # ... more update methods ...
-    
-    # Feature extraction
-    def extract_features(self) -> np.ndarray:
-        """
-        Extract all player-specific features as a 35-value vector.
-        
-        Returns: 35-value array
-          - Columns: 7 values
-          - Rows: 8 values
-          - Pattern lines: 15 values
-          - Line flexibility: 5 values
-        """
-        features = []
-        
-        # Columns (7)
-        features.extend(self._column_completion_ratios)  # 5
-        features.append(self._max_column_completion)  # 1
-        features.append(self._second_max_column_completion)  # 1
-        
-        # Rows (8)
-        features.extend(self._row_completion_ratios)  # 5
-        features.append(self._top_row)  # 1
-        features.append(self._second_top_row)  # 1
-        features.append(self._third_top_row)  # 1
-        
-        # Pattern lines (15)
-        features.extend(self._pattern_line_fill_ratios)  # 5
-        features.append(self._total_pattern_tiles)  # 1
-        features.extend(self._pattern_line_cleanness)  # 5
-        features.extend(self._pattern_lines_will_be_empty)  # 5
-        
-        # Line flexibility (5)
-        features.extend(self._incomplete_lines_per_color)  # 5
-        
-        return np.array(features, dtype=np.float32)
-Game-Level Features
-Game assembles both players' features and game-level features:
-python# engine/game.py
-
-class Game:
-    def extract_features(self) -> np.ndarray:
-        """
-        Extract all game features as a 111-value vector.
-        
-        Returns: 111-value array
-          - Player 0 features: 35
-          - Player 1 features: 35
-          - Game-level features: 6
-          - Tile availability: 5
-          - Source counts: 5
-          - Bag contents: 5
-          - Official scores: 5
-          - Earned scores: 5
-          - Floor penalties: 5
-          - Bonus points: 5
-        """
-        features = []
-        idx = 0
-        
-        # Player features (70)
-        features.extend(self.players[0].extract_features())  # 35
-        features.extend(self.players[1].extract_features())  # 35
-        
-        # Game-level features (6)
-        features.append(1.0 if self.first_player_idx == 0 else 0.0)
-        features.append(1.0 if self.first_player_idx == 1 else 0.0)
-        features.append(self._can_player_end_game(0))
-        features.append(self._can_player_end_game(1))
-        features.append((6 - self.round_num) / 6.0)
-        features.append(0.0)  # Padding
-        
-        # Tile availability (5)
-        availability = self.tile_availability()
-        for color_idx in range(5):
-            features.append(availability[color_idx][0] / 20.0)
-        
-        # Source counts (5)
-        for color_idx in range(5):
-            features.append(availability[color_idx][1] / 5.0)
-        
-        # Bag contents (5)
-        bag_contents = [0] * 5
-        for tile in self.bag:
-            bag_contents[tile.tile] += 1
-        for color_idx in range(5):
-            features.append(bag_contents[color_idx] / 20.0)
-        
-        # Official scores (5)
-        features.append(self.players[0].score / 100.0)
-        features.append(self.players[1].score / 100.0)
-        features.append(0.0)
-        features.append(0.0)
-        features.append(0.0)
-        
-        # Earned scores (5)
-        features.append(self.players[0].earned / 100.0)
-        features.append(self.players[1].earned / 100.0)
-        features.append(0.0)
-        features.append(0.0)
-        features.append(0.0)
-        
-        # Floor penalties (5)
-        features.append(self.players[0].penalty / 100.0)
-        features.append(self.players[1].penalty / 100.0)
-        features.append(0.0)
-        features.append(0.0)
-        features.append(0.0)
-        
-        # Bonus points (5)
-        features.append(self.players[0].bonus / 100.0)
-        features.append(self.players[1].bonus / 100.0)
-        features.append(0.0)
-        features.append(0.0)
-        features.append(0.0)
-        
-        return np.array(features, dtype=np.float32)
-Encoder
-Encoder simply calls game.extract_features():
-python# neural/encoder.py
-
-def encode_game(game: Game) -> np.ndarray:
-    """
-    Encode game state as 111-value flat vector.
-    
-    All values raw (no post-processing, negatives allowed):
-    - Ratios: [0, 1]
-    - Scores: [0, 2+] (late-game values can exceed 1.0)
-    - Penalties: [-0.14, 0.0]
-    - Earned: [-0.14, 2+] (can be negative)
-    
-    Network learns to interpret all ranges appropriately.
-    """
-    return game.extract_features()
-
-Repository Structure (Updated)
-azul-alphazero/
-├── agents/
-│   ├── alphabeta.py
-│   ├── alphabeta_learned.py         ← NEW: AlphaBetaWithLearnedValue
-│   ├── base.py
-│   └── ... (existing agents)
-│
-├── neural/
-│   ├── encoder.py                  ← UPDATED: simple wrapper around game.extract_features()
-│   ├── model.py                    ← UPDATED: AzulValueNet (input_size=111)
-│   ├── trainer.py                  ← UPDATED: train_value_net() for supervised learning
-│   ├── replay.py                   ← May be repurposed or unused
-│   └── search_tree.py              ← Unchanged
-│
-├── engine/
-│   ├── player.py                   ← UPDATED: extract_features(), feature caches
-│   ├── game.py                     ← UPDATED: extract_features(), _can_player_end_game()
-│   ├── constants.py
-│   └── ... (existing files)
-│
-├── scripts/
-│   ├── generate_ab_supervision.py   ← NEW: Game playthrough + exhaustive AB search
-│   ├── train_value_net.py          ← NEW: Supervised training loop
-│   ├── evaluate_agents.py          ← NEW: Mirrored pair evaluation
-│   ├── train_value_generations.py  ← NEW: Generational loop orchestrator
-│   ├── training_dashboard_worker.py ← NEW: Background orchestrator
-│   └── ... (existing scripts)
-│
-├── frontend/
-│   ├── game.html                   ← Existing game UI
-│   ├── game.js
-│   ├── render.js
-│   ├── style.css
-│   └── training_dashboard.html     ← NEW: Training dashboard
-│
-├── api/
-│   ├── main.py                    ← UPDATED: add /training/* endpoints
-│   └── schemas.py
-│
-├── checkpoints/
-│   ├── pipeline_state.json         ← NEW: Current pipeline state
-│   ├── training_settings.json      ← NEW: User settings
-│   └── gen_NNNN/
-│       ├── status.json
-│       ├── best_checkpoint.pt
-│       ├── training_log.csv
-│       ├─ loss_curves.png
-│       ├─ metrics_curves.png
-│       └─ summary.txt
-│
-├── tests/
-│   ├── neural/
-│   │   ├── test_encoder.py         ← UPDATED: test 111-value encoder
-│   │   ├── test_model.py           ← UPDATED: test AzulValueNet
-│   │   └── test_trainer.py         ← UPDATED: test train_value_net()
-│   ├── agents/
-│   │   └── test_alphabeta_learned.py ← NEW
-│   ├── engine/
-│   │   └── test_features.py        ← NEW: test Player.extract_features()
-│   ├── integration/
-│   │   └── test_value_pipeline.py  ← NEW: end-to-end pipeline test
-│   └── ...
-│
-├── docs/
-│   ├── project_plan.md             ← THIS FILE
-│   └── value_net_training.md       ← NEW: tutorial
-│
-└── ... (existing structure)
-
-Development Phases
-Phase 0: Feature Extraction Architecture (Days 1)
-Estimated wall time: 3–4 hours
-
- Player feature implementation
-
- Add feature cache properties to Player
- Add _update_*_features() methods
- Add extract_features() method returning 35-value array
- Call update methods in place_tile(), score_placement(), etc.
-
-
- Game feature implementation
-
- Add extract_features() method returning 111-value array
- Add _can_player_end_game() helper
- Test full feature extraction pipeline
-
-
- Encoder simplification
-
- Update encode_game() to call game.extract_features()
- Remove old 125-value encoding logic
- Verify encoding size is exactly 111
-
-
- Testing
-
- Unit test: Player.extract_features() shape and range
- Unit test: Game.extract_features() shape and range
- Integration test: encode a game position, verify 111 values
- Spot-check feature values for correctness
-
-
-
-Commit: feat(features): player-owned feature extraction, 111-value encoding
-
-Phase 1: Data Generation (Days 1–2)
-Estimated wall time: 6–8 hours + overnight
-
- Script implementation
-
- Create scripts/generate_ab_supervision.py
- Implement game playthrough loop
- Implement round-boundary detection
- Implement exhaustive AB search (depth=999, threshold=0)
- Node extraction from AB tree
-
-
- Smoke test
-
- Generate 1k examples (10 min), verify shape/quality
- Generate 10k examples (overnight run)
- Verify data distribution
-
-
- Documentation
-
- Comment on data generation algorithm
- Note wall time per example count
-
-
-
-Expected output:
-
-checkpoints/gen_0000/ directory with training data
-
-Commit: feat(data): game playthrough with exhaustive AB search at round boundaries
-
-Phase 2: Value Net Training (Days 2–4)
-Estimated wall time: 4–6 hours + overnight
-
- Model implementation
-
- Implement AzulValueNet in neural/model.py (input_size=111)
- Ensure proper initialization
-
-
- Training implementation
-
- Implement train_value_net() in scripts/train_value_net.py
- Per-epoch logging (train_loss, val_loss, val_mae, val_correlation)
- Early stopping mechanism
- Checkpoint management
-
-
- Visualization
-
- Implement matplotlib loss curves
- Implement metrics curves
- Save plots to PNG
-
-
- Smoke test
-
- Train gen-0 net on 10k supervision examples (overnight)
- Verify training progress
- Expected: val_loss ~0.04–0.08, correlation > 0.90
-
-
- Testing
-
- Unit test: AzulValueNet output shape
- Unit test: train_value_net() completes without error
- Check loss curves save correctly
-
-
-
-Expected output:
-
-checkpoints/gen_0000/best_checkpoint.pt
-checkpoints/gen_0000/training_log.csv
-checkpoints/gen_0000/loss_curves.png, metrics_curves.png
-checkpoints/gen_0000/summary.txt
-
-Commit: feat(neural): AzulValueNet + supervised training pipeline
-
-Phase 3: AlphaBeta Integration (Days 3–4)
-Estimated wall time: 2–4 hours
-
- Agent implementation
-
- Implement AlphaBetaWithLearnedValue in agents/alphabeta_learned.py
- Load value net from checkpoint at construction
- Override _evaluate_position() to use net prediction
- Fallback to hand-coded eval if net unavailable
-
-
- Integration tests
-
- Unit test: agent constructs without error
- Unit test: agent makes valid moves
- Manual smoke test: play a few games
-
-
- Registration
-
- Add to agents/registry.py
- Update api/schemas.py with new agent type
-
-
-
-Commit: feat(agents): AlphaBetaWithLearnedValue integration
-
-Phase 4: Evaluation (Days 4–5)
-Estimated wall time: 3–5 hours per generation
-
- Evaluation script
-
- Create scripts/evaluate_agents.py
- Implement evaluate_agents() with 100 mirrored pairs
- Support configurable depth
- Verbose output
-
-
- Gen-0 evaluation
-
- Evaluate gen-0 vs hand-coded AB at depth 3
- 100 mirror pairs (200 games)
- Expected: 55%+ win rate if learning happened
- Log results
-
-
- Decision
-
- If > 55%, proceed to generational loop
- If < 55%, debug or pivot
-
-
-
-Expected output:
-
-checkpoints/gen_0000/eval_results.csv
-checkpoints/gen_0000/eval_summary.txt
-
-Commit: feat(eval): mirrored pair evaluation framework
-
-Phase 5: Generational Loop (Days 5–14)
-Estimated wall time: 60+ hours (spread over multiple nights)
-
- CLI orchestrator
-
- Create scripts/train_value_generations.py
- Implement generational loop
- Plateau detection
- Graceful keyboard interrupt handling
-
-
- Automated progression
-
- Each generation uses previous net as supervisor
- Scale data: gen 0–2 = 10k, gen 3+ = 15k–20k
- Track win rates per generation
- Stop on plateau or max_generations
-
-
- Results tracking
-
- Save generation progression table
- Final recommendation
-
-
- Testing
-
- Integration test: full gen-0 → gen-1 cycle
- Verify state persistence
-
-
-
-Expected progression:
-
-Gen-0: 55–65% vs baseline
-Gen-1: 60–70% vs baseline
-Gen-2: 65–75% vs baseline
-Gen-3+: diminishing returns, plateau by gen-5–7
-
-Commit: feat(train): generational loop with plateau detection
-
-Phase 6: UI Integration (Days 5–8, parallel to Phase 5)
-Estimated wall time: 4–6 hours
-
- Inspector updates
-
- Add value net selector to inspector UI
- Show value net eval alongside AB eval
- Smooth transitions when switching nets
-
-
- Game UI updates
-
- Add agent selector for game
- Allow playing against different generations
-
-
- API updates
-
- Expose value net agents via /agents endpoint
- Load best generation automatically
-
-
- Tests
-
- Agent selector UI doesn't crash
- Games work against learned-value agents
-
-
-
-Commit: feat(ui): value net agent selector in inspector and game
-
-Phase 7: Web Dashboard (Days 6–8, parallel to Phase 5)
-Estimated wall time: 8–10 hours
-
- Frontend implementation (frontend/training_dashboard.html)
-
- Status card, live metrics, control panel
- Settings form, generation table
- Plot display
- Vanilla JS, no build tools
-
-
- Backend implementation (extend api/main.py)
-
- /training/* endpoints
- File-based state (pipeline_state.json)
-
-
- Orchestrator (scripts/training_dashboard_worker.py)
-
- Watch state file for signals
- Run generation/train/eval scripts
- Update status in real-time
-
-
- Integration
-
- Start dashboard worker on API startup (optional)
- Dashboard polls correctly
- Buttons enable/disable based on phase
- Plots display after training/eval
-
-
- Testing
-
- Manual: open dashboard, start generation
- Watch metrics update in real-time
- Stop and resume generation
- Plots generate and display
-
-
-
-Commit: feat(dashboard): training pipeline web dashboard
-
-Phase 8: Logging & Visualization (Days 7–9, parallel)
-Estimated wall time: 4–6 hours
-
- Structured logs
-
- Generational progression table (CSV)
- Master log: checkpoints/generation_log.csv
-
-
- Plots
-
- Win rate per generation
- Best val_loss per generation
- Wall time breakdown per generation
- All generations' loss curves on same plot (optional)
-
-
- Summary
-
- "Best generation: Gen X with Y% win rate"
- Recommendation for deployment
-
-
-
-Commit: feat(logging): generation comparison plots and experiment registry
-
-Phase 9: Documentation (Days 8–9)
-Estimated wall time: 4–6 hours
-
- Update project_plan.md
-
- Replace old AlphaZero sections
- Clarify architecture shift
- Update backlog
-
-
- New document: docs/value_net_training.md
-
- Tutorial: "How to train a value net from scratch"
- Step-by-step: phases 0–5
- Dashboard walkthrough
- Expected timelines and win rates
-
-
- Inline code comments
-
- Why supervised learning
- Why exhaustive search at round boundaries
- Why mirrored pairs for evaluation
-
-
- README section
-
- "Value Net Training" section
- Quick start commands
-
-
-
-Commit: docs: value net training guide and architecture overview
-
-Phase 10: Testing & Polish (Days 9–11)
-Estimated wall time: 6–8 hours
-
- Full test suite
-
- Update encoder tests (111 values)
- AzulValueNet forward pass
- train_value_net() flow
- AlphaBetaWithLearnedValue correctness
- Evaluation mirrored pairs
- Dashboard API endpoints
- Player feature extraction
-
-
- Edge cases
-
- No examples generated → error handling
- Training diverges → early stopping works
- Eval all draws → statistics handling
- Checkpoint missing → graceful fallback
-
-
- CI/CD
-
- All tests pass locally
- GitHub Actions workflow updated
- No regressions on existing game functionality
-
-
- Cleanup
-
- Remove old AlphaZero code (TBD)
- Or keep as reference
- Consolidate duplicate code
- Remove debug prints
-
-
-
-Commit: test: full coverage for value net pipeline
-
-Success Criteria
-MilestoneMetricTargetGen-0 trainingVal correlation on test set> 0.90Gen-0 evaluationWin rate vs hand-coded AB≥ 55%Gen-2 evaluationWin rate vs hand-coded AB≥ 65%Gen-3+ evaluationWin rate vs hand-coded AB≥ 75%Final generationWin rate vs AB hard≥ 85%Superhuman targetWin rate vs AB hard≥ 90%
-
-Timeline Summary
-PhaseDaysWall TimeStatusPhase 0: Features1~3–4 hoursReady to implementPhase 1: Data Gen1–2~6–8 hours + overnightReadyPhase 2: Training2–4~4–6 hours + overnightReadyPhase 3: Integration3–4~2–4 hoursReadyPhase 4: Evaluation4–5~3–5 hoursReadyPhase 5: Gen Loop5–14~60+ hours (spread over nights)ReadyPhase 6: UI Integration5–8~4–6 hoursReadyPhase 7: Dashboard6–8~8–10 hoursReadyPhase 8: Logging7–9~4–6 hoursReadyPhase 9: Documentation8–9~4–6 hoursReadyPhase 10: Testing & Polish9–11~6–8 hoursReadyTotal~2 weeks~100 hours computation, 40 hours manualReady to start
-
-Hard-Won Lessons (Updated)
-Building on experience from AlphaZero phase:
-
-Supervised learning is simpler than RL. Ground-truth labels (AB evaluations) are reliable. No credit assignment horror.
-Value learning >> policy learning for Azul. Move selection (policy) is already solved by AlphaBeta. What's missing is position evaluation (value).
-Mirrored pairs eliminate luck. Azul has high variance. Always use mirrored pairs for evaluation.
-Early stopping is your friend. Don't manually set epochs. Let validation loss guide training.
-Generational improvement is compounding but plateaus fast. Expect 5–10% improvement per gen early, then 1–2% later. Plateau is normal.
-Exhaustive search at round boundaries is the right data. When factories empty and pattern lines are committed, the value
+# Azul AlphaZero: Supervised Learning Value Net — Complete Project Plan
+
+**Last Updated:** 2026-05-14  
+**Status:** Phase 0 (Supervised Learning) in progress — Player 168-value encoding implemented, tests pending  
+**Branch:** `feat/supervised-value-net`  
+**Next Step:** Write comprehensive Player encoding tests
+
+---
+
+## Executive Summary
+
+This project pivots from AlphaZero self-play to **supervised learning with AlphaBeta agents**. The pipeline:
+1. Play games with low-temperature AlphaBeta agents
+2. Collect every position and label with final game outcome
+3. Train a value-only neural network on (state, value) pairs
+4. Use that net inside AlphaBeta as the eval function
+5. Iterate for up to 10 generations until win rate plateaus
+
+**Why this works:** Azul is shallow (~30 moves). We bootstrap from hand-coded AB heuristics and improve iteratively without needing millions of self-play games.
+
+---
+
+## Phase 0: Supervised Learning Refactor (In Progress)
+
+### Completed Work (8z)
+
+#### Player 168-Value Encoding ✅
+Implemented comprehensive board state encoding in `Player._encode()`:
+
+**Layout (168 total values):**
+- Wall cells (25): Binary 1/0 per cell, row-major order
+- Pending wall (25): Binary 1/0, indicates cells placing this round
+- Adjacency grid (25): Contiguous run count 0–10 per cell (1 if alone)
+- Wall row demand (25): Per-color tiles needed per row [5 colors × 5 rows]
+- Wall col demand (25): Per-color tiles needed per col, sorted by completion [5 colors × 5 cols, sorted ascending]
+- Wall tile demand (5): Per-color total tiles needed across entire wall [5 colors × 1]
+- Pattern demand (5): Per-color tiles needed to complete started pattern lines [5 colors × 1]
+- Pattern capacity (25): Per-color room remaining per row [5 colors × 5 rows]
+- Scoring (5): official_score, pending_score, penalty_score, bonus_score, earned_score
+- Misc (3): first_player_token, total_used, max_pattern_capacity
+
+**Key design decisions:**
+- Two-pass architecture: Build 2D grids, flatten to 1D
+- Wall col demand sorted by total demand (most complete first) to guide model
+- Pattern demand sums across all rows per color (committed lines only)
+- Scoring values computed once per `_encode()` call, stored in `encoded_features`
+- All values raw (no normalization) — divisors applied by model layer via `ENCODING_DIVISORS`
+- `_flatten()` recursive helper handles arbitrary nesting depth
+
+**Code quality:**
+- Slices defined in `ENCODING_SLICES` for reliable indexing
+- Properties (`pending`, `penalty`, `bonus`, `earned`) read from slices
+- `_encode()` called after `place()` and `process_round_end()` to keep features in sync
+- `is_tile_valid_for_row()` refactored to read from `encoded_features[pattern_capacity]`
+
+#### Helper Methods ✅
+- `_cell_units(row, col)` → tiles committed to this cell (0–CAPACITY[row])
+- `_cell_is_placed(row, col)` → binary wall placement check
+- `_cell_is_full(row, col)` → binary "placed or pending" check
+- `_adjacency(row, col, for_score)` → contiguous run count (0–10 or 1)
+- `_pending(pending_cells)` → sum of adjacency for pending cells
+- `_penalty()` → sum of FLOOR_PENALTIES up to floor line length
+- `_bonus(row_demand, col_demand, tile_demand)` → complete row/col/tile bonuses
+- `_max_pattern_capacity(pattern_capacity)` → sum of max per row across colors
+- `_flatten(data)` → recursive flattener for mixed-depth nested lists
+
+---
+
+### Current Work: Player Encoding Tests (In Progress)
+
+**Goal:** Validate 168-value encoding before refactoring downstream code.
+
+**Test file location:** `tests/engine/test_player_encoding.py`
+
+**Test suite (detailed):**
+
+#### 1. Shape & Type Tests
+```python
+def test_encode_returns_168_values(player):
+    """Verify _encode() produces exactly 168 features."""
+    assert len(player.encoded_features) == 168
+
+def test_encoded_features_is_list_of_ints(player):
+    """All encoded values are int, no None/NaN/float."""
+    assert all(isinstance(v, int) for v in player.encoded_features)
+    assert len(player.encoded_features) == 168
+```
+
+#### 2. Slice Validation Tests
+```python
+def test_encoding_slices_dont_overlap():
+    """All slices in ENCODING_SLICES are contiguous, no gaps/overlaps."""
+    slices = list(ENCODING_SLICES.values())
+    slices.sort(key=lambda s: s.start)
+    for i in range(len(slices) - 1):
+        assert slices[i].stop == slices[i+1].start
+
+def test_encoding_slices_cover_all_168():
+    """Sum of slice sizes equals 168."""
+    total = sum(s.stop - s.start for s in ENCODING_SLICES.values())
+    assert total == 168
+
+def test_slice_bounds_match_docstring():
+    """Each slice bounds match ENCODING_SLICES doc."""
+    assert ENCODING_SLICES["wall"] == slice(0, 25)
+    assert ENCODING_SLICES["pending_wall"] == slice(25, 50)
+    assert ENCODING_SLICES["adjacency_grid"] == slice(50, 75)
+    assert ENCODING_SLICES["wall_row_demand"] == slice(75, 100)
+    assert ENCODING_SLICES["wall_col_demand"] == slice(100, 125)
+    assert ENCODING_SLICES["wall_tile_demand"] == slice(125, 130)
+    assert ENCODING_SLICES["pattern_demand"] == slice(130, 135)
+    assert ENCODING_SLICES["pattern_capacity"] == slice(135, 160)
+    assert ENCODING_SLICES["scoring"] == slice(160, 165)
+    assert ENCODING_SLICES["misc"] == slice(165, 168)
+```
+
+#### 3. Wall & Pending Encoding Tests
+```python
+def test_wall_cells_all_zero_initially(empty_player):
+    """Wall cells are 0 when no tiles placed."""
+    wall_slice = ENCODING_SLICES["wall"]
+    assert all(v == 0 for v in empty_player.encoded_features[wall_slice])
+
+def test_wall_cells_one_when_placed(player_with_wall_tile):
+    """Wall cell is 1 when tile placed."""
+    # Place tile at (row=0, col=0)
+    wall_slice = ENCODING_SLICES["wall"]
+    # Index 0 in row-major order
+    assert player_with_wall_tile.encoded_features[wall_slice.start + 0] == 1
+
+def test_pending_cells_zero_when_pattern_incomplete(player):
+    """Pending is 0 when pattern line not full."""
+    pending_slice = ENCODING_SLICES["pending_wall"]
+    # No full pattern lines → all pending = 0
+    assert all(v == 0 for v in player.encoded_features[pending_slice])
+
+def test_pending_cells_one_when_committed_and_full(player_full_pattern):
+    """Pending is 1 when pattern line full and committed to wall color."""
+    # Player has pattern line full, committed to correct color
+    pending_slice = ENCODING_SLICES["pending_wall"]
+    # At least one pending cell should be 1
+    assert any(v == 1 for v in player_full_pattern.encoded_features[pending_slice])
+```
+
+#### 4. Adjacency Tests
+```python
+def test_adjacency_lone_tiles_score_one(player_lone_wall):
+    """Isolated wall tiles score 1."""
+    adj_slice = ENCODING_SLICES["adjacency_grid"]
+    # Place single tile at (0, 2)
+    assert player_lone_wall.encoded_features[adj_slice.start + 2] == 1
+
+def test_adjacency_horizontal_run(player_horiz_run):
+    """Contiguous horizontal tiles count run."""
+    adj_slice = ENCODING_SLICES["adjacency_grid"]
+    # Place tiles at (0, 0), (0, 1), (0, 2) — run of 3
+    # Each should have adjacency >= 2
+    assert player_horiz_run.encoded_features[adj_slice.start + 0] >= 2
+    assert player_horiz_run.encoded_features[adj_slice.start + 1] >= 2
+    assert player_horiz_run.encoded_features[adj_slice.start + 2] >= 2
+
+def test_adjacency_range_0_to_10(player):
+    """Adjacency values in range [0, 10]."""
+    adj_slice = ENCODING_SLICES["adjacency_grid"]
+    adj_vals = player.encoded_features[adj_slice]
+    assert all(0 <= v <= 10 for v in adj_vals)
+```
+
+#### 5. Demand Grid Tests
+```python
+def test_wall_row_demand_empty_game(empty_player):
+    """Empty board: each color needs full capacity per row."""
+    row_slice = ENCODING_SLICES["wall_row_demand"]
+    row_demands = empty_player.encoded_features[row_slice]
+    # 25 values: 5 colors × 5 rows
+    # Each color, each row should need CAPACITY[row]
+    for color_idx in range(5):
+        for row in range(5):
+            idx = color_idx * 5 + row
+            assert row_demands[idx] == CAPACITY[row]
+
+def test_wall_col_demand_sorted(player_partial_wall):
+    """Columns sorted by total demand (most complete first)."""
+    col_slice = ENCODING_SLICES["wall_col_demand"]
+    col_demands = player_partial_wall.encoded_features[col_slice]
+    # 25 values: 5 colors × 5 cols
+    # Check that col totals are non-increasing (sorted ascending by demand)
+    col_totals = [sum(col_demands[c*5:(c+1)*5]) for c in range(5)]
+    assert col_totals == sorted(col_totals)
+
+def test_wall_tile_demand_sum_matches_total(player):
+    """Sum of per-color tile demand = total wall tiles needed."""
+    tile_slice = ENCODING_SLICES["wall_tile_demand"]
+    tile_demands = player.encoded_features[tile_slice]
+    # 5 values, one per color
+    assert len(tile_demands) == 5
+    assert all(0 <= v <= 25 for v in tile_demands)  # Max 5 rows × 5 tiles per color
+
+def test_pattern_demand_only_committed(player_mixed_patterns):
+    """Pattern demand only counts committed (full) lines."""
+    pattern_slice = ENCODING_SLICES["pattern_demand"]
+    pattern_demands = player_mixed_patterns.encoded_features[pattern_slice]
+    # 5 values, one per color
+    assert len(pattern_demands) == 5
+    # Only committed lines contribute demand (no empty, no partial)
+
+def test_pattern_capacity_room_for_all_rows(player):
+    """Pattern capacity sum = sum of CAPACITY - pattern fills."""
+    cap_slice = ENCODING_SLICES["pattern_capacity"]
+    capacities = player.encoded_features[cap_slice]
+    # 25 values: 5 colors × 5 rows
+    expected_total = sum(CAPACITY) - sum(len(player._pattern_lines[r]) for r in range(5))
+    assert sum(capacities) == expected_total
+```
+
+#### 6. Scoring Tests
+```python
+def test_scoring_slice_matches_properties(player):
+    """Encoded scoring matches property accessors."""
+    score_slice = ENCODING_SLICES["scoring"]
+    scores = player.encoded_features[score_slice]
+    assert len(scores) == 5
+    assert scores[0] == player.score
+    assert scores[1] == player.pending
+    assert scores[2] == player.penalty
+    assert scores[3] == player.bonus
+    assert scores[4] == player.earned
+
+def test_pending_score_calculation(player_full_pattern_with_adjacency):
+    """Pending = sum of adjacency for pending cells."""
+    # Manually calculate expected pending
+    expected_pending = 0
+    for row in range(5):
+        if len(player_full_pattern_with_adjacency._pattern_lines[row]) == CAPACITY[row]:
+            for col in range(5):
+                # Check if this cell is pending
+                expected_pending += player_full_pattern_with_adjacency._adjacency(row, col, for_score=True)
+    assert player_full_pattern_with_adjacency.pending == expected_pending
+
+def test_penalty_score_calculation(player_with_floor):
+    """Penalty = sum of FLOOR_PENALTIES up to floor length."""
+    expected_penalty = sum(FLOOR_PENALTIES[:len(player_with_floor._floor_line)])
+    assert player_with_floor.penalty == expected_penalty
+
+def test_bonus_score_calculation(player_complete_row):
+    """Bonus includes complete row bonuses."""
+    # Player has one complete row, no cols/tiles
+    expected_bonus = BONUS_ROW
+    assert player_complete_row.bonus == expected_bonus
+
+def test_earned_is_sum_of_components(player):
+    """Earned = score + pending + penalty + bonus."""
+    expected = player.score + player.pending + player.penalty + player.bonus
+    assert player.earned == expected
+```
+
+#### 7. Misc Values Tests
+```python
+def test_first_player_token_zero_when_absent(player_no_first_player):
+    """First player token is 0 when not in floor."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player_no_first_player.encoded_features[misc_slice]
+    # Index 0 of misc (first 3 values)
+    assert misc_vals[0] == 0
+
+def test_first_player_token_one_when_present(player_with_first_player):
+    """First player token is 1 when in floor."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player_with_first_player.encoded_features[misc_slice]
+    assert misc_vals[0] == 1
+
+def test_total_used_calculation(player):
+    """Total used = MAX_USED - sum(wall_tile_demand)."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player.encoded_features[misc_slice]
+    # Index 1 of misc
+    tile_slice = ENCODING_SLICES["wall_tile_demand"]
+    tile_demands = player.encoded_features[tile_slice]
+    expected_used = MAX_USED - sum(tile_demands)
+    assert misc_vals[1] == expected_used
+
+def test_max_pattern_capacity(player):
+    """Max pattern capacity = sum of max per row across colors."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player.encoded_features[misc_slice]
+    # Index 2 of misc
+    cap_slice = ENCODING_SLICES["pattern_capacity"]
+    capacities = player.encoded_features[cap_slice]
+    expected_max = sum(max(capacities[c*5:(c+1)*5]) for c in range(5))
+    assert misc_vals[2] == expected_max
+```
+
+#### 8. Flatten Tests
+```python
+def test_flatten_flat_list(player):
+    """Flatten on already-flat list returns unchanged."""
+    flat = [1, 2, 3]
+    result = player._flatten(flat)
+    assert result == [1, 2, 3]
+
+def test_flatten_nested_lists(player):
+    """Flatten on nested lists unpacks all levels."""
+    nested = [[1, 2], [3, 4]]
+    result = player._flatten(nested)
+    assert result == [1, 2, 3, 4]
+
+def test_flatten_mixed_depth(player):
+    """Flatten handles mixed nesting depth."""
+    mixed = [1, [2, [3, 4]], 5]
+    result = player._flatten(mixed)
+    assert result == [1, 2, 3, 4, 5]
+
+def test_flatten_empty_sublists(player):
+    """Flatten skips empty sublists."""
+    with_empty = [1, [], [2]]
+    result = player._flatten(with_empty)
+    assert result == [1, 2]
+
+def test_flatten_deeply_nested(player):
+    """Flatten handles arbitrary nesting depth."""
+    deep = [[[[[1]]]]]
+    result = player._flatten(deep)
+    assert result == [1]
+
+def test_flatten_preserves_type(player):
+    """Flatten preserves int type of all values."""
+    data = [[1, 2], [3, 4]]
+    result = player._flatten(data)
+    assert all(isinstance(v, int) for v in result)
+```
+
+#### 9. Consistency Tests
+```python
+def test_encode_idempotent(player):
+    """Calling _encode() twice produces same features."""
+    features1 = player.encoded_features[:]
+    player._encode()
+    features2 = player.encoded_features
+    assert features1 == features2
+
+def test_encode_after_place(player):
+    """Features update after place()."""
+    features_before = player.encoded_features[:]
+    player.place(0, [Tile.BLUE])
+    features_after = player.encoded_features
+    assert features_before != features_after
+
+def test_encode_after_process_round_end(player_ready_for_round_end):
+    """Features update after process_round_end()."""
+    features_before = player_ready_for_round_end.encoded_features[:]
+    player_ready_for_round_end.process_round_end()
+    features_after = player_ready_for_round_end.encoded_features
+    assert features_before != features_after
+
+def test_from_string_encodes_correctly(player):
+    """Player.from_string() recomputes encoding correctly."""
+    s = str(player)
+    player2 = Player.from_string(s)
+    assert player.encoded_features == player2.encoded_features
+```
+
+**Fixtures required:**
+- `empty_player` — fresh Player, no moves made
+- `player` — fresh Player (same as empty_player)
+- `player_with_wall_tile` — one tile placed on wall
+- `player_full_pattern` — one pattern line full, correct color
+- `player_lone_wall` — single isolated wall tile
+- `player_horiz_run` — horizontal run of wall tiles
+- `player_partial_wall` — multiple tiles, various states
+- `player_mixed_patterns` — mix of empty/partial/full lines
+- `player_full_pattern_with_adjacency` — full pattern + adjacency setup
+- `player_with_floor` — floor line with tiles
+- `player_complete_row` — complete wall row
+- `player_no_first_player` — floor without FIRST_PLAYER
+- `player_with_first_player` — floor with FIRST_PLAYER token
+- `player_ready_for_round_end` — setup for round-end processing
+
+**Success criteria:**
+- All tests pass
+- 100% coverage of `_encode()`, `_flatten()`, and all helpers
+- Encoding values in expected ranges per documentation
+- No external method calls (encapsulated tests)
+
+---
+
+### Next: Game Refactor
+
+**Goal:** Update `Game` to use new Player encoding, remove/update methods that relied on deleted Player methods.
+
+**Scope:**
+- Remove calls to deleted methods (`_is_complete()`, `has_triggered_game_end()`)
+- Implement `has_triggered_game_end()` using `encoded_features` if needed
+- Refactor `determine_winners()` if it uses deleted methods
+- Update any game-flow logic that checked Player state directly
+
+**Tests:** `tests/engine/test_game.py` — validate game flow still works with new encoding
+
+---
+
+### Finally: Fix External Callers
+
+**Scope:**
+- API endpoints that read Player state
+- Agent code (AlphaZero, AlphaBeta, etc.) that read Player state
+- Scripts (train.py, evaluate.py, etc.)
+- UI code that displays Player state
+
+**Do NOT sync to main until all external callers fixed** — CI will fail otherwise.
+
+---
+
+## Encoding Reference
+
+### ENCODING_SLICES
+```python
+{
+    "wall": slice(0, 25),
+    "pending_wall": slice(25, 50),
+    "adjacency_grid": slice(50, 75),
+    "wall_row_demand": slice(75, 100),
+    "wall_col_demand": slice(100, 125),
+    "wall_tile_demand": slice(125, 130),
+    "pattern_demand": slice(130, 135),
+    "pattern_capacity": slice(135, 160),
+    "scoring": slice(160, 165),
+    "misc": slice(165, 168),
+}
+```
+
+### Value Ranges
+- **Wall/Pending:** 0–1 (binary)
+- **Adjacency:** 0–10 (run count, min 1)
+- **Demand/Capacity:** 0–CAPACITY[row] (0–3 per cell)
+- **Scoring:** unclamped int (apply ENCODING_DIVISORS in model)
+- **Misc:** 0–1 (token), 0–100 (used), 0–25 (max capacity)
+
+---
+
+## Timeline
+
+| Task | Estimate | Status |
+|---|---|---|
+| Write Player encoding tests | 3h | 🔄 In progress |
+| Game refactor | 4h | ⏳ Pending |
+| Game tests | 2h | ⏳ Pending |
+| Fix external callers | 8h | ⏳ Pending |
+| **Total** | **17h** | |
+
+---
+
+## Key Principles
+
+1. **Tests first, always** — Don't refactor downstream until Player tests pass
+2. **Encapsulation** — Player encoding is self-contained; don't expose internals
+3. **Gradual rollout** — Fix external callers in this order: Game → API → Agents → Scripts → UI
+4. **CI hygiene** — Never commit breaking changes to main. Work on feature branch, fix all issues before sync
+5. **Documentation** — Update docstrings as API changes, keep ENCODING_SLICES in sync
+
+---
+
+## Deferred/Future Work
+
+- Game-level encoding (tile availability, bag state, factory info)
+- Supervised trainer integration with new encoding
+- AlphaBeta + learned value net (`AlphaBetaWithLearnedValue`)
+- Value net training loop (generate → train → eval)
+- Hyperparameter search (model width, dropout, learning rate)
+- Checkpoint management for supervised training
+
+---
+
+**Status:** Ready to begin comprehensive Player encoding test suite. No changes to encoder; tests validate it works correctly before downstream refactoring begins.

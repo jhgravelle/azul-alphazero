@@ -24,9 +24,7 @@ COLOR_TILES: list[Tile] = [
 # --- Board dimensions and counts ---
 SIZE = 5  # also equal to the number of tile colors
 PLAYERS = 2  # number of players in a new GameState
-TILES_PER_COLOR = (
-    20  # number of tiles of each color in the bag at the start of the game
-)
+TILES_PER_COLOR = 20  # number of tiles of each color
 NUMBER_OF_FACTORIES = PLAYERS * 2 + 1  # number of factories in a new GameState
 TILES_PER_FACTORY = 4  # number of tiles placed in each factory at the start of a round
 FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3]
@@ -37,7 +35,7 @@ BONUS_TILE = 10  # points for placing all 5 tiles of a color on the wall
 CENTER = -1  # sentinel source: tiles from the center
 FLOOR = -2  # sentinel destination: tiles go to the floor line
 CAPACITY: list[int] = [row + 1 for row in range(SIZE)]  # max tiles per pattern line row
-
+MAX_USED = sum(CAPACITY) * SIZE  # maximum used tiles per player
 
 # --- Display ---
 SPACE = " "

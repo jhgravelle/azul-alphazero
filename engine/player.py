@@ -410,18 +410,14 @@ class Player:
         - The pattern line is not already at full capacity.
         - The pattern line is empty, or already committed to the same color.
         """
-        index = ENCODING_SLICES["pattern_capacity"].start + tile.value * SIZE + row
-        return self.encoded_features[index] > 0
-        # if self._wall_tiles[row][col] is not None:
-        #     return False
-        # line_tile = self._line_tile(row)
-        # if line_tile is None:
-        #     return True
-        # if line_tile != tile:
-        #     return False
-        # if self._line_fill(row) == CAPACITY[row]:
-        #     return False
-        # return True
+        col = COL_FOR_TILE_ROW[tile][row]
+        if self._cell_units(row, col) == CAPACITY[row]:  # already placed or full
+            return False
+        if self._cell_units(row, col) > 0:  # partially full implies correct color
+            return True
+        if len(self._pattern_lines[row]) == 0:  # we are empty make sure no other tile.
+            return True
+        return False
 
     def process_round_end(self) -> list[Tile]:
         """Commit pending pattern lines to the wall and clear the floor.

@@ -1,20 +1,21 @@
 # engine/constants.py
 """Constants and enums used throughout the Azul engine."""
 
-from enum import Enum, auto
+from enum import Enum
 
 
 class Tile(Enum):
     """The five tile colors in Azul, plus the first-player marker.
     Colors are ordered by their column index in the first row of the wall pattern.
+    Values are manually set so that we can still use range(SIZE) to iterate over them.
     """
 
-    BLUE = auto()
-    YELLOW = auto()
-    RED = auto()
-    BLACK = auto()
-    WHITE = auto()
-    FIRST_PLAYER = auto()
+    BLUE = 0
+    YELLOW = 1
+    RED = 2
+    BLACK = 3
+    WHITE = 4
+    FIRST_PLAYER = 5
 
 
 COLOR_TILES: list[Tile] = [

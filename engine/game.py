@@ -131,7 +131,7 @@ class Game:
 
     Attributes:
         seed:                 RNG seed used for this game.
-        players:              One Player per player, in turn order.
+        players:              list[Player], one per player, in turn order.
         current_player_index: Index of the player whose turn it is.
         factories:            The factory displays. Empty between rounds.
         center:               Shared tile pool. Holds leftover tiles and the
@@ -164,6 +164,21 @@ class Game:
     def current_player(self) -> Player:
         """The player whose turn it is."""
         return self.players[self.current_player_index]
+
+    # region Game flow --------------------------------------------------------
+
+    def setup_round(self, factories: list[list[Tile]] | None = None) -> None:
+        """Set up factories and center for a new round.
+        optionally provide a list of factory contents."""
+        self.round += 1
+        self.center.append(Tile.FIRST_PLAYER)
+        if factories is not None:
+            assert len(self.factories) == len(factories)
+            for factory, tiles in zip(self.factories, factories):
+                factory.extend(self._remove_from_bag(tiles))
+        else:
+            for factory in self.factories:
+                factory.extend(self._draw_from_bag())
 
     # region Display --------------------------------------------------------
 
@@ -327,16 +342,13 @@ class Game:
             tiles.append(self.bag.pop())
         return tiles
 
-    def setup_round(self, factories: list[list[Tile]] | None = None) -> None:
-        """Set up factories and center for a new round."""
-        self.round += 1
-        self.center.append(Tile.FIRST_PLAYER)
-        if factories is not None:
-            for factory, tiles in zip(self.factories, factories):
-                factory.extend(tiles)
-        else:
-            for factory in self.factories:
-                factory.extend(self._draw_from_bag())
+    def _remove_from_bag(self, tiles: list[Tile]) -> list[Tile]:
+        for tile in tiles:
+            if not self.bag or tile not in self.bag:
+                self._refill_bag()
+            assert tile in self.bag
+            self.bag.remove(tile)
+        return tiles
 
     def is_round_over(self) -> bool:
         """Return True when no color tiles remain in any factory or the center."""

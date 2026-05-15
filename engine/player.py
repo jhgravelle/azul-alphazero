@@ -124,6 +124,48 @@ class Player:
             return True
         return False
 
+    def can_trigger_game_end(self, tiles_available: list[int]) -> bool:
+        """Check if this player can complete a full wall row this round.
+
+        A row can be completed if:
+        - It has exactly SIZE-1 (4) tiles placed.
+        - All color demands for that row can be met with available tiles.
+
+        Args:
+            tiles_available: Count of each color tile available in factories
+                        [B, Y, R, K, W] (index order matches COLOR_TILES).
+
+        Returns:
+            True if any wall row has 4 tiles placed and all remaining demands
+            can be satisfied with available tiles; False otherwise.
+        """
+        wall_slice = self.encoded_features[ENCODING_SLICES["wall"]]
+        wall_row_demand_slice = self.encoded_features[
+            ENCODING_SLICES["wall_row_demand"]
+        ]
+
+        # Check each of the 5 rows
+        for row in range(SIZE):
+            # Count placed tiles in this row (wall section is row-major)
+            placed_in_row = sum(wall_slice[row * SIZE + col] for col in range(SIZE))
+
+            # Row must have exactly 4 tiles (SIZE - 1)
+            if placed_in_row != SIZE - 1:
+                continue
+
+            # Check if all color demands for this row can be met
+            # wall_row_demand is [color_idx * SIZE + row]
+            all_demands_met = all(
+                wall_row_demand_slice[color_idx * SIZE + row]
+                <= tiles_available[color_idx]
+                for color_idx in range(SIZE)
+            )
+
+            if all_demands_met:
+                return True
+
+        return False
+
     # endregion
     # region Game flow -------------------------------------------------------
 

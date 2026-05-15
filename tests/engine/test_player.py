@@ -12,6 +12,7 @@ from engine.constants import (
     COL_FOR_TILE_ROW,
     COLOR_TILES,
     FLOOR,
+    TILE_FOR_ROW_COL,
     Tile,
 )
 from engine.player import ENCODING_SLICES, Player
@@ -129,6 +130,202 @@ class TestIsTileValidForRow:
         # Row 1 capacity 2, place 1 BLUE → room for 1 more
         player._pattern_lines[1] = [Tile.BLUE]
         assert player.is_tile_valid_for_row(Tile.BLUE, 1) is True
+
+
+# endregion
+# region can_trigger_game_end ===================================================
+class TestCanTriggerGameEnd:
+    """Test detection of whether a player can complete a row this round."""
+
+    def test_fresh_player_cannot_trigger(self):
+        """Fresh player with empty wall cannot trigger game end."""
+        player = make_player()
+        tiles_available = [0, 0, 0, 0, 0]  # No tiles available
+        assert player.can_trigger_game_end(tiles_available) is False
+
+    def test_requires_exactly_four_placed_tiles_in_row(self):
+        """Row must have exactly SIZE-1 (4) tiles placed."""
+        player = make_player()
+
+        # Place 3 tiles in row 0 — should not trigger
+        for col in range(3):
+            player._wall_tiles[0][col] = COLOR_TILES[col]
+        player._encode()
+        tiles_available = [1, 1, 1, 1, 1]
+        assert player.can_trigger_game_end(tiles_available) is False
+
+        # Place 4th tile — should trigger if all demands met
+        player._wall_tiles[0][3] = COLOR_TILES[3]
+        player._encode()
+        assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_five_tiles_placed_already_complete(self):
+        """Row with 5 tiles already complete cannot trigger (already done)."""
+        player = make_player()
+        # Fill entire row 0
+        for col in range(5):
+            player._wall_tiles[0][col] = COLOR_TILES[col]
+        player._encode()
+        tiles_available = [1, 1, 1, 1, 1]
+        # Row already complete, so no need to trigger
+        # But check: do we return False (already done) or True (could trigger)?
+        # Per design: only rows with exactly 4 tiles return True
+        assert player.can_trigger_game_end(tiles_available) is False
+
+    def test_all_color_demands_must_be_met(self):
+        """All colors needed for the incomplete row must be available."""
+        player = make_player()
+
+        # Place 4 different colored tiles in row 0
+        for col in range(4):
+            player._wall_tiles[0][col] = COLOR_TILES[col]
+        player._encode()
+
+        # All 5 colors needed, but only first 4 available
+        tiles_available = [1, 1, 1, 1, 0]  # White (index 4) not available
+        assert player.can_trigger_game_end(tiles_available) is False
+
+        # Now all 5 colors available
+        tiles_available = [1, 1, 1, 1, 1]
+        assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_multiple_colors_with_sufficient_demand(self):
+        """Demands for multiple colors must all be <= available."""
+        player = make_player()
+
+        # Place 4 tiles (BLUE, RED, BLACK, WHITE) in row 0
+        # This means YELLOW (index 1) is needed
+        player._wall_tiles[0][0] = Tile.BLUE  # col 0
+        player._wall_tiles[0][1] = Tile.RED  # col 1
+        player._wall_tiles[0][3] = Tile.BLACK  # col 3
+        player._wall_tiles[0][4] = Tile.WHITE  # col 4
+        player._encode()
+
+        # YELLOW must be available (and any other missing colors)
+        tiles_available = [1, 1, 0, 1, 1]  # RED not available
+        assert player.can_trigger_game_end(tiles_available) is False
+
+        # All needed colors available
+        tiles_available = [1, 1, 1, 1, 1]
+        assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_different_rows_checked_independently(self):
+        """Each row checked independently; any row with 4 tiles can trigger."""
+        player = make_player()
+
+        # Place 4 tiles in row 1 (not row 0)
+        for col in range(4):
+            player._wall_tiles[1][col] = TILE_FOR_ROW_COL[1][col]
+        player._encode()
+
+        tiles_available = [2, 2, 2, 2, 2]
+        assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_multiple_rows_with_four_tiles_any_can_trigger(self):
+        """If multiple rows have 4 tiles, any one being satisfiable triggers."""
+        player = make_player()
+
+        # Row 0: 4 tiles, needs YELLOW
+        for col in [0, 2, 3, 4]:  # Blue, Red, Black, White
+            player._wall_tiles[0][col] = [
+                Tile.BLUE,
+                Tile.RED,
+                Tile.BLACK,
+                Tile.WHITE,
+            ][[0, 2, 3, 4].index(col)]
+
+        # Row 2: 4 tiles, needs BLUE
+        for col in [1, 2, 3, 4]:  # Yellow, Red, Black, White
+            player._wall_tiles[2][col] = [
+                Tile.YELLOW,
+                Tile.RED,
+                Tile.BLACK,
+                Tile.WHITE,
+            ][[1, 2, 3, 4].index(col)]
+
+        player._encode()
+
+        # Only YELLOW available — row 0 can complete
+        tiles_available = [0, 1, 0, 0, 0]
+        assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_no_tiles_available_cannot_trigger(self):
+        """Even with 4 tiles in a row, no available tiles means cannot trigger."""
+        player = make_player()
+
+        # Row 0 with 4 tiles
+        for col in range(4):
+            player._wall_tiles[0][col] = COLOR_TILES[col]
+        player._encode()
+
+        # No tiles available
+        tiles_available = [0, 0, 0, 0, 0]
+        assert player.can_trigger_game_end(tiles_available) is False
+
+    def test_exact_demand_met(self):
+        """Demand for last tile in row can be exactly 1."""
+        player = make_player()
+
+        # Place 4 of the 5 colors in row 0
+        for col in range(4):
+            player._wall_tiles[0][col] = COLOR_TILES[col]
+        player._encode()
+
+        # Exactly 1 of WHITE available (the missing color)
+        tiles_available = [0, 0, 0, 0, 1]
+        assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_multiple_copies_of_needed_color_sufficient(self):
+        """Having multiple tiles of a needed color still allows trigger."""
+        player = make_player()
+
+        # Row 0 with 4 tiles, needs WHITE
+        for col in range(4):
+            player._wall_tiles[0][col] = COLOR_TILES[col]
+        player._encode()
+
+        # Multiple WHITE tiles available
+        tiles_available = [0, 0, 0, 0, 5]
+        assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_all_five_rows_checked(self):
+        """All 5 rows are checked, not just first or last."""
+        for target_row in range(5):
+            player = make_player()
+
+            # Place 4 tiles only in target_row
+            for col in range(4):
+                player._wall_tiles[target_row][col] = TILE_FOR_ROW_COL[target_row][col]
+            player._encode()
+
+            tiles_available = [5, 5, 5, 5, 5]
+            assert player.can_trigger_game_end(tiles_available) is True
+
+    def test_real_wall_configuration_mid_game(self):
+        """Test with a realistic mid-game wall state."""
+        player = make_player()
+
+        # Row 0: 3 tiles, not triggerable
+        player._wall_tiles[0][0] = TILE_FOR_ROW_COL[0][0]
+        player._wall_tiles[0][1] = TILE_FOR_ROW_COL[0][1]
+        player._wall_tiles[0][2] = TILE_FOR_ROW_COL[0][2]
+
+        # Row 1: 4 tiles, triggerable
+        player._wall_tiles[1][0] = TILE_FOR_ROW_COL[1][0]
+        player._wall_tiles[1][1] = TILE_FOR_ROW_COL[1][1]
+        player._wall_tiles[1][2] = TILE_FOR_ROW_COL[1][2]
+        player._wall_tiles[1][3] = TILE_FOR_ROW_COL[1][3]
+
+        # Row 2: 2 tiles, not triggerable
+        player._wall_tiles[2][0] = TILE_FOR_ROW_COL[2][0]
+        player._wall_tiles[2][1] = TILE_FOR_ROW_COL[2][1]
+
+        player._encode()
+
+        # Only BLUE available
+        tiles_available = [2, 2, 2, 2, 2]
+        # Row 1 needs only BLUE (the missing color)
+        assert player.can_trigger_game_end(tiles_available) is True
 
 
 # endregion

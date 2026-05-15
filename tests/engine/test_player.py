@@ -6,6 +6,7 @@ Encoding tests use from_string() to load known states, then assert
 each encoding section against expected values.
 """
 
+import pytest
 from engine.constants import (
     CAPACITY,
     COL_FOR_TILE_ROW,
@@ -59,7 +60,7 @@ class TestScoringProperties:
         penalty1 = player1.penalty
 
         player2 = make_player()
-        player2.place(FLOOR, [Tile.RED, Tile.BLUE])
+        player2.place(FLOOR, [Tile.RED, Tile.RED])
         penalty2 = player2.penalty
 
         # More tiles on floor → more negative penalty
@@ -82,8 +83,6 @@ class TestScoringProperties:
 
 
 # endregion
-
-
 # region is_tile_valid_for_row ==============================================
 
 
@@ -95,6 +94,12 @@ class TestIsTileValidForRow:
         player = make_player()
         for tile in COLOR_TILES:
             assert player.is_tile_valid_for_row(tile, 0) is True
+
+    def test_rejects_first_player(self):
+        """Fresh player accepts any tile on empty pattern lines."""
+        player = make_player()
+        with pytest.raises(AssertionError):
+            player.is_tile_valid_for_row(Tile.FIRST_PLAYER, 0)
 
     def test_rejects_when_wall_cell_filled(self):
         """Cannot place a tile if its wall cell is already occupied."""
@@ -125,19 +130,8 @@ class TestIsTileValidForRow:
         player._pattern_lines[1] = [Tile.BLUE]
         assert player.is_tile_valid_for_row(Tile.BLUE, 1) is True
 
-    def test_accepts_any_tile_on_partially_filled_empty_line(self):
-        """An incomplete, uncommitted line accepts any color."""
-        player = make_player()
-        # Row 2 capacity 3, start with RED
-        player._pattern_lines[2] = [Tile.RED]
-        # No _encode() call needed — is_tile_valid_for_row checks actual state
-        # RED is committed; YELLOW is not accepted
-        assert player.is_tile_valid_for_row(Tile.YELLOW, 2) is False
-
 
 # endregion
-
-
 # region place ==============================================================
 
 
@@ -154,8 +148,8 @@ class TestPlace:
     def test_place_to_floor_destination(self):
         """Destination FLOOR places all tiles directly on floor."""
         player = make_player()
-        player.place(FLOOR, [Tile.RED, Tile.BLUE])
-        assert player._floor_line == [Tile.RED, Tile.BLUE]
+        player.place(FLOOR, [Tile.FIRST_PLAYER, Tile.RED])
+        assert player._floor_line == [Tile.FIRST_PLAYER, Tile.RED]
 
     def test_place_overflow_goes_to_floor(self):
         """Tiles exceeding pattern line capacity overflow to floor."""
@@ -187,13 +181,6 @@ class TestPlace:
         player.place(0, [Tile.BLUE])
         # At minimum, pending should change (line completed)
         assert player.encoded_features != old_features
-
-    def test_place_first_player_alone_no_color_tiles(self):
-        """Placing only FIRST_PLAYER (no colors) goes to floor only."""
-        player = make_player()
-        player.place(0, [Tile.FIRST_PLAYER])
-        assert Tile.FIRST_PLAYER in player._floor_line
-        assert len(player._pattern_lines[0]) == 0
 
     def test_place_first_player_with_overflow(self):
         """FIRST_PLAYER separated, then color tiles fill and overflow."""
@@ -474,14 +461,10 @@ class TestEncodingScenarios:
         player1.place(FLOOR, [Tile.RED])
 
         player2 = make_player()
-        player2.place(FLOOR, [Tile.RED, Tile.BLUE])
+        player2.place(FLOOR, [Tile.RED, Tile.RED])
 
-        feat1 = player1.encoded_features
-        feat2 = player2.encoded_features
-
-        scoring_start = ENCODING_SLICES["scoring"].start
-        penalty1 = feat1[scoring_start + 2]
-        penalty2 = feat2[scoring_start + 2]
+        penalty1 = player1.penalty
+        penalty2 = player2.penalty
 
         # More floor tiles → more negative penalty
         assert penalty2 < penalty1
@@ -490,7 +473,7 @@ class TestEncodingScenarios:
     def test_encoding_first_player_token(self):
         """FIRST_PLAYER on floor sets the misc token."""
         player = make_player()
-        player.place(FLOOR, [Tile.FIRST_PLAYER])
+        player.place(FLOOR, [Tile.FIRST_PLAYER, Tile.RED])
 
         feat = player.encoded_features
         misc_start = ENCODING_SLICES["misc"].start

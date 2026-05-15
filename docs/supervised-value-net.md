@@ -1,367 +1,481 @@
-# Azul: Supervised Learning Value Net — Project Plan
+# Azul AlphaZero: Supervised Learning Value Net — Complete Project Plan
 
-**Last Updated:** 2026-05-12  
+**Last Updated:** 2026-05-14  
+**Status:** Phase 0 (Supervised Learning) in progress — Player 168-value encoding implemented, tests pending  
 **Branch:** `feat/supervised-value-net`  
-**Status:** Phase 0 in progress — Player encoding implementation 101+ values complete. Refactored to use INDICES_BY for bonus computation.
+**Next Step:** Write comprehensive Player encoding tests
 
 ---
 
 ## Executive Summary
 
-This project pivots the AlphaZero training pipeline from self-play reinforcement learning to **supervised learning with AlphaBeta agents**. Instead of millions of games, we generate training data by:
+This project pivots from AlphaZero self-play to **supervised learning with AlphaBeta agents**. The pipeline:
+1. Play games with low-temperature AlphaBeta agents
+2. Collect every position and label with final game outcome
+3. Train a value-only neural network on (state, value) pairs
+4. Use that net inside AlphaBeta as the eval function
+5. Iterate for up to 10 generations until win rate plateaus
 
-1. Playing full games with AlphaBeta agents (with low-temperature stochasticity)
-2. Collecting every played position + labeling with final game outcome
-3. Training a value-only neural net (`AzulValueNet`) on (state, value) pairs
-4. Using that net inside AlphaBeta (`AlphaBetaWithLearnedValue`) as the eval function
-5. Repeating for up to 10 generations, stopping when win rate plateaus
-
-**Why this works for Azul:** Azul is shallow (~30 moves, ~6 rounds). We can bootstrap from hand-coded AB heuristics and improve iteratively.
-
----
-
-## Data Generation Strategy
-
-### Approach: Deterministic AB with Low Temperature
-
-Generate training data by playing complete games with AlphaBeta agents:
-
-1. **Play games:** Two `AlphaBetaAgent(depth=3, threshold=6)` agents play each other to completion
-2. **Collect every played position:** For each move in the game, collect the pre-move state
-3. **Label with final outcome:** Label all positions with the final score differential (from current player's perspective)
-4. **Stochastic move selection:** AB uses softmax temperature `temp=0.1-0.3` over its evaluated moves
-   - ~95% of moves: AB's best-evaluated move
-   - ~5% of moves: occasionally picks a slightly-suboptimal move
-   - Provides natural exploration without artificial noise
-   - If a deviant move leads to good outcome, future generations will learn to favor it
-
-**Data per generation:**
-- 50 games → ~1500 examples (30 moves × 50 games)
-- Cost: ~30 minutes
-- Label quality: All examples labeled with true game outcome (noisy but signal-rich)
-
-**Why this approach:**
-- Simple to implement (one parameter change to AB)
-- Data remains "pure" (no artificial forks or rollouts)
-- Explores naturally (occasionally tries non-greedy moves)
-- Supports bootstrapping (Gen-1 can learn to prefer deviations if they're actually good)
+**Why this works:** Azul is shallow (~30 moves). We bootstrap from hand-coded AB heuristics and improve iteratively without needing millions of self-play games.
 
 ---
 
-## Encoding Spec — Locked
+## Phase 0: Supervised Learning Refactor (In Progress)
 
-### Overview
+### Completed Work (8z)
 
-**Single player encodes 101+ values about their own board state.**
+#### Player 168-Value Encoding ✅
+Implemented comprehensive board state encoding in `Player._encode()`:
 
-The full game encoding will be:
-- `[current_player.encode() (101+)] + [opponent.encode() (101+)] + [game.encode() (TBD)]`
+**Layout (168 total values):**
+- Wall cells (25): Binary 1/0 per cell, row-major order
+- Pending wall (25): Binary 1/0, indicates cells placing this round
+- Adjacency grid (25): Contiguous run count 0–10 per cell (1 if alone)
+- Wall row demand (25): Per-color tiles needed per row [5 colors × 5 rows]
+- Wall col demand (25): Per-color tiles needed per col, sorted by completion [5 colors × 5 cols, sorted ascending]
+- Wall tile demand (5): Per-color total tiles needed across entire wall [5 colors × 1]
+- Pattern demand (5): Per-color tiles needed to complete started pattern lines [5 colors × 1]
+- Pattern capacity (25): Per-color room remaining per row [5 colors × 5 rows]
+- Scoring (5): official_score, pending_score, penalty_score, bonus_score, earned_score
+- Misc (3): first_player_token, total_used, max_pattern_capacity
 
-**Total per-player: 101+ values** (final count depends on remaining sections)
+**Key design decisions:**
+- Two-pass architecture: Build 2D grids, flatten to 1D
+- Wall col demand sorted by total demand (most complete first) to guide model
+- Pattern demand sums across all rows per color (committed lines only)
+- Scoring values computed once per `_encode()` call, stored in `encoded_features`
+- All values raw (no normalization) — divisors applied by model layer via `ENCODING_DIVISORS`
+- `_flatten()` recursive helper handles arbitrary nesting depth
 
-### Player Encoding Structure
+**Code quality:**
+- Slices defined in `ENCODING_SLICES` for reliable indexing
+- Properties (`pending`, `penalty`, `bonus`, `earned`) read from slices
+- `_encode()` called after `place()` and `process_round_end()` to keep features in sync
+- `is_tile_valid_for_row()` refactored to read from `encoded_features[pattern_capacity]`
 
-Encoding is always from the **current player's perspective**. Each section is computed once during `_encode()` and stored in `encoded_features` list.
-
-#### Section 1: Wall (25 values, indices 0–24)
-Binary 0/1 for each wall cell indicating if a tile is placed there.
-Layout: row-major order (0–4 = row 0, 5–9 = row 1, etc.).
-```python
-[1 if self._wall_tiles[row][col] is not None else 0 for row in range(SIZE) for col in range(SIZE)]
-```
-
-#### Section 2: Pattern Fill Units (25 values, indices 25–49)
-Raw tile count (0 to CAPACITY[row]) for each pattern line.
-For each wall cell, if the pattern line for that row is aimed at that cell's tile color, the count; else 0.
-Layout: row-major order (matches wall layout).
-```python
-[
-    len(self._pattern_lines[row])
-    if (self._pattern_lines[row] and self._pattern_lines[row][0] == TILE_FOR_ROW_COL[row][col])
-    else 0
-    for row in range(SIZE) for col in range(SIZE)
-]
-```
-
-#### Section 3: Pending Wall (25 values, indices 50–74)
-Binary 1/0 for each wall cell indicating if that cell will be placed at round end.
-Requires: pattern line at full capacity for that cell's tile.
-Layout: row-major order.
-```python
-[1 if pattern_fill_counts[row * SIZE + col] == CAPACITY[row] else 0 for row in range(SIZE) for col in range(SIZE)]
-```
-
-#### Section 4: Adjacency Grid (25 values, indices 75–99)
-Placement score for each wall cell: sum of contiguous runs (horizontal + vertical).
-Lone tiles score 1. Range 0–10.
-Computed using encoded wall and pending wall arrays; no need to re-check state.
-Layout: row-major order.
-
-#### Section 5: Bonus Completion Units (15 values, indices 100–114)
-For each feature group (5 rows + 5 cols + 5 tiles), completion progress.
-Each cell contributes either CAPACITY[row] (if placed on wall) or its pattern fill count.
-Range 0–5 per feature (5 means the feature will score a bonus).
-```python
-[
-    sum(
-        CAPACITY[i // SIZE] if wall_encoded[i] else pattern_fill_counts[i]
-        for i in feature_indices
-    )
-    for feature_type in ['row', 'col', 'tile']
-    for feature_indices in INDICES_BY[feature_type]
-]
-```
-
-**Note:** Order is rows (0–4), then cols (0–4), then tiles (0–4).
-
-#### Section 6: Pattern Completion Flags (5 values, indices 115–119)
-Binary 1/0 per pattern line indicating if it is full.
-```python
-[1 if len(self._pattern_lines[row]) == CAPACITY[row] else 0 for row in range(SIZE)]
-```
-
-#### Section 7: Scoring (5 values, indices 120–124)
-- **Index 120:** score (confirmed points from prior rounds)
-- **Index 121:** pending_score (sum of adjacency points for cells being placed this round)
-- **Index 122:** penalty (negative floor line length)
-- **Index 123:** bonus_score (points earned from completing rows/cols/tiles this round)
-- **Index 124:** earned (score + pending_score + penalty + bonus_score)
-
-#### Section 8: Tiles Needed (1 value, index 125)
-Sum across all started (non-empty, incomplete) pattern lines of tiles still needed.
-```python
-sum(
-    CAPACITY[row] - len(self._pattern_lines[row])
-    for row in range(SIZE)
-    if self._pattern_lines[row]
-)
-```
-
-### Remaining Sections (TODO)
-
-- **First Player Token** (1): 1 if holding first-player marker, else 0
-- **Wall Completion Progress** (15): fraction of each row/col/tile that is complete (by cells)
-- **Top Completions** (6): sorted descending completion fractions (top 3 rows, top 2 cols, top 1 tile)
-- **Incomplete Lines Count** (1): count of pattern lines that have tiles but are not full
-- **Pattern Line Demand** (5): per color, how many tiles needed to complete all started lines for that color
-- **Wall Completion Demand** (30): for each top-completion group, per-color demand (6 groups × 5 colors)
-- **Adjacency Demand** (5): per color, sum of adjacency scores for all empty wall cells of that color
-- **Total Used Tiles** (1): fraction of the 100-tile pool already committed to wall + pattern lines
+#### Helper Methods ✅
+- `_cell_units(row, col)` → tiles committed to this cell (0–CAPACITY[row])
+- `_cell_is_placed(row, col)` → binary wall placement check
+- `_cell_is_full(row, col)` → binary "placed or pending" check
+- `_adjacency(row, col, for_score)` → contiguous run count (0–10 or 1)
+- `_pending(pending_cells)` → sum of adjacency for pending cells
+- `_penalty()` → sum of FLOOR_PENALTIES up to floor line length
+- `_bonus(row_demand, col_demand, tile_demand)` → complete row/col/tile bonuses
+- `_max_pattern_capacity(pattern_capacity)` → sum of max per row across colors
+- `_flatten(data)` → recursive flattener for mixed-depth nested lists
 
 ---
 
-## Implementation Notes
+### Current Work: Player Encoding Tests (In Progress)
 
-### INDICES_BY Structure
+**Goal:** Validate 168-value encoding before refactoring downstream code.
 
-A unified dict mapping feature types to wall cell indices:
+**Test file location:** `tests/engine/test_player_encoding.py`
+
+**Test suite (detailed):**
+
+#### 1. Shape & Type Tests
 ```python
-INDICES_BY = {
-    'row': [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9], ...],  # 5 rows
-    'col': [[0, 5, 10, 15, 20], [1, 6, 11, 16, 21], ...],  # 5 cols
-    'tile': [[cells for tile 0], [cells for tile 1], ...],  # 5 tiles
+def test_encode_returns_168_values(player):
+    """Verify _encode() produces exactly 168 features."""
+    assert len(player.encoded_features) == 168
+
+def test_encoded_features_is_list_of_ints(player):
+    """All encoded values are int, no None/NaN/float."""
+    assert all(isinstance(v, int) for v in player.encoded_features)
+    assert len(player.encoded_features) == 168
+```
+
+#### 2. Slice Validation Tests
+```python
+def test_encoding_slices_dont_overlap():
+    """All slices in ENCODING_SLICES are contiguous, no gaps/overlaps."""
+    slices = list(ENCODING_SLICES.values())
+    slices.sort(key=lambda s: s.start)
+    for i in range(len(slices) - 1):
+        assert slices[i].stop == slices[i+1].start
+
+def test_encoding_slices_cover_all_168():
+    """Sum of slice sizes equals 168."""
+    total = sum(s.stop - s.start for s in ENCODING_SLICES.values())
+    assert total == 168
+
+def test_slice_bounds_match_docstring():
+    """Each slice bounds match ENCODING_SLICES doc."""
+    assert ENCODING_SLICES["wall"] == slice(0, 25)
+    assert ENCODING_SLICES["pending_wall"] == slice(25, 50)
+    assert ENCODING_SLICES["adjacency_grid"] == slice(50, 75)
+    assert ENCODING_SLICES["wall_row_demand"] == slice(75, 100)
+    assert ENCODING_SLICES["wall_col_demand"] == slice(100, 125)
+    assert ENCODING_SLICES["wall_tile_demand"] == slice(125, 130)
+    assert ENCODING_SLICES["pattern_demand"] == slice(130, 135)
+    assert ENCODING_SLICES["pattern_capacity"] == slice(135, 160)
+    assert ENCODING_SLICES["scoring"] == slice(160, 165)
+    assert ENCODING_SLICES["misc"] == slice(165, 168)
+```
+
+#### 3. Wall & Pending Encoding Tests
+```python
+def test_wall_cells_all_zero_initially(empty_player):
+    """Wall cells are 0 when no tiles placed."""
+    wall_slice = ENCODING_SLICES["wall"]
+    assert all(v == 0 for v in empty_player.encoded_features[wall_slice])
+
+def test_wall_cells_one_when_placed(player_with_wall_tile):
+    """Wall cell is 1 when tile placed."""
+    # Place tile at (row=0, col=0)
+    wall_slice = ENCODING_SLICES["wall"]
+    # Index 0 in row-major order
+    assert player_with_wall_tile.encoded_features[wall_slice.start + 0] == 1
+
+def test_pending_cells_zero_when_pattern_incomplete(player):
+    """Pending is 0 when pattern line not full."""
+    pending_slice = ENCODING_SLICES["pending_wall"]
+    # No full pattern lines → all pending = 0
+    assert all(v == 0 for v in player.encoded_features[pending_slice])
+
+def test_pending_cells_one_when_committed_and_full(player_full_pattern):
+    """Pending is 1 when pattern line full and committed to wall color."""
+    # Player has pattern line full, committed to correct color
+    pending_slice = ENCODING_SLICES["pending_wall"]
+    # At least one pending cell should be 1
+    assert any(v == 1 for v in player_full_pattern.encoded_features[pending_slice])
+```
+
+#### 4. Adjacency Tests
+```python
+def test_adjacency_lone_tiles_score_one(player_lone_wall):
+    """Isolated wall tiles score 1."""
+    adj_slice = ENCODING_SLICES["adjacency_grid"]
+    # Place single tile at (0, 2)
+    assert player_lone_wall.encoded_features[adj_slice.start + 2] == 1
+
+def test_adjacency_horizontal_run(player_horiz_run):
+    """Contiguous horizontal tiles count run."""
+    adj_slice = ENCODING_SLICES["adjacency_grid"]
+    # Place tiles at (0, 0), (0, 1), (0, 2) — run of 3
+    # Each should have adjacency >= 2
+    assert player_horiz_run.encoded_features[adj_slice.start + 0] >= 2
+    assert player_horiz_run.encoded_features[adj_slice.start + 1] >= 2
+    assert player_horiz_run.encoded_features[adj_slice.start + 2] >= 2
+
+def test_adjacency_range_0_to_10(player):
+    """Adjacency values in range [0, 10]."""
+    adj_slice = ENCODING_SLICES["adjacency_grid"]
+    adj_vals = player.encoded_features[adj_slice]
+    assert all(0 <= v <= 10 for v in adj_vals)
+```
+
+#### 5. Demand Grid Tests
+```python
+def test_wall_row_demand_empty_game(empty_player):
+    """Empty board: each color needs full capacity per row."""
+    row_slice = ENCODING_SLICES["wall_row_demand"]
+    row_demands = empty_player.encoded_features[row_slice]
+    # 25 values: 5 colors × 5 rows
+    # Each color, each row should need CAPACITY[row]
+    for color_idx in range(5):
+        for row in range(5):
+            idx = color_idx * 5 + row
+            assert row_demands[idx] == CAPACITY[row]
+
+def test_wall_col_demand_sorted(player_partial_wall):
+    """Columns sorted by total demand (most complete first)."""
+    col_slice = ENCODING_SLICES["wall_col_demand"]
+    col_demands = player_partial_wall.encoded_features[col_slice]
+    # 25 values: 5 colors × 5 cols
+    # Check that col totals are non-increasing (sorted ascending by demand)
+    col_totals = [sum(col_demands[c*5:(c+1)*5]) for c in range(5)]
+    assert col_totals == sorted(col_totals)
+
+def test_wall_tile_demand_sum_matches_total(player):
+    """Sum of per-color tile demand = total wall tiles needed."""
+    tile_slice = ENCODING_SLICES["wall_tile_demand"]
+    tile_demands = player.encoded_features[tile_slice]
+    # 5 values, one per color
+    assert len(tile_demands) == 5
+    assert all(0 <= v <= 25 for v in tile_demands)  # Max 5 rows × 5 tiles per color
+
+def test_pattern_demand_only_committed(player_mixed_patterns):
+    """Pattern demand only counts committed (full) lines."""
+    pattern_slice = ENCODING_SLICES["pattern_demand"]
+    pattern_demands = player_mixed_patterns.encoded_features[pattern_slice]
+    # 5 values, one per color
+    assert len(pattern_demands) == 5
+    # Only committed lines contribute demand (no empty, no partial)
+
+def test_pattern_capacity_room_for_all_rows(player):
+    """Pattern capacity sum = sum of CAPACITY - pattern fills."""
+    cap_slice = ENCODING_SLICES["pattern_capacity"]
+    capacities = player.encoded_features[cap_slice]
+    # 25 values: 5 colors × 5 rows
+    expected_total = sum(CAPACITY) - sum(len(player._pattern_lines[r]) for r in range(5))
+    assert sum(capacities) == expected_total
+```
+
+#### 6. Scoring Tests
+```python
+def test_scoring_slice_matches_properties(player):
+    """Encoded scoring matches property accessors."""
+    score_slice = ENCODING_SLICES["scoring"]
+    scores = player.encoded_features[score_slice]
+    assert len(scores) == 5
+    assert scores[0] == player.score
+    assert scores[1] == player.pending
+    assert scores[2] == player.penalty
+    assert scores[3] == player.bonus
+    assert scores[4] == player.earned
+
+def test_pending_score_calculation(player_full_pattern_with_adjacency):
+    """Pending = sum of adjacency for pending cells."""
+    # Manually calculate expected pending
+    expected_pending = 0
+    for row in range(5):
+        if len(player_full_pattern_with_adjacency._pattern_lines[row]) == CAPACITY[row]:
+            for col in range(5):
+                # Check if this cell is pending
+                expected_pending += player_full_pattern_with_adjacency._adjacency(row, col, for_score=True)
+    assert player_full_pattern_with_adjacency.pending == expected_pending
+
+def test_penalty_score_calculation(player_with_floor):
+    """Penalty = sum of FLOOR_PENALTIES up to floor length."""
+    expected_penalty = sum(FLOOR_PENALTIES[:len(player_with_floor._floor_line)])
+    assert player_with_floor.penalty == expected_penalty
+
+def test_bonus_score_calculation(player_complete_row):
+    """Bonus includes complete row bonuses."""
+    # Player has one complete row, no cols/tiles
+    expected_bonus = BONUS_ROW
+    assert player_complete_row.bonus == expected_bonus
+
+def test_earned_is_sum_of_components(player):
+    """Earned = score + pending + penalty + bonus."""
+    expected = player.score + player.pending + player.penalty + player.bonus
+    assert player.earned == expected
+```
+
+#### 7. Misc Values Tests
+```python
+def test_first_player_token_zero_when_absent(player_no_first_player):
+    """First player token is 0 when not in floor."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player_no_first_player.encoded_features[misc_slice]
+    # Index 0 of misc (first 3 values)
+    assert misc_vals[0] == 0
+
+def test_first_player_token_one_when_present(player_with_first_player):
+    """First player token is 1 when in floor."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player_with_first_player.encoded_features[misc_slice]
+    assert misc_vals[0] == 1
+
+def test_total_used_calculation(player):
+    """Total used = MAX_USED - sum(wall_tile_demand)."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player.encoded_features[misc_slice]
+    # Index 1 of misc
+    tile_slice = ENCODING_SLICES["wall_tile_demand"]
+    tile_demands = player.encoded_features[tile_slice]
+    expected_used = MAX_USED - sum(tile_demands)
+    assert misc_vals[1] == expected_used
+
+def test_max_pattern_capacity(player):
+    """Max pattern capacity = sum of max per row across colors."""
+    misc_slice = ENCODING_SLICES["misc"]
+    misc_vals = player.encoded_features[misc_slice]
+    # Index 2 of misc
+    cap_slice = ENCODING_SLICES["pattern_capacity"]
+    capacities = player.encoded_features[cap_slice]
+    expected_max = sum(max(capacities[c*5:(c+1)*5]) for c in range(5))
+    assert misc_vals[2] == expected_max
+```
+
+#### 8. Flatten Tests
+```python
+def test_flatten_flat_list(player):
+    """Flatten on already-flat list returns unchanged."""
+    flat = [1, 2, 3]
+    result = player._flatten(flat)
+    assert result == [1, 2, 3]
+
+def test_flatten_nested_lists(player):
+    """Flatten on nested lists unpacks all levels."""
+    nested = [[1, 2], [3, 4]]
+    result = player._flatten(nested)
+    assert result == [1, 2, 3, 4]
+
+def test_flatten_mixed_depth(player):
+    """Flatten handles mixed nesting depth."""
+    mixed = [1, [2, [3, 4]], 5]
+    result = player._flatten(mixed)
+    assert result == [1, 2, 3, 4, 5]
+
+def test_flatten_empty_sublists(player):
+    """Flatten skips empty sublists."""
+    with_empty = [1, [], [2]]
+    result = player._flatten(with_empty)
+    assert result == [1, 2]
+
+def test_flatten_deeply_nested(player):
+    """Flatten handles arbitrary nesting depth."""
+    deep = [[[[[1]]]]]
+    result = player._flatten(deep)
+    assert result == [1]
+
+def test_flatten_preserves_type(player):
+    """Flatten preserves int type of all values."""
+    data = [[1, 2], [3, 4]]
+    result = player._flatten(data)
+    assert all(isinstance(v, int) for v in result)
+```
+
+#### 9. Consistency Tests
+```python
+def test_encode_idempotent(player):
+    """Calling _encode() twice produces same features."""
+    features1 = player.encoded_features[:]
+    player._encode()
+    features2 = player.encoded_features
+    assert features1 == features2
+
+def test_encode_after_place(player):
+    """Features update after place()."""
+    features_before = player.encoded_features[:]
+    player.place(0, [Tile.BLUE])
+    features_after = player.encoded_features
+    assert features_before != features_after
+
+def test_encode_after_process_round_end(player_ready_for_round_end):
+    """Features update after process_round_end()."""
+    features_before = player_ready_for_round_end.encoded_features[:]
+    player_ready_for_round_end.process_round_end()
+    features_after = player_ready_for_round_end.encoded_features
+    assert features_before != features_after
+
+def test_from_string_encodes_correctly(player):
+    """Player.from_string() recomputes encoding correctly."""
+    s = str(player)
+    player2 = Player.from_string(s)
+    assert player.encoded_features == player2.encoded_features
+```
+
+**Fixtures required:**
+- `empty_player` — fresh Player, no moves made
+- `player` — fresh Player (same as empty_player)
+- `player_with_wall_tile` — one tile placed on wall
+- `player_full_pattern` — one pattern line full, correct color
+- `player_lone_wall` — single isolated wall tile
+- `player_horiz_run` — horizontal run of wall tiles
+- `player_partial_wall` — multiple tiles, various states
+- `player_mixed_patterns` — mix of empty/partial/full lines
+- `player_full_pattern_with_adjacency` — full pattern + adjacency setup
+- `player_with_floor` — floor line with tiles
+- `player_complete_row` — complete wall row
+- `player_no_first_player` — floor without FIRST_PLAYER
+- `player_with_first_player` — floor with FIRST_PLAYER token
+- `player_ready_for_round_end` — setup for round-end processing
+
+**Success criteria:**
+- All tests pass
+- 100% coverage of `_encode()`, `_flatten()`, and all helpers
+- Encoding values in expected ranges per documentation
+- No external method calls (encapsulated tests)
+
+---
+
+### Next: Game Refactor
+
+**Goal:** Update `Game` to use new Player encoding, remove/update methods that relied on deleted Player methods.
+
+**Scope:**
+- Remove calls to deleted methods (`_is_complete()`, `has_triggered_game_end()`)
+- Implement `has_triggered_game_end()` using `encoded_features` if needed
+- Refactor `determine_winners()` if it uses deleted methods
+- Update any game-flow logic that checked Player state directly
+
+**Tests:** `tests/engine/test_game.py` — validate game flow still works with new encoding
+
+---
+
+### Finally: Fix External Callers
+
+**Scope:**
+- API endpoints that read Player state
+- Agent code (AlphaZero, AlphaBeta, etc.) that read Player state
+- Scripts (train.py, evaluate.py, etc.)
+- UI code that displays Player state
+
+**Do NOT sync to main until all external callers fixed** — CI will fail otherwise.
+
+---
+
+## Encoding Reference
+
+### ENCODING_SLICES
+```python
+{
+    "wall": slice(0, 25),
+    "pending_wall": slice(25, 50),
+    "adjacency_grid": slice(50, 75),
+    "wall_row_demand": slice(75, 100),
+    "wall_col_demand": slice(100, 125),
+    "wall_tile_demand": slice(125, 130),
+    "pattern_demand": slice(130, 135),
+    "pattern_capacity": slice(135, 160),
+    "scoring": slice(160, 165),
+    "misc": slice(165, 168),
 }
 ```
 
-Built once at module load from `CELLS_BY_TILE` constant. Enables efficient bonus computation without re-checking player state.
-
-### next_rounds_wall
-
-Computed in `_encode()` as `[wall_encoded[i] + pending_encoded[i] for i in range(SIZE * SIZE)]`.
-Represents the final wall state after this round's placements.
-Passed to bonus computation methods to avoid redundant array building.
-
-### Encoding Flow
-
-1. Compute `wall_encoded` (section 1)
-2. Compute `pattern_fill_counts` (section 2)
-3. Compute `pending_encoded` from `pattern_fill_counts` (section 3)
-4. Compute `adjacency_encoded` using `wall_encoded` and `pending_encoded` (section 4)
-5. Compute `next_rounds_wall` as sum of wall and pending
-6. Compute `bonus_completion_units` from `wall_encoded` and `pattern_fill_counts` (section 5)
-7. Compute `pattern_completion_flags` directly (section 6)
-8. Compute scoring values: pending_score, bonus_score, then score, penalty, earned (section 7)
-9. Compute `tiles_needed` directly (section 8)
-10. TODO: Compute remaining sections
-
-Each section is extended directly into `features` list. No normalization happens here; that's the encoder/model layer's job.
+### Value Ranges
+- **Wall/Pending:** 0–1 (binary)
+- **Adjacency:** 0–10 (run count, min 1)
+- **Demand/Capacity:** 0–CAPACITY[row] (0–3 per cell)
+- **Scoring:** unclamped int (apply ENCODING_DIVISORS in model)
+- **Misc:** 0–1 (token), 0–100 (used), 0–25 (max capacity)
 
 ---
 
-## Development Phases
+## Timeline
 
-### Phase 0 — Player Encoding Implementation 🔄 (in progress)
-
-**Goal:** Complete implementation of `Player.encode()` method with all feature sections.
-
-**Completed:**
-- [x] Player refactored: `_pattern_lines: list[list[Tile]]`, `_wall_tiles: list[list[Tile | None]]`
-- [x] `encoded_features` field storing raw int values
-- [x] Fixed-width 23-char display (`__str__`) and round-trip reconstruction (`from_string()`)
-- [x] Sections 1–8 implemented (101+ values)
-- [x] INDICES_BY structure created and tested
-- [x] Bonus computation refactored to use INDICES_BY
-
-**Remaining:**
-- [ ] Implement sections 9–17 (remaining 50+ values)
-- [ ] Update scoring properties to read from `encoded_features` slices
-- [ ] Write comprehensive tests for all encode sections
-- [ ] Verify round-trip: game → encode → values match expected ranges
-
-**Next step:**
-- Implement remaining encoding sections (First Player Token through Total Used Tiles)
-
----
-
-### Phase 1 — Data Generation Pipeline
-
-**Goal:** Generate labeled (state, value) training examples using greedy AB play with low-temperature exploration.
-
-**Tasks:**
-1. Modify `AlphaBetaAgent.choose_move()` to support temperature parameter
-2. Implement `scripts/generate_supervision_data.py`
-3. Smoke test: verify ~30 min runtime for 50 games
-4. Validate: all examples have valid shape, value distribution roughly Gaussian
-
----
-
-### Phase 2 — Value Network and Training
-
-**Goal:** `AzulValueNet` + `SupervisedValueTrainer` with architecture comparison
-
-**Architecture options:**
-
-| Architecture | Layers | Params |
+| Task | Estimate | Status |
 |---|---|---|
-| Wide | 101+ → 64 → 1 | ~7k–10k |
-| Narrow | 101+ → 32 → 8 → 1 | ~4k–5k |
-
-Both use: ReLU activations, dropout 0.1, sigmoid output, MSE loss, Adam optimizer, early stopping (patience=5).
-
----
-
-### Phase 3 — Agent Integration
-
-**Goal:** `AlphaBetaWithLearnedValue` — AB search using the value net as its eval function instead of hand-coded `earned`.
+| Write Player encoding tests | 3h | 🔄 In progress |
+| Game refactor | 4h | ⏳ Pending |
+| Game tests | 2h | ⏳ Pending |
+| Fix external callers | 8h | ⏳ Pending |
+| **Total** | **17h** | |
 
 ---
 
-### Phase 4 — Evaluation Framework
+## Key Principles
 
-**Goal:** Robust eval harness: 100 mirrored pairs, win rate + 95% CI, results to JSON.
-
----
-
-### Phase 5 — Generational Loop
-
-**Goal:** Automated pipeline with plateau detection. Runs overnight unattended.
-
-**Pipeline per generation:**
-1. Generate 1500 examples (Phase 1)
-2. Train value net (Phase 2)
-3. Integrate into AB agent (Phase 3)
-4. Evaluate 100 mirrored pairs (Phase 4)
-5. Decide: continue or stop
-
-**Plateau detection:**
-- Stop if <2% win rate improvement for 3 consecutive generations
-- Hard cap: 10 generations
+1. **Tests first, always** — Don't refactor downstream until Player tests pass
+2. **Encapsulation** — Player encoding is self-contained; don't expose internals
+3. **Gradual rollout** — Fix external callers in this order: Game → API → Agents → Scripts → UI
+4. **CI hygiene** — Never commit breaking changes to main. Work on feature branch, fix all issues before sync
+5. **Documentation** — Update docstrings as API changes, keep ENCODING_SLICES in sync
 
 ---
 
-### Phase 6 — UI Integration
+## Deferred/Future Work
 
-**Goal:** Inspector dropdown to select learned value net generation. Game UI playable against `AlphaBetaWithLearnedValue`.
-
----
-
-## Success Criteria
-
-| Milestone | Metric | Target | Status |
-|---|---|---|---|
-| **Phase 0** | Encoding implemented and tested | 100% | 🔄 In Progress |
-| **Phase 1** | Data generated | 1500+ examples | ⏳ Not Started |
-| **Phase 2** | Gen-0 training | Val r > 0.85, MSE < 0.15 | ⏳ Not Started |
-| **Phase 2** | Architecture comparison | Winner selected | ⏳ Not Started |
-| **Phase 3** | Agent integration | Compiles and plays | ⏳ Not Started |
-| **Phase 4** | Gen-0 eval | Win rate ≥ 55% | ⏳ Not Started |
-| **Phase 5** | Gen-1 eval | Win rate ≥ 60% | ⏳ Not Started |
-| **Phase 5** | Gen-2 eval | Win rate ≥ 65% | ⏳ Not Started |
-| **Phase 5** | Gen-3+ eval | Win rate ≥ 75% | ⏳ Not Started |
-| **Final** | Win rate vs AB hard | ≥ 85% (aspirational) | ⏳ Not Started |
-| **Final** | Pipeline | All tests passing | ⏳ Not Started |
+- Game-level encoding (tile availability, bag state, factory info)
+- Supervised trainer integration with new encoding
+- AlphaBeta + learned value net (`AlphaBetaWithLearnedValue`)
+- Value net training loop (generate → train → eval)
+- Hyperparameter search (model width, dropout, learning rate)
+- Checkpoint management for supervised training
 
 ---
 
-## Hard-Won Lessons (carry forward from AlphaZero pipeline)
+**Status:** Ready to begin comprehensive Player encoding test suite. No changes to encoder; tests validate it works correctly before downstream refactoring begins.
 
-1. **`earned` is the dominant signal** — AB uses only `earned` and beats all other heuristic agents. Include it explicitly; don't make the net derive it.
-2. **Per-instance RNG everywhere** — `random.Random()` per agent and per game. Never global `random.seed()`. Global state causes mirror pairs to produce identical scores.
-3. **Windows: no Unicode in log strings** — use ASCII only in logging calls.
-4. **`uvicorn --reload` restarts on checkpoint writes** — run without `--reload` during training.
-5. **`Move` uses `.tile` not `.color`** — always.
-6. **Import `Tile` from `engine.constants`** — never from `engine.tile`.
-7. **Game RNG must be instance-local** — affects which tiles are drawn and factories filled. Global state ruins determinism.
-8. **Perspective matters** — value is always from current player's perspective at that position. Flip when needed.
 
----
 
-## Open Questions
 
-- Should `AlphaBetaWithLearnedValue` use the net at every node, or only at leaf nodes?
-  - Leaf-only is faster; every node is more accurate but slower.
-- Should we keep the existing AlphaZero pipeline intact on `main` and merge only after supervised learning proves competitive?
-- After 10 generations, keep all checkpoints or archive?
-- If plateau detection stops early (Gen-3), investigate: is the problem the encoding, the architecture, or the label noise?
-- Final count of encoding features: 101+ (remaining sections TBD)
-
----
-
-## Repository Structure (Updated)
-
-```
-azul-alphazero/
-├── engine/
-│   ├── player.py                        # Refactored: _encode() with 101+ features
-│   ├── constants.py                     # Updated: INDICES_BY dict
-│   └── game.py                          # Will add game.encode()
-│
-├── neural/
-│   ├── model.py                         # AzulValueNet (value-only)
-│   └── trainer.py                       # SupervisedValueTrainer
-│
-├── agents/
-│   └── alphabeta_learned.py             # AlphaBetaWithLearnedValue
-│
-├── scripts/
-│   ├── generate_supervision_data.py     # NEW
-│   ├── train_value_net.py               # NEW
-│   ├── evaluate_agents.py               # NEW
-│   └── train_generations.py             # NEW (orchestrator)
-│
-└── checkpoints/supervised/
-    ├── gen_0000/
-    │   ├── best_checkpoint.pt
-    │   ├── training_log.csv
-    │   └── eval_results.json
-    └── latest.pt
-```
-
----
-
-## Timeline Estimate
-
-| Phase | Wall Time | Dependencies |
-|---|---|---|
-| **0** | ~4 hours | Encoding implementation + tests |
-| **1** | ~30 min + overnight | Phase 0 complete |
-| **2** | ~1 hour | Phase 1 complete |
-| **3** | ~2 hours | Phase 2 complete |
-| **4** | ~2 hours | Phase 3 complete |
-| **5** | ~2–7 days (unattended) | Phase 4 complete |
-| **6** | ~2 hours | Phase 5 complete |
-| **Total manual work** | ~11 hours + ~5 days overnight | |
-
----
-
-**Document Status:** Phase 0 encoding implementation ongoing. Core structure locked, remaining sections identified. Ready to implement sections 9–17 after current batch completes.
+updates from test_player
+Test coverage — note that test_player.py now has 55 comprehensive tests organized by feature
+Player class status — is_tile_valid_for_row() now checks actual board state, not encoding
+Tile enum — explicit values 0-4 for color indexing (was auto())
+Encoding strategy — tests use scenario-based approach rather than per-index assertions

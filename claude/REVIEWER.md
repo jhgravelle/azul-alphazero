@@ -24,6 +24,7 @@ When reviewing code, check:
 - **Descriptive names** — Helper functions have clear, descriptive names (not abbreviations)
 - **No abbreviations** — Variables are well-named except in tiny scopes (loop counters, etc.)
 - **Private fields** — New fields use `_field_name` convention; access via properties if needed
+- **Field visibility** — Properties wrap changeable implementations (e.g., `_wall_tiles` + `@property wall`); stable representations (e.g., `encoded_features`) are public fields, not wrapped
 - **Comments are rare** — Only present when explaining non-obvious WHY, not repeating what code does
 - **No docstring bloat** — Docstrings explain purpose; they don't parrot the method signature
 

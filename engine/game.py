@@ -14,6 +14,9 @@ from engine.constants import (
     CHAR_FOR_TILE,
     TILES_PER_COLOR,
     TILES_PER_FACTORY,
+    PLAYER_COLUMN_GAP,
+    TABLE_LABEL_WIDTH,
+    TABLE_CELL_WIDTH,
     Tile,
 )
 from engine.move import Move
@@ -59,22 +62,13 @@ class Game:
         self.round: int = 0
         self.turn: int = 0
         self._rng.shuffle(self.bag)
-        self._encoded_features: list[int] = []
+        self.encoded_features: list[int] = []
         self._encode()
 
     @property
     def current_player(self) -> Player:
         """The player whose turn it is."""
         return self.players[self.current_player_index]
-
-    @property
-    def encoded_features(self) -> list[int]:
-        """Return cached game-state encoding as a flat list.
-
-        The encoding is automatically recomputed after state changes.
-        See ENCODING_SLICES for the layout of each slice.
-        """
-        return self._encoded_features
 
     # region Game flow --------------------------------------------------------
 
@@ -94,20 +88,16 @@ class Game:
 
     # region Display --------------------------------------------------------
 
-    _PLAYER_COLUMN_GAP = "  "
-    _TABLE_LABEL_WIDTH = 3
-    _TABLE_CELL_WIDTH = 3
-
     # Slices into encoded_features list
     # Each slice defines the range of values for that encoding section
-    # Layout (~359 values):
+    # Layout (355 values):
     # - round (1): current round number
-    # - game-end triggers (3): can_current_player_trigger, can_opponent_trigger,
-    #   has_been_triggered
+    # - can_current_player_trigger (1): boolean flag
+    # - can_opponent_trigger (1): boolean flag
+    # - has_game_end_been_triggered (1): boolean flag
     # - tile_availability (5): tiles available for each color [B, Y, R, K, W]
     # - tile_source_count (5): sources where each color can be obtained
     # - bag_state (5): tiles of each color in bag
-    # - current_player_index (1): index of player whose turn
     # - current_player_encoded (168): full encoded state of current player
     # - opponent_encoded (168): full encoded state of opponent player
     ENCODING_SLICES = {
@@ -118,10 +108,8 @@ class Game:
         "tile_availability": slice(4, 9),
         "tile_source_count": slice(9, 14),
         "bag_state": slice(14, 19),
-        "current_player_index": slice(19, 20),
-        "current_player_encoded": slice(20, 188),
-        "opponent_encoded": slice(188, 356),
-        # (note: total is 356, with room for expansion to ~359)
+        "current_player_encoded": slice(19, 187),
+        "opponent_encoded": slice(187, 355),
     }
 
     def __str__(self) -> str:
@@ -168,8 +156,8 @@ class Game:
     def _tile_table_row(self, label: str, cells: list[str]) -> str:
         """Format one row of the tile table: left-justified label + right-justified
         cells."""
-        label_cell = label.ljust(self._TABLE_LABEL_WIDTH)
-        count_cells = "".join(c.rjust(self._TABLE_CELL_WIDTH) for c in cells)
+        label_cell = label.ljust(TABLE_LABEL_WIDTH)
+        count_cells = "".join(c.rjust(TABLE_CELL_WIDTH) for c in cells)
         return label_cell + count_cells
 
     def _count_tiles(self, tile_list: list[Tile]) -> list[str]:
@@ -232,7 +220,7 @@ class Game:
                     line if is_last_column else line.ljust(column_widths[col_index])
                 )
                 parts.append(padded)
-            rows.append(self._PLAYER_COLUMN_GAP.join(parts))
+            rows.append(PLAYER_COLUMN_GAP.join(parts))
         return rows
 
     # endregion
@@ -253,7 +241,7 @@ class Game:
         g.center = self.center[:]
         g.bag = self.bag[:]
         g.discard = self.discard[:]
-        g._encoded_features = self._encoded_features[:]
+        g.encoded_features = self.encoded_features[:]
         return g
 
     # endregion
@@ -263,7 +251,7 @@ class Game:
     def _encode(self) -> None:
         """Compute and cache all game-state encoding into encoded_features.
 
-        Builds 356 values in a fixed layout (see ENCODING_SLICES):
+        Builds 355 values in a fixed layout (see ENCODING_SLICES):
         - round (1): Current round number
         - can_current_player_trigger (1): Boolean flag
         - can_opponent_trigger (1): Boolean flag
@@ -271,12 +259,11 @@ class Game:
         - tile_availability (5): Number of tiles available for each color
         - tile_source_count (5): Number of sources where each color can be obtained
         - bag_state (5): Number of tiles of each color in bag
-        - current_player_index (1): Index of player whose turn it is
         - current_player_encoded (168): Full encoded state of current player
         - opponent_encoded (168): Full encoded state of opponent player
         """
         # Compute game-state features
-        avail = self.tile_availability()
+        avail = self._tile_availability()
         tile_avail = [avail[color][0] for color in COLOR_TILES]
         tile_sources = [avail[color][1] for color in COLOR_TILES]
         bag_counts = [self.bag.count(color) for color in COLOR_TILES]
@@ -292,7 +279,7 @@ class Game:
         )
 
         # Build flat list
-        self._encoded_features = [
+        self.encoded_features = [
             self.round,
             can_current_trigger,
             can_opponent_trigger,
@@ -300,7 +287,6 @@ class Game:
             *tile_avail,
             *tile_sources,
             *bag_counts,
-            current_idx,
             *self.players[current_idx].encoded_features,
             *self.players[1 - current_idx].encoded_features,
         ]
@@ -424,7 +410,7 @@ class Game:
         game.discard = []  # Discard is not stored in the display, so assume empty
         game.round = round_num
         game.turn = turn_num
-        game._encoded_features = []
+        game.encoded_features = []
         game._encode()
 
         return game
@@ -565,25 +551,12 @@ class Game:
                         )
         return moves
 
-    def count_distinct_source_tile_pairs(self) -> int:
-        """Return the number of distinct (source, tile) pairs with tiles available."""
-        count = 0
-        for factory in self.factories:
-            count += len({t for t in factory if t != Tile.FIRST_PLAYER})
-        count += len({t for t in self.center if t != Tile.FIRST_PLAYER})
-        return count
-
-    def tile_availability(self) -> dict[Tile, tuple[int, int]]:
+    def _tile_availability(self) -> dict[Tile, tuple[int, int]]:
         """Return tile counts and source counts across all active sources.
 
-        For each color tile, returns a tuple of:
-            (total_tiles, source_count)
-        where total_tiles is the total number of that color across all
-        non-empty factories and the center, and source_count is the number
-        of sources containing at least one tile of that color.
-
-        Used by the encoder and by agents that need to reason about what
-        tiles are available without reaching into game internals.
+        For each color tile, returns a tuple of (total_tiles, source_count)
+        where total_tiles is the number of that color in factories/center,
+        and source_count is the number of non-empty sources with that color.
         """
         totals: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
         source_counts: dict[Tile, int] = {color: 0 for color in COLOR_TILES}
@@ -676,4 +649,11 @@ class Game:
 if __name__ == "__main__":
     game = Game(seed=42)
     game.setup_round()
+    print("Original game:")
     print(game)
+    print("\n" + "=" * 80 + "\n")
+    print("Reconstructed from string (round-trip):")
+    game_from_str = Game.from_string(str(game))
+    print(game_from_str)
+    print("\n" + "=" * 80 + "\n")
+    print(f"Round-trip successful: {str(game) == str(game_from_str)}")

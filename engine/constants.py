@@ -38,16 +38,9 @@ FLOOR = -2  # sentinel destination: tiles go to the floor line
 CAPACITY: list[int] = [row + 1 for row in range(SIZE)]  # max tiles per pattern line row
 MAX_USED = sum(CAPACITY) * SIZE  # maximum used tiles per player
 
-# --- Display ---
-SPACE = " "
+# --- Board display characters (used in conversions below) ---
+EMPTY = "."  # empty cell in pattern line, wall, or tile pool
 BLANK = ""
-EMPTY = "."
-SEPARATOR = "|"
-MOVE_SOURCE_CENTER = "C"  # center pool source in move strings
-MOVE_DEST_FLOOR = "F"  # floor destination in move strings
-MOVE_MARKER_NORMAL = "-"  # no first-player tile taken
-MOVE_MARKER_FIRST_PLAYER = "+"  # first-player tile also taken
-MOVE_MARKER_UNKNOWN = "?"  # move not yet executed (count=0)
 
 # --- Conversions ---
 TILE_FOR_CHAR: dict[str, Tile | None] = {
@@ -93,3 +86,25 @@ CELLS_BY_TILE: list[list[tuple[int, int]]] = [
     [(row, TILE_FOR_ROW_COL[row].index(tile)) for row in range(SIZE)]
     for tile in COLOR_TILES
 ]
+
+# --- Display formatting (rarely edited) ---
+
+# Board display characters
+SPACE = " "
+SEPARATOR = "|"  # column separator in pattern lines and wall display
+
+# Move string encoding
+MOVE_SOURCE_CENTER = (
+    "C"  # source indicator in move strings (e.g., "1C" = tile 1 from center)
+)
+MOVE_DEST_FLOOR = (
+    "F"  # destination indicator in move strings (e.g., "1CF" = tile 1 to floor)
+)
+MOVE_MARKER_NORMAL = "-"  # suffix on move count: no first-player tile
+MOVE_MARKER_FIRST_PLAYER = "+"  # suffix on move count: first-player tile also taken
+MOVE_MARKER_UNKNOWN = "?"  # suffix on move count: move not yet executed
+
+# Game display formatting
+PLAYER_COLUMN_GAP = "  "  # horizontal spacing between player columns in game string
+TABLE_LABEL_WIDTH = 3  # character width of tile table row labels (BAG, CLR, F1-5, CTR)
+TABLE_CELL_WIDTH = 3  # character width of each tile count cell in tile table

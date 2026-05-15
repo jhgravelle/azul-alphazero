@@ -53,12 +53,19 @@ Do NOT declare "done" if linting or tests fail. Fix them first.
 
 ### Private Fields & Properties
 
-Recent refactoring moved Player fields to private (e.g., `_wall`, `_pattern`). Properties like `wall` and `pattern` expose read-only views.
+**Rule:** Use properties to wrap changeable implementations; expose stable representations directly.
+
+**Private storage** (with `@property`): Use when the underlying representation might change. Examples:
+- `_wall_tiles` (Player) — could be refactored to a different data structure; exposed via read-only `wall` property
+- `_pattern_lines` (Player) — mutable internal storage; exposed via `pattern` property
+
+**Public fields**: Use for stable API representations that won't change. Examples:
+- `encoded_features` (Player, Game) — a list of ints is the final form; no need to wrap it
+- This differs from private storage because the representation is fixed, not an implementation detail
 
 When adding new fields:
-- Use `_field_name` for private storage
-- Expose via `@property` if read access is needed
-- Trust internal code (don't validate at internal boundaries)
+- Ask: "Could this data structure change?" — if yes, use `_field_name` + `@property`
+- If no — if it's a stable representation like a list of ints — expose it directly as public
 
 ### Comments
 

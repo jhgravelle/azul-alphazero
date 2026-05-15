@@ -133,8 +133,8 @@ def test_legal_moves_include_floor_option(game_after_setup):
 
 
 def test_tile_availability_returns_dict(game_after_setup):
-    """tile_availability() returns a dictionary."""
-    avail = game_after_setup.tile_availability()
+    """_tile_availability() returns a dictionary."""
+    avail = game_after_setup._tile_availability()
     assert isinstance(avail, dict)
     # Should have entries for each color tile
     for tile in Tile.BLUE, Tile.YELLOW, Tile.RED, Tile.BLACK, Tile.WHITE:
@@ -146,7 +146,7 @@ def test_tile_availability_returns_dict(game_after_setup):
 def test_legal_moves_only_include_available_tiles(game_after_setup):
     """legal_moves() only include tiles that exist in factories/center."""
     moves = game_after_setup.legal_moves()
-    avail = game_after_setup.tile_availability()
+    avail = game_after_setup._tile_availability()
 
     for move in moves:
         if move.destination != FLOOR:

@@ -166,6 +166,18 @@ class Player:
 
         return False
 
+    def has_triggered_game_end(self) -> bool:
+        """Return True if this player has completed a full row on the wall.
+
+        Game ends when any player completes a full row (all 5 tiles placed).
+        """
+        wall_slice = self.encoded_features[ENCODING_SLICES["wall"]]
+        for row in range(SIZE):
+            placed_in_row = sum(wall_slice[row * SIZE + col] for col in range(SIZE))
+            if placed_in_row == SIZE:  # Full row
+                return True
+        return False
+
     # endregion
     # region Game flow -------------------------------------------------------
 

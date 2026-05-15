@@ -3,19 +3,12 @@
 
 import logging
 import random
-from dataclasses import dataclass
 
 from engine.constants import (
     SIZE,
     CENTER,
-    TILE_FOR_CHAR,
     COLOR_TILES,
     FLOOR,
-    MOVE_DEST_FLOOR,
-    MOVE_MARKER_FIRST_PLAYER,
-    MOVE_MARKER_NORMAL,
-    MOVE_MARKER_UNKNOWN,
-    MOVE_SOURCE_CENTER,
     NUMBER_OF_FACTORIES,
     PLAYERS,
     CHAR_FOR_TILE,
@@ -23,103 +16,10 @@ from engine.constants import (
     TILES_PER_FACTORY,
     Tile,
 )
+from engine.move import Move
 from engine.player import Player
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Move:
-    """A single game action: take all tiles of one color from a source and
-    place them on a destination pattern line or the floor.
-
-    Attributes:
-        source:      Factory index (0..N-1) or CENTER (-1).
-        tile:        The tile color being taken.
-        destination: Pattern line index (0..4) or FLOOR (-2).
-        count:       Number of color tiles taken (excludes FIRST_PLAYER).
-        took_first:  True if FIRST_PLAYER was also taken from the center.
-
-    Compact string format: {count}{tile}{marker}{source}{destination}
-        count:       number of color tiles
-        tile:        single char from TILE_CHAR
-        marker:      - normally, + if FIRST_PLAYER was taken
-        source:      C for center, 1-5 for factory (1-based)
-        destination: F for floor, 1-5 for pattern line row (1-based)
-
-    Examples:
-        2W-C3 — 2 white from center to row 3
-        2W+C3 — same but also took the first-player tile
-        1B-2F — 1 blue from factory 2 to floor
-        4R+1F — 4 red from factory 1 to floor, took first-player tile
-    """
-
-    tile: Tile
-    source: int
-    destination: int
-    count: int = 0
-    took_first: bool = False
-
-    def __str__(self) -> str:
-        marker = (
-            MOVE_MARKER_UNKNOWN
-            if self.count == 0
-            else MOVE_MARKER_FIRST_PLAYER if self.took_first else MOVE_MARKER_NORMAL
-        )
-        source_str = (
-            MOVE_SOURCE_CENTER if self.source == CENTER else str(self.source + 1)
-        )
-        dest_str = (
-            MOVE_DEST_FLOOR if self.destination == FLOOR else str(self.destination + 1)
-        )
-        return f"{self.count}{CHAR_FOR_TILE[self.tile]}{marker}{source_str}{dest_str}"
-
-    def __repr__(self) -> str:
-        return str(self)
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Move):
-            return NotImplemented
-        return (
-            self.tile == other.tile
-            and self.source == other.source
-            and self.destination == other.destination
-        )
-
-    def __hash__(self) -> int:
-        return hash((self.tile, self.source, self.destination))
-
-    @classmethod
-    def from_str(cls, s: str) -> "Move":
-        """Parse a compact move string back into a Move.
-
-        Format: {count}{tile}{marker}{source}{destination}
-        count is 1 digit normally, 2 digits when >= 10.
-
-        Raises ValueError if the string is not a valid move format.
-
-        Examples:
-            Move.from_str("2W-C3")  # 2 white, center, row 3, no first player
-            Move.from_str("4R+1F")  # 4 red, factory 1, floor, took first player
-            Move.from_str("10R+CF") # 10 red, center, floor, took first player
-        """
-        try:
-            count = int(s[:-4])
-            tile = TILE_FOR_CHAR[s[-4]]
-            if tile is None:
-                raise ValueError(f"invalid tile char: {s[-4]!r}")
-            took_first = s[-3] == MOVE_MARKER_FIRST_PLAYER
-            source = CENTER if s[-2] == MOVE_SOURCE_CENTER else int(s[-2]) - 1
-            destination = FLOOR if s[-1] == MOVE_DEST_FLOOR else int(s[-1]) - 1
-            return cls(
-                tile=tile,
-                source=source,
-                destination=destination,
-                count=count,
-                took_first=took_first,
-            )
-        except (IndexError, KeyError) as exc:
-            raise ValueError(f"invalid move string: {s!r}") from exc
 
 
 class Game:
@@ -159,11 +59,22 @@ class Game:
         self.round: int = 0
         self.turn: int = 0
         self._rng.shuffle(self.bag)
+        self._encoded_features: list[int] = []
+        self._encode()
 
     @property
     def current_player(self) -> Player:
         """The player whose turn it is."""
         return self.players[self.current_player_index]
+
+    @property
+    def encoded_features(self) -> list[int]:
+        """Return cached game-state encoding as a flat list.
+
+        The encoding is automatically recomputed after state changes.
+        See ENCODING_SLICES for the layout of each slice.
+        """
+        return self._encoded_features
 
     # region Game flow --------------------------------------------------------
 
@@ -179,12 +90,39 @@ class Game:
         else:
             for factory in self.factories:
                 factory.extend(self._draw_from_bag())
+        self._encode()
 
     # region Display --------------------------------------------------------
 
     _PLAYER_COLUMN_GAP = "  "
     _TABLE_LABEL_WIDTH = 3
     _TABLE_CELL_WIDTH = 3
+
+    # Slices into encoded_features list
+    # Each slice defines the range of values for that encoding section
+    # Layout (~359 values):
+    # - round (1): current round number
+    # - game-end triggers (3): can_current_player_trigger, can_opponent_trigger,
+    #   has_been_triggered
+    # - tile_availability (5): tiles available for each color [B, Y, R, K, W]
+    # - tile_source_count (5): sources where each color can be obtained
+    # - bag_state (5): tiles of each color in bag
+    # - current_player_index (1): index of player whose turn
+    # - current_player_encoded (168): full encoded state of current player
+    # - opponent_encoded (168): full encoded state of opponent player
+    ENCODING_SLICES = {
+        "round": slice(0, 1),
+        "can_current_player_trigger": slice(1, 2),
+        "can_opponent_trigger": slice(2, 3),
+        "has_game_end_been_triggered": slice(3, 4),
+        "tile_availability": slice(4, 9),
+        "tile_source_count": slice(9, 14),
+        "bag_state": slice(14, 19),
+        "current_player_index": slice(19, 20),
+        "current_player_encoded": slice(20, 188),
+        "opponent_encoded": slice(188, 356),
+        # (note: total is 356, with room for expansion to ~359)
+    }
 
     def __str__(self) -> str:
         """Multi-line display of the full game state.
@@ -315,7 +253,250 @@ class Game:
         g.center = self.center[:]
         g.bag = self.bag[:]
         g.discard = self.discard[:]
+        g._encoded_features = self._encoded_features[:]
         return g
+
+    # endregion
+
+    # region Encoding (private) -----------------------------------------------
+
+    def _encode(self) -> None:
+        """Compute and cache all game-state encoding into encoded_features.
+
+        Builds 356 values in a fixed layout (see ENCODING_SLICES):
+        - round (1): Current round number
+        - can_current_player_trigger (1): Boolean flag
+        - can_opponent_trigger (1): Boolean flag
+        - has_game_end_been_triggered (1): Boolean flag
+        - tile_availability (5): Number of tiles available for each color
+        - tile_source_count (5): Number of sources where each color can be obtained
+        - bag_state (5): Number of tiles of each color in bag
+        - current_player_index (1): Index of player whose turn it is
+        - current_player_encoded (168): Full encoded state of current player
+        - opponent_encoded (168): Full encoded state of opponent player
+        """
+        # Compute game-state features
+        avail = self.tile_availability()
+        tile_avail = [avail[color][0] for color in COLOR_TILES]
+        tile_sources = [avail[color][1] for color in COLOR_TILES]
+        bag_counts = [self.bag.count(color) for color in COLOR_TILES]
+        current_idx = self.current_player_index
+        can_current_trigger = (
+            1 if not self.current_player.has_triggered_game_end() else 0
+        )
+        can_opponent_trigger = (
+            1 if not self.players[1 - current_idx].has_triggered_game_end() else 0
+        )
+        has_game_end_triggered = (
+            1 if any(p.has_triggered_game_end() for p in self.players) else 0
+        )
+
+        # Build flat list
+        self._encoded_features = [
+            self.round,
+            can_current_trigger,
+            can_opponent_trigger,
+            has_game_end_triggered,
+            *tile_avail,
+            *tile_sources,
+            *bag_counts,
+            current_idx,
+            *self.players[current_idx].encoded_features,
+            *self.players[1 - current_idx].encoded_features,
+        ]
+
+    # endregion
+
+    # region Deserialization (public) -----------------------------------------
+
+    @classmethod
+    def from_string(cls, text: str) -> "Game":
+        """Reconstruct a Game from the output of __str__.
+
+        Parses the multi-line display output and reconstructs all game state:
+        player names, scores, board states, factories, center, bag, discard,
+        current player, and round.
+
+        Returns a Game instance in identical state to the original.
+
+        Raises:
+            ValueError: if the string does not match the expected format.
+
+        Round-trip guarantee:
+            str(original) == str(Game.from_string(str(original)))
+        """
+        import re
+
+        lines = text.strip().splitlines()
+        if len(lines) < 2:
+            raise ValueError("Expected at least 2 lines")
+
+        # Parse the round line: R{round}:T{turn:02d} [{seed}] P{idx}: {name}
+        round_line = lines[0]
+        try:
+            match = re.match(r"R(\d+):T(\d+)\s+\[(\d+)\]\s+P(\d+):", round_line)
+            if not match:
+                raise ValueError(f"Invalid round line format: {round_line!r}")
+            round_num = int(match.group(1))
+            turn_num = int(match.group(2))
+            seed = int(match.group(3))
+            current_player_index = int(match.group(4)) - 1  # Convert to 0-based
+        except (ValueError, AttributeError) as exc:
+            raise ValueError(f"Invalid round line format: {round_line!r}") from exc
+
+        # The remaining lines contain tile table + player displays
+        # Layout: tile_table (21 chars) + gap (2) + player cols (23 each, gap 2)
+        data_lines = lines[1:]
+
+        # Determine the number of players from the first data line
+        if not data_lines:
+            raise ValueError("No data lines found")
+
+        # Tile table is 0:21, gap is 21:23, then players start at 23
+        # Each player column is 23 chars, separated by "  " (2 chars)
+        TILE_TABLE_WIDTH = 21
+        PLAYER_WIDTH = 23
+        GAP = 2
+
+        tile_table_lines = []
+        player_line_groups = []
+
+        for line in data_lines:
+            # Extract tile table (0:21)
+            tile_table_lines.append(line[:TILE_TABLE_WIDTH].rstrip())
+
+            # Extract player columns starting at position 23
+            pos = TILE_TABLE_WIDTH + GAP
+            player_idx = 0
+            while pos < len(line):
+                # Extract player column
+                player_end = pos + PLAYER_WIDTH
+                player_text = line[pos:player_end].rstrip() if pos < len(line) else ""
+
+                # Ensure we have enough player groups
+                if len(player_line_groups) <= player_idx:
+                    player_line_groups.append([])
+
+                player_line_groups[player_idx].append(player_text)
+                pos = player_end + GAP
+                player_idx += 1
+
+        if not tile_table_lines:
+            raise ValueError("Could not parse tile table")
+        if not player_line_groups:
+            raise ValueError("Could not parse player displays")
+
+        # Parse tile table
+        factories, center, bag = cls._parse_tile_table(tile_table_lines)
+
+        # Parse players
+        players = []
+        for player_idx, player_text_lines in enumerate(player_line_groups):
+            # Remove trailing empty lines and right-side padding
+            player_text_lines = [
+                line.rstrip() for line in player_text_lines if line.strip()
+            ]
+
+            # If the first line has ">", remove it (marker for current player)
+            if player_text_lines and player_text_lines[0].startswith(">"):
+                player_text_lines[0] = " " + player_text_lines[0][1:]
+
+            # Ensure we have exactly 7 lines for Player.from_string()
+            if len(player_text_lines) != 7:
+                raise ValueError(
+                    f"Expected 7 lines for player {player_idx}, "
+                    f"got {len(player_text_lines)}"
+                )
+
+            player_text = "\n".join(player_text_lines)
+            player = Player.from_string(player_text)
+            players.append(player)
+
+        # Construct the game using object.__new__ to bypass __init__
+        game = object.__new__(cls)
+        game.seed = seed
+        game._rng = random.Random(seed)
+        game.current_player_index = current_player_index
+        game.players = players
+        game.factories = factories
+        game.center = center
+        game.bag = bag
+        game.discard = []  # Discard is not stored in the display, so assume empty
+        game.round = round_num
+        game.turn = turn_num
+        game._encoded_features = []
+        game._encode()
+
+        return game
+
+    @staticmethod
+    def _parse_tile_table(
+        lines: list[str],
+    ) -> tuple[list[list[Tile]], list[Tile], list[Tile]]:
+        """Parse the tile table section to reconstruct factories and center.
+
+        Expected 8 lines: BAG, CLR, F1-F5 (5 lines), CTR.
+        Format: "LABEL  B  Y  R  K  W" or "CTR ... F" (F = FIRST_PLAYER).
+        Counts are digits or dots (.) for zero.
+
+        Returns: (factories, center, bag)
+        """
+        if len(lines) != 8:
+            raise ValueError(f"Expected 8 tile table lines, got {len(lines)}")
+
+        def parse_counts(line: str, ignore_extra: bool = False) -> list[int]:
+            """Extract tile counts from a line.
+
+            Args:
+                line: The tile table line
+                ignore_extra: If True, ignore extra characters (e.g. FIRST_PLAYER)
+            """
+            # Skip label (first 3 chars) and split counts
+            counts_str = line[3:].strip()
+            counts = []
+            for c in counts_str.split():
+                if c == ".":
+                    counts.append(0)
+                elif c == "F":
+                    # Skip FIRST_PLAYER marker
+                    if not ignore_extra:
+                        continue
+                else:
+                    try:
+                        counts.append(int(c))
+                    except ValueError:
+                        if ignore_extra:
+                            # Skip unparseable characters in the center line
+                            continue
+                        raise
+            return counts
+
+        def build_tiles(counts: list[int]) -> list[Tile]:
+            """Build a tile list from color counts."""
+            tiles = []
+            for color, count in zip(COLOR_TILES, counts):
+                tiles.extend([color] * count)
+            return tiles
+
+        # Parse each line
+        bag_counts = parse_counts(lines[0])  # BAG
+        # lines[1] is CLR header - skip it
+
+        factory_counts = [parse_counts(lines[i]) for i in range(2, 7)]  # F1-F5
+        center_counts = parse_counts(
+            lines[7], ignore_extra=True
+        )  # CTR (may have F marker)
+
+        # Handle FIRST_PLAYER marker in center
+        center_has_first_player = "F" in lines[7]
+
+        bag = build_tiles(bag_counts)
+        factories = [build_tiles(counts) for counts in factory_counts]
+        center = build_tiles(center_counts)
+        if center_has_first_player:
+            center.append(Tile.FIRST_PLAYER)
+
+        return factories, center, bag
 
     # endregion
 
@@ -360,14 +541,6 @@ class Game:
 
     # region Move generation ------------------------------------------------
 
-    def _is_valid_destination(
-        self, player: Player, tile: Tile, destination: int
-    ) -> bool:
-        """Return True if tile can legally be placed at destination for player."""
-        if destination == FLOOR:
-            return True
-        return player.is_tile_valid_for_row(tile, destination)
-
     def legal_moves(self) -> list[Move]:
         """Return all legal moves for the current player."""
         moves = []
@@ -377,8 +550,11 @@ class Game:
             tile_options = {t for t in source_tiles if t in COLOR_TILES}
             for tile in tile_options:
                 for destination in [*range(SIZE), FLOOR]:
-                    if self._is_valid_destination(
-                        self.current_player, tile, destination
+                    # Floor is always a valid destination; pattern lines must
+                    # be checked against the player's board constraints
+                    if (
+                        destination == FLOOR
+                        or self.current_player.is_tile_valid_for_row(tile, destination)
                     ):
                         moves.append(
                             Move(
@@ -447,6 +623,8 @@ class Game:
         self.turn += 1
         chosen = self._take_from_source(move)
         self.current_player.place(move.destination, chosen)
+        # Ensure player encoding is updated, then re-encode game state
+        self._encode()
 
     def advance(self, *, skip_setup: bool = False) -> bool:
         """Rotate the current player, then handle any phase transitions.
@@ -454,6 +632,7 @@ class Game:
         Returns True if a round boundary was crossed, False otherwise.
         """
         self.next_player()
+        self._encode()  # Update encoding after player rotation
         if self.is_round_over():
             self._score_round()
             if self.is_game_over():

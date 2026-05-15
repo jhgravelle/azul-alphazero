@@ -2,6 +2,35 @@
 
 Test writing guidance and conventions.
 
+## Before You Start
+
+You're likely working from a plan. Read the plan completely and understand:
+- What to test (which public methods, which scenarios)
+- Test structure and naming conventions
+- Coverage goals (aim for 100%)
+- Success criteria for test completion
+
+## Before Declaring Work Done
+
+Run these checks. If any fail, fix the issues and re-run until all pass:
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Check linting on test files
+python -m flake8 tests/
+
+# Verify no test regressions in existing tests
+# (should already be passing from pytest above)
+```
+
+**Report:**
+- ✅ All tests pass (X passed), linting clean, OR
+- ❌ Issues found (list them), then re-check
+
+Do NOT declare "done" if any tests fail or linting fails. Fix them first.
+
 ## Test Organization
 
 - **Mirror source tree structure** — Test files live in `tests/` subfolders mirroring `src/` layout

@@ -1,12 +1,16 @@
-# CLAUDE.md
+# Azul AlphaZero — Claude Code Workflow
 
-This directory contains agent role-specific instructions. Load the appropriate file for your role:
+## What's Your Role?
 
-- **PLANNER.md** — High-level orchestration, spawning subagents, project direction
-- **CODER.md** — Implementation guidance, code style, design patterns
-- **TEST_WRITER.md** — Test structure, coverage, testing conventions
-- **REVIEWER.md** — Code review checklist, quality standards
-- **COMMANDS.md** — Testing, linting, formatting commands
+Load the appropriate file from `/claude/` (role documentation):
+
+- `/claude/PLANNER.md` — High-level orchestration, spawning subagents, project direction
+- `/claude/CODER.md` — Implementation guidance, code style, design patterns
+- `/claude/TEST_WRITER.md` — Test structure, coverage, testing conventions
+- `/claude/REVIEWER.md` — Code review checklist, quality standards
+- `/claude/COMMANDS.md` — Testing, linting, formatting commands
+
+(Note: `/.claude/` is harness configuration; `/claude/` is role documentation)
 
 ## Universal Guidance
 

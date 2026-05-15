@@ -2,6 +2,14 @@
 
 Implementation guidance for writing production code.
 
+## Before You Start
+
+You're likely working from a plan. Read the plan completely and understand:
+- What files to modify (and what NOT to touch)
+- Implementation order and dependencies
+- Success criteria (what makes this "done")
+- How to verify the changes work
+
 ## Sketch Before Coding
 
 For any non-trivial change:
@@ -10,6 +18,27 @@ For any non-trivial change:
 3. **Then code** — Implement only after agreement on the approach
 
 This applies especially to layout changes, refactors, or complex logic.
+
+## Before Declaring Work Done
+
+Run these checks. If any fail, fix the issues and re-run until all pass:
+
+```bash
+# Check linting
+python -m flake8 [modified files]
+
+# Check formatting
+python -m black [modified files] --check
+
+# Run tests
+python -m pytest tests/ -v
+```
+
+**Report:**
+- ✅ All checks passed, OR
+- ❌ Issues found and fixed (list them), then re-check
+
+Do NOT declare "done" if linting or tests fail. Fix them first.
 
 ## Code Style
 

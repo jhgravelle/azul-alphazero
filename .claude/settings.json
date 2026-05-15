@@ -1,26 +1,20 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(rm *)",
+      "PowerShell(Remove-Item *)"
+    ],
+    "ask": [
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(git branch -D *)",
+      "PowerShell(git push --force *)",
+      "PowerShell(git reset --hard *)",
+      "PowerShell(git branch -D *)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "prompt",
-            "prompt": "Evaluate this Bash command for destructive operations: $ARGUMENTS\n\nIs this command destructive? Consider: file deletion (rm, rm -rf), git force operations (git push --force, git push -f), git hard resets (git reset --hard), branch deletion (git branch -D, git branch -delete), or config file modifications.\n\nIf destructive, respond with: {\"decision\": \"block\", \"reason\": \"[explain why]\"}.\nIf safe, respond with: {\"decision\": \"allow\"}.",
-            "statusMessage": "Checking for destructive operations..."
-          }
-        ]
-      },
-      {
-        "matcher": "PowerShell",
-        "hooks": [
-          {
-            "type": "prompt",
-            "prompt": "Evaluate this PowerShell command for destructive operations: $ARGUMENTS\n\nIs this command destructive? Consider: file deletion (Remove-Item, rm -Recurse), git force operations (git push --force), git hard resets (git reset --hard), branch deletion (git branch -D), or config file modifications.\n\nIf destructive, respond with: {\"decision\": \"block\", \"reason\": \"[explain why]\"}.\nIf safe, respond with: {\"decision\": \"allow\"}.",
-            "statusMessage": "Checking for destructive operations..."
-          }
-        ]
-      },
       {
         "matcher": "Write|Edit",
         "hooks": [

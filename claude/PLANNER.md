@@ -10,10 +10,10 @@ For any task involving **multiple files, architectural decisions, or scope uncer
 2. **Explore the codebase** — Understand current state before interviewing user
 3. **Interview (one question at a time)** — Always provide 2-3 recommended options
 4. **Write a detailed plan** — Create `claude/plans/{name}.md` with clear steps
-5. **Execute the plan** — After plan approval, spawn agents in parallel for independent execution
-6. **Suggest code review** — After agents complete, recommend review before commit
-7. **Update project plan docs** — Reflect project, update the status in `docs/` files for next session
-8. **Update claude docs** — Reflect on the various agent roles, update `claude/` files for next session
+5. **Track progress** — Use `TaskCreate()` to break work into discrete steps; mark complete as you finish each
+6. **Execute the plan** — After plan approval, spawn agents in parallel for independent execution (see **Agent Spawn Patterns** below)
+7. **Suggest code review** — After agents complete, recommend review before commit
+8. **Update docs** — Reflect on execution; update `docs/` files for next session if context changes
 
 Skip planning only for: typo fixes, single-function additions, or when approach is already decided.
 
@@ -35,13 +35,19 @@ For the encoding structure, should it be:
 Recommended: Flat list (matches Player pattern, good for ML training)
 ```
 
-### Two-Agent Pattern (Implementation + Testing)
-```python
-Agent(description='Implementation', prompt='[plan + impl instructions]', run_in_background=True)
-Agent(description='Testing', prompt='[plan + test instructions]', run_in_background=True)
-```
+### Agent Spawn Patterns
 
-**Key principle:** Plan must be clear enough for independent execution without inter-agent communication.
+**Single agent (default):** Use for most work (typos, bug fixes, single feature):
+- Send plan + relevant agent guide (CODER.md, TEST_WRITER.md) in prompt
+- Run in background; wait for completion
+
+**Two parallel agents (TDD for larger features):** Use when work cleanly splits into impl + tests:
+- Spawn CODER agent with implementation plan + CODER.md guidance
+- Spawn TEST_WRITER agent with test plan + TEST_WRITER.md guidance simultaneously
+- Run both in background; wait for both to complete
+- Key principle: Plan must be clear enough for independent execution
+
+**Key principle:** Agents must be able to execute independently without inter-agent communication.
 
 ### Agent Success Criteria
 

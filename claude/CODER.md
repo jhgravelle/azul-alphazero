@@ -12,12 +12,12 @@ You're likely working from a plan. Read the plan completely and understand:
 
 ## Sketch Before Coding
 
-For any non-trivial change:
+When working without a detailed plan (or when plan needs clarification):
 1. **Describe the approach in text first** — Outline the logic, structure, or algorithm before writing code
 2. **Confirm alignment** — Wait for user approval on the sketch before implementing
 3. **Then code** — Implement only after agreement on the approach
 
-This applies especially to layout changes, refactors, or complex logic.
+This applies especially to layout changes, refactors, or complex logic. When a detailed plan exists, follow it directly; sketch only when approach needs validation.
 
 ## Before Declaring Work Done
 
@@ -75,16 +75,16 @@ When adding new fields:
 
 ### Testing Conventions
 
-See **TEST_WRITER.md** for test organization and coverage targets.
+When writing code, follow these patterns. For comprehensive test guidance, see **TEST_WRITER.md**:
 
-When writing code:
-- Test **public methods only** — Private methods are covered implicitly by thorough public method tests
-- Expect ~100% coverage in practice — CI does not enforce a threshold, but you should hit it
-- Use `Player.from_string()` for encoding tests to load known states, then assert sections of `encode()` output
-- Use `make_player(**kwargs)` to construct test players with optional field overrides
+- **Test public methods only** — Private methods are covered implicitly by thorough public method tests
+- **Expect ~100% coverage in practice** — CI does not enforce a threshold, but you should hit it
+- **Use `Player.from_string()`** for encoding tests to load known states, then assert sections of `encode()` output
+- **Use `make_player(**kwargs)`** to construct test players with optional field overrides
+- **Test method naming** — Describe scenario and outcome: `test_earned_is_zero_for_fresh_player`, not `test_earned`
 
 ## Error Handling
 
-- **Skip error handling for impossible scenarios** — Trust internal code and framework guarantees
-- **Validate only at system boundaries** — Only validate at user input, external APIs, or file I/O
-- **No half-finished implementations** — If you start a feature, finish it. Don't leave stubs or "TODO" implementations.
+- **Skip error handling for impossible scenarios** — Trust internal code and framework guarantees. Examples: don't validate that a list index is in range if you just checked the length; don't null-check an object you just created.
+- **Validate only at system boundaries** — Only validate at user input, external APIs, or file I/O. Example: validate game moves from input, but not internal tile placements between trusted components.
+- **No half-finished implementations** — If you start a feature, finish it completely. Don't leave stubs, "TODO" comments, or placeholder methods. Either implement it fully or don't add it.

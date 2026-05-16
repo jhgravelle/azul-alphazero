@@ -4,15 +4,31 @@ Code review checklist and validation standards.
 
 ## Pre-Commit Validation
 
-Before approving code, run these commands (see **COMMANDS.md** for details):
+Before approving code, verify all automated checks pass:
 
-- **`pytest`** — All fast tests pass
-- **`pytest -m ""`** — Include slow tests if any exist
-- **`flake8`** — No linting issues
-- **`black --check .`** — Code formatted to standard
-- **`isort --check .`** — Imports sorted correctly
+```bash
+# Run all tests (fast tests only)
+pytest
 
-If anything fails, return to the implementer with feedback.
+# Run all tests including slow ones
+pytest -m ""
+
+# Check linting
+flake8
+
+# Check formatting
+black --check .
+
+# Check import sorting
+isort --check .
+```
+
+**Success criteria:**
+- ✅ All tests pass (no failures, no regressions)
+- ✅ All linting clean (flake8, black, isort)
+- ✅ No TODOs or placeholder code
+
+If anything fails, return to the implementer with specific feedback (which tests failed, which lines have linting issues).
 
 ## Code Style Review
 
@@ -35,9 +51,14 @@ When reviewing code, check:
 - **Realistic fixtures** — Tests use real objects, not mocks of internal dependencies
 - **Comprehensive scenarios** — Both happy paths and edge cases covered
 
-## Critical Patterns
+## Critical Patterns & Breaking Changes
 
-See **docs/GOTCHAS.md** for patterns that have caused bugs in the past. Flag violations.
+- **Review GOTCHAS.md** — See **docs/GOTCHAS.md** for patterns that have caused bugs. Flag violations.
+- **Breaking API changes** — If a public method signature changed:
+  - Verify all call sites updated (grep for the old signature)
+  - Ensure tests cover the new behavior
+  - Update docstrings to reflect the change
+  - Consider: could this break external agents/tests? (e.g., fixture functions, public Game/Player APIs)
 
 ## No Half-Finished Work
 

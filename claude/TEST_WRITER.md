@@ -22,12 +22,17 @@ python -m pytest tests/ -v
 python -m flake8 tests/
 
 # Verify no test regressions in existing tests
-# (should already be passing from pytest above)
+# (failures here indicate code changes broke old functionality)
 ```
 
 **Report:**
 - ✅ All tests pass (X passed), linting clean, OR
 - ❌ Issues found (list them), then re-check
+
+If old tests break (not your new tests):
+- Investigate why the code change broke them
+- Fix the code (in CODER agent) or adjust the test if the behavior intentionally changed
+- Loop back with feedback; don't declare done
 
 Do NOT declare "done" if any tests fail or linting fails. Fix them first.
 
@@ -38,6 +43,12 @@ Do NOT declare "done" if any tests fail or linting fails. Fix them first.
   - Source: `agents/random.py` → Test: `tests/agents/test_random.py`
 - **Use `__init__.py`** — Each subfolder needs `__init__.py` (can be empty)
 - **Keep root flat tests until touched** — Flat test files at `tests/` root stay there until modified, then move to subfolders
+
+## Test Naming Conventions
+
+- **Test classes** — Named after what they test: `TestScoringProperties`, `TestPolicyDistribution`, `TestGameInitialization`
+- **Test methods** — Describe the scenario and expected outcome: `test_earned_is_zero_for_fresh_player`, `test_aimed_cells_exclude_pattern_lines`, `test_move_placement_respects_wall_tiles`
+- **Fixtures** — Use descriptive names: `fresh_player`, `mid_game_state`, `completed_wall_row`
 
 ## What to Test
 

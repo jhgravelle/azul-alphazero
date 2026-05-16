@@ -254,9 +254,48 @@ Before submitting a test:
 
 ---
 
+## Testing from Game Recordings
+
+**✅ Use Game.from_string() with actual game recordings:**
+
+When reproducing bugs or testing edge cases, extract the game state from recorded games:
+
+```python
+from engine.game import Game
+from engine.move import Move
+
+# Load state from recording at a specific turn
+game = Game.from_string("""
+R1:T01 [1696940010]                               BAG 15 15 16 18 16
+  P1: Player 1   0(  0)  > P2: Player 2   0(  0)  CLR  B  Y  R  K  W
+          . | . . . . .            . | . . . . .  F-1  .  2  1  .  1
+        . . | . . . . .          . . | . . . . .  F-2  .  .  .  .  .
+      . B B | . . . . .        . . . | . . . . .  F-3  1  1  2  .  .
+    . . . . | . . . . .      . . . . | . . . . .  F-4  1  1  .  .  2
+  . . . . . | . . . . .    . . . . . | . . . . .  F-5  1  .  .  2  1
+    ....... |                ....... |            CTR  .  1  1  .  .  F
+""")
+
+# Apply a move and test behavior
+move = Move.from_str("2K-52")
+game.players[1].place(move.destination, [move.tile] * move.count)
+assert game.players[1].pending == 1  # Bug: was 4 before fix
+```
+
+**Benefits:**
+- Reproduces real bugs from actual gameplay
+- More realistic than synthetic test states
+- Game state is parsed and guaranteed valid
+- Excellent for regression testing
+
+**See also:** `TEST_WRITER.md` "Loading Game State from Recording" section
+
+---
+
 ## References
 
 - **CODER.md** — Private fields pattern and `_encode()` requirement
-- **TEST_WRITER.md** — Test organization and fixture patterns
+- **TEST_WRITER.md** — Test organization, fixture patterns, and recording-based testing
 - Engine refactor commit: ef8d8c5 (Player class refactoring)
 - Integration fixes commit: 83968fb (47 test failures resolved)
+- Pending scoring bug fix commit: 77fb82b (regression test for pending scoring)

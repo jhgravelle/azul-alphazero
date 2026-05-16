@@ -292,10 +292,12 @@ class Player:
         for row in range(SIZE):
             for col in range(SIZE):
                 color_idx = TILE_FOR_ROW_COL[row][col].value
-                demand = CAPACITY[row] - self._cell_units(row, col)
                 empty = len(self._pattern_lines[row]) == 0
                 full = len(self._pattern_lines[row]) == CAPACITY[row]
-                committed = demand > 0 and not empty
+                committed = not empty and self._pattern_lines[row][0].value == color_idx
+                demand = CAPACITY[row] - self._cell_units(row, col)
+                empty = len(self._pattern_lines[row]) == 0
+                capacity = demand if committed or empty or full else 0
 
                 wall_cells[row][col] = 1 if self._wall_tiles[row][col] else 0
                 pending_cells[row][col] = 1 if committed and full else 0
@@ -304,7 +306,7 @@ class Player:
                 wall_col_demand[color_idx][col] += demand
                 wall_tile_demand[color_idx] += demand
                 pattern_demand[color_idx] += demand if committed else 0
-                pattern_capacity[color_idx][row] += demand if committed or empty else 0
+                pattern_capacity[color_idx][row] += capacity
 
         # Sort columns by total demand to help model prioritize near-complete columns.
         wall_col_demand.sort(key=lambda x: sum(x))

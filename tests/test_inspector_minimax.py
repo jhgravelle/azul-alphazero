@@ -120,7 +120,7 @@ def test_root_minimax_is_plus_five():
     tree = _make_tree(game)
     serialized = tree.serialize()
     mm_pts = serialized["minimax_value"] * 50
-    assert abs(mm_pts - 15.0) < 0.5, f"Expected +15pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 5.0) < 0.5, f"Expected +5pts, got {mm_pts:.1f}pts"
 
 
 def test_root_best_move_is_black_to_row5():
@@ -149,7 +149,7 @@ def test_black_to_row5_minimax_is_plus_five():
     )
     assert child is not None
     mm_pts = child["minimax_value"] * 50
-    assert abs(mm_pts - 15.0) < 0.5, f"Expected +15pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 5.0) < 0.5, f"Expected +5pts, got {mm_pts:.1f}pts"
 
 
 def test_white_to_row5_minimax_is_plus_four():
@@ -161,7 +161,7 @@ def test_white_to_row5_minimax_is_plus_four():
     )
     assert child is not None
     mm_pts = child["minimax_value"] * 50
-    assert abs(mm_pts - 12.0) < 0.5, f"Expected +12pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 4.0) < 0.5, f"Expected +4pts, got {mm_pts:.1f}pts"
 
 
 def test_black_to_floor_minimax_is_plus_three():
@@ -173,7 +173,7 @@ def test_black_to_floor_minimax_is_plus_three():
     )
     assert child is not None
     mm_pts = child["minimax_value"] * 50
-    assert abs(mm_pts - 13.0) < 0.5, f"Expected +13pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 3.0) < 0.5, f"Expected +3pts, got {mm_pts:.1f}pts"
 
 
 def test_white_to_floor_minimax_is_plus_two():
@@ -185,7 +185,7 @@ def test_white_to_floor_minimax_is_plus_two():
     )
     assert child is not None
     mm_pts = child["minimax_value"] * 50
-    assert abs(mm_pts - 10.0) < 0.5, f"Expected +10pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 2.0) < 0.5, f"Expected +2pts, got {mm_pts:.1f}pts"
 
 
 def test_after_black_to_row5_p2_best_is_white_to_row5_or_floor():
@@ -219,10 +219,10 @@ def test_after_white_to_row5_p2_best_minimax_is_black_to_row2():
     assert len(p1_node["children"]) > 0
 
     # From P2's perspective (minimising P1), Black→row2 is best for P2
-    # because it gives P1 the least gain (+12 vs +15 for other options).
-    # The minimax value of p1_node should reflect this: +12pts for P1.
+    # because it gives P1 the least gain (+4 vs +5 for other options).
+    # The minimax value of p1_node should reflect this: +4pts for P1.
     mm_pts = p1_node["minimax_value"] * 50
-    assert abs(mm_pts - 12.0) < 0.5, (
-        f"Expected White→row5 minimax to be +12pts (P2 plays Black→row2), "
+    assert abs(mm_pts - 4.0) < 0.5, (
+        f"Expected White→row5 minimax to be +4pts (P2 plays Black→row2), "
         f"got {mm_pts:.1f}pts"
     )

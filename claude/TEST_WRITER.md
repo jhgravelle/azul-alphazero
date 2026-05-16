@@ -65,6 +65,44 @@ Do NOT declare "done" if any tests fail or linting fails. Fix them first.
 - **`Player.from_string()`** — Load known game states for scenario-based tests
 - **Encoding tests** — Use `Player.from_string()` to load state, then assert sections of `encode()` output
 
+### Loading Game State from Recording
+
+When reproducing bugs or testing specific game scenarios from recordings:
+
+1. **Locate the recording file** — Find the `.json` file in `recordings/` directory
+2. **Find the target turn** — Identify the round and turn number in the `rounds[].turns[]` array
+3. **Extract the state** — Copy the `state` array (list of display strings) from that turn
+4. **Clean the strings** — Remove JSON formatting (quotes, commas) to get plain strings
+5. **Load with `Game.from_string()`** — Join the strings and parse into a Game object
+6. **Apply the move** — Parse the move string with `Move.from_str()` and apply it with `player.place()`
+
+**Example:**
+
+```python
+from engine.game import Game
+from engine.move import Move
+
+# State from recording at turn 2 (R1:T01)
+game_state_str = """R1:T01 [1696940010]                               BAG 15 15 16 18 16
+  P1: Player 1   0(  0)  > P2: Player 2   0(  0)  CLR  B  Y  R  K  W
+          . | . . . . .            . | . . . . .  F-1  .  2  1  .  1
+        . . | . . . . .          . . | . . . . .  F-2  .  .  .  .  .
+      . B B | . . . . .        . . . | . . . . .  F-3  1  1  2  .  .
+    . . . . | . . . . .      . . . . | . . . . .  F-4  1  1  .  .  2
+  . . . . . | . . . . .    . . . . . | . . . . .  F-5  1  .  .  2  1
+    ....... |                ....... |            CTR  .  1  1  .  .  F"""
+
+# Load the game state
+game = Game.from_string(game_state_str)
+
+# Apply the move from that turn
+move = Move.from_str("2K-52")
+game.players[1].place(move.destination, [move.tile] * move.count)
+
+# Now inspect player 2's state
+assert game.players[1].pending == 1
+```
+
 ### Test Execution
 
 See **COMMANDS.md** for how to run tests. Common patterns:

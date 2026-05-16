@@ -344,7 +344,9 @@ class Game:
         """
         import re
 
-        lines = text.strip().splitlines()
+        # Strip leading/trailing whitespace including newlines
+        text = text.strip()
+        lines = text.splitlines()
         if len(lines) < 2:
             raise ValueError("Expected at least 2 lines")
 

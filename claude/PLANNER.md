@@ -13,7 +13,7 @@ For any task involving **multiple files, architectural decisions, or scope uncer
 5. **Track progress** — Use `TaskCreate()` to break work into discrete steps; mark complete as you finish each
 6. **Execute the plan** — After plan approval, spawn agents in parallel for independent execution (see **Agent Spawn Patterns** below)
 7. **Suggest code review** — After agents complete, recommend review before commit
-8. **Update docs** — Reflect on execution; update `docs/` files for next session if context changes
+8. **Update docs** — Reflect on execution; update `docs/` files for next session if context changes; update `claude/` agrent roles if appropriate.
 
 Skip planning only for: typo fixes, single-function additions, or when approach is already decided.
 

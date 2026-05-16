@@ -90,7 +90,14 @@ def test_inspect_different_move_index_creates_fresh_tree():
     """A different move_index on the same game creates a new tree."""
     game_id = _get_a_game_id()
     r1 = client.get(f"/inspect/{game_id}/0/state")
+    assert r1.status_code == 200
+
     r2 = client.get(f"/inspect/{game_id}/1/state")
+    # Skip test if the recording doesn't have a second move
+    if r2.status_code == 422:
+        pytest.skip("recording does not have enough moves for this test")
+
+    assert r2.status_code == 200
     # Different positions — tree keys at root will differ
     assert r1.json()["tree"]["key"] != r2.json()["tree"]["key"]
 

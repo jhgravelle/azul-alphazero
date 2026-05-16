@@ -64,7 +64,8 @@ def test_my_wall_reflects_placed_tile():
     game = fresh_game()
     blue = Tile.BLUE
     wall_col = COL_FOR_TILE_ROW[blue][0]
-    game.current_player._wall[0][wall_col] = 1
+    game.current_player._wall_tiles[0][wall_col] = blue
+    game.current_player._encode()
 
     encoding = encode_state(game)
     flat_idx = 0 * SIZE + wall_col
@@ -77,7 +78,8 @@ def test_opponent_wall_reflects_opponent_tiles():
     opponent_index = 1 - game.current_player_index
     yellow = Tile.YELLOW
     wall_col = COL_FOR_TILE_ROW[yellow][2]
-    game.players[opponent_index]._wall[2][wall_col] = 1
+    game.players[opponent_index]._wall_tiles[2][wall_col] = yellow
+    game.players[opponent_index]._encode()
 
     encoding = encode_state(game)
     flat_idx = 2 * SIZE + wall_col
@@ -121,7 +123,8 @@ def test_pattern_line_suppressed_when_wall_filled():
     yellow = Tile.YELLOW
     game.current_player.place(1, [yellow, yellow])
     wall_col = COL_FOR_TILE_ROW[yellow][1]
-    game.current_player._wall[1][wall_col] = 1
+    game.current_player._wall_tiles[1][wall_col] = yellow
+    game.current_player._encode()
 
     encoding = encode_state(game)
     flat_idx = 1 * SIZE + wall_col
@@ -148,7 +151,7 @@ def test_official_score_normalized():
 def test_floor_penalty_normalized():
     game = fresh_game()
     game.current_player._floor_line.extend([Tile.BLUE, Tile.RED])
-    game.current_player._update_penalty()
+    game.current_player._encode()
 
     encoding = encode_state(game)
     assert encoding[OFF_MY_FLOOR].item() != 0.0

@@ -26,7 +26,7 @@ from api.schemas import (
     RecordingSummary,
     RemoveTileRequest,
 )
-from engine.constants import COL_FOR_TILE_ROW, TILE_FOR_ROW_COL, Tile
+from engine.constants import TILE_FOR_ROW_COL, Tile
 from engine.game import Game, Move
 from engine.game_recorder import (
     GameRecorder,
@@ -86,52 +86,44 @@ def _make_agent(player_type: PlayerType) -> Agent | None:
 
 
 def _encode_pattern_lines(player: Player) -> list[list[str]]:
-    """Serialize pattern_grid into the pattern_lines wire format.
+    """Serialize pattern lines into the wire format.
 
     Each row is a list of tile name strings — only the committed color tile
     appears, repeated by fill count. Empty rows are empty lists.
     """
     result = []
     for row in range(5):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             result.append([])
         else:
-            col = COL_FOR_TILE_ROW[tile][row]
-            count = player._pattern_grid[row][col]
+            tile = pattern_row[0]
+            count = len(pattern_row)
             result.append([tile.name] * count)
     return result
 
 
 def _decode_pattern_lines(player: Player, pattern_lines: list[list[str]]) -> None:
-    """Decode the pattern_lines wire format back into player.pattern_grid.
+    """Decode the pattern_lines wire format back into player pattern lines.
 
-    Each row is a list of tile name strings. Fill count equals list length.
-    Clears all grid cells first, then sets the appropriate cell for each row.
+    Each row is a list of tile name strings. All tiles in the list are the
+    same color (the committed tile). Clears all pattern lines first.
     """
     for row in range(5):
-        for col in range(5):
-            player._pattern_grid[row][col] = 0
-    for row, tiles in enumerate(pattern_lines):
-        if not tiles:
-            continue
-        tile = _str_to_tile(tiles[0])
-        col = COL_FOR_TILE_ROW[tile][row]
-        player._pattern_grid[row][col] = len(tiles)
+        player._pattern_lines[row].clear()
+    for row, tile_names in enumerate(pattern_lines):
+        if tile_names:
+            tile = _str_to_tile(tile_names[0])
+            player._pattern_lines[row].extend([tile] * len(tile_names))
 
 
 def _encode_wall(player: Player) -> list[list[str | None]]:
-    """Serialize the binary wall grid into tile name strings.
+    """Serialize the wall grid into tile name strings.
 
-    Filled cells carry the wall pattern color for that position; empty cells
-    are None.
+    Filled cells carry the tile name; empty cells are None.
     """
     return [
-        [
-            TILE_FOR_ROW_COL[row][col].name if player._wall[row][col] else None
-            for col in range(5)
-        ]
-        for row in range(5)
+        [tile.name if tile else None for tile in player.wall[row]] for row in range(5)
     ]
 
 
@@ -160,11 +152,14 @@ def _game_from_snapshot(request: HypotheticalSnapshotRequest) -> Game:
     for player, board_req in zip(game.players, request.boards):
         player.score = board_req.score
         _decode_pattern_lines(player, board_req.pattern_lines)
-        player._wall = _decode_wall(board_req.wall)
+        wall_data = _decode_wall(board_req.wall)
+        for row in range(5):
+            for col in range(5):
+                player._wall_tiles[row][col] = (
+                    TILE_FOR_ROW_COL[row][col] if wall_data[row][col] else None
+                )
         player._floor_line = [_str_to_tile(name) for name in board_req.floor_line]
-        player._update_pending()
-        player._update_penalty()
-        player._update_bonus()
+        player._encode()
 
     return game
 
@@ -598,12 +593,12 @@ def hypothetical_from_snapshot(
 
     for player, scratch_player in zip(_game.players, scratch.players):
         player.score = scratch_player.score
-        player.pending = scratch_player.pending
-        player.penalty = scratch_player.penalty
-        player.bonus = scratch_player.bonus
-        player._pattern_grid = [row[:] for row in scratch_player._pattern_grid]
-        player._wall = [row[:] for row in scratch_player._wall]
-        player._floor_line = scratch_player._floor_line[:]
+        for row in range(5):
+            player._pattern_lines[row][:] = scratch_player._pattern_lines[row][:]
+            for col in range(5):
+                player._wall_tiles[row][col] = scratch_player._wall_tiles[row][col]
+        player._floor_line[:] = scratch_player._floor_line[:]
+        player._encode()
 
     return _build_response(_game)
 
@@ -629,11 +624,14 @@ def hypothetical_replace_snapshot(
     for player, board_req in zip(_game.players, request.boards):
         player.score = board_req.score
         _decode_pattern_lines(player, board_req.pattern_lines)
-        player._wall = _decode_wall(board_req.wall)
+        wall_data = _decode_wall(board_req.wall)
+        for row in range(5):
+            for col in range(5):
+                player._wall_tiles[row][col] = (
+                    TILE_FOR_ROW_COL[row][col] if wall_data[row][col] else None
+                )
         player._floor_line = [_str_to_tile(name) for name in board_req.floor_line]
-        player._update_pending()
-        player._update_penalty()
-        player._update_bonus()
+        player._encode()
 
     return _build_response(_game)
 

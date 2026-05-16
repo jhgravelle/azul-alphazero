@@ -73,9 +73,7 @@ class AlphaBetaAgent(Agent):
         the source count itself as depth — searching as deep as there are
         moves remaining this round.
         """
-        sources = sum(
-            source_count for _, source_count in game.tile_availability().values()
-        )
+        sources = game.total_source_count
         if sources > self.threshold:
             return self.depth
         return sources
@@ -89,9 +87,7 @@ class AlphaBetaAgent(Agent):
         if self.exploration_temperature == 0.0:
             return max(self._root_move_scores, key=lambda pair: pair[1])[0]
 
-        sources = sum(
-            source_count for _, source_count in game.tile_availability().values()
-        )
+        sources = game.total_source_count
         temperature = (
             _END_OF_ROUND_TEMPERATURE
             if sources <= _END_OF_ROUND_SOURCES_THRESHOLD
@@ -157,11 +153,10 @@ class AlphaBetaAgent(Agent):
         moving_player_index = game.current_player_index
         if move.destination == -2:
             return -10.0 if moving_player_index == root_player_index else 10.0
-        from engine.constants import CAPACITY, COL_FOR_TILE_ROW
+        from engine.constants import CAPACITY
 
         capacity = CAPACITY[move.destination]
-        col = COL_FOR_TILE_ROW[move.tile][move.destination]
-        filled = game.current_player._pattern_grid[move.destination][col]
+        filled = len(game.current_player.pattern_lines[move.destination])
         fills_line = filled + 1 >= capacity
         if fills_line:
             return 5.0 if moving_player_index == root_player_index else -5.0

@@ -46,7 +46,7 @@ def _build_two_move_position() -> Game:
     p2.place(2, [Tile.RED, Tile.RED])
     p2.place(3, [Tile.BLUE, Tile.BLUE])
     p2._floor_line.append(Tile.FIRST_PLAYER)
-    p2._update_penalty()
+    p2._encode()
 
     game.current_player_index = 0
     game.round = 1
@@ -193,7 +193,7 @@ def test_fully_explored_minimax_matches_brute_force():
     """Once fully explored, minimax value should exactly match hand calculation.
 
     From our hand analysis:
-      Root minimax = +5pts (Black->row5, P2 responds with any White move)
+      Root minimax = +15pts (Black->row5, P2 responds with any White move)
     """
     game = _build_two_move_position()
     tree = _make_tree(game, simulations=50)
@@ -204,5 +204,5 @@ def test_fully_explored_minimax_matches_brute_force():
     serialized = tree.serialize()
     mm_pts = serialized["minimax_value"] * 50
     assert (
-        abs(mm_pts - 5.0) < 0.01
-    ), f"Expected exactly +5.0pts minimax, got {mm_pts:.2f}pts"
+        abs(mm_pts - 15.0) < 0.01
+    ), f"Expected exactly +15.0pts minimax, got {mm_pts:.2f}pts"

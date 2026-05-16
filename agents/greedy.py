@@ -46,6 +46,6 @@ class GreedyAgent(Agent):
         preferred = [
             m
             for m in color_moves
-            if m.destination >= 0 and max(player._pattern_grid[m.destination]) > 0
+            if m.destination >= 0 and len(player.pattern_lines[m.destination]) > 0
         ]
         return preferred if preferred else color_moves

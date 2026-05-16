@@ -585,6 +585,8 @@ def test_terminal_value_positive_for_winning_player():
     # Rig scores so current player (0) is winning
     game.players[0].score = 40
     game.players[1].score = 20
+    game.players[0]._encode()
+    game.players[1]._encode()
     game.current_player_index = 0
 
     val = tree._terminal_value(game)

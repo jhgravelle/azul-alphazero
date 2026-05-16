@@ -27,9 +27,7 @@ class MinimaxAgent(Agent):
         the source count itself as depth — searching as deep as there are
         moves remaining this round.
         """
-        sources = sum(
-            source_count for _, source_count in game.tile_availability().values()
-        )
+        sources = game.total_source_count
         if sources > self.threshold:
             return self.depth
         return sources

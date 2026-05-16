@@ -201,8 +201,8 @@ class Player:
         # Safety checks
         assert len(tiles) > 0
         assert all(tiles[0] == tile for tile in tiles)
-        assert self.is_tile_valid_for_row(tiles[0], row)
         if row != FLOOR:
+            assert self.is_tile_valid_for_row(tiles[0], row)
             total_count = len(self._pattern_lines[row]) + len(tiles)
             self._pattern_lines[row] = [tiles[0]] * min(CAPACITY[row], total_count)
             tiles = [tiles[0]] * max(0, total_count - CAPACITY[row])
@@ -234,6 +234,33 @@ class Player:
         self._floor_line.clear()
         self._encode()
         return discard
+
+    # endregion
+    # region State access (public properties) --------------------------------
+
+    @property
+    def pattern_lines(self) -> list[list[Tile]]:
+        """Return the pattern lines grid.
+
+        Each row contains tiles placed in order. Empty rows are empty lists.
+        """
+        return self._pattern_lines
+
+    @property
+    def wall(self) -> list[list[Tile | None]]:
+        """Return the wall grid (5×5).
+
+        Each cell contains the placed tile or None if empty.
+        """
+        return self._wall_tiles
+
+    @property
+    def floor_line(self) -> list[Tile]:
+        """Return the floor line tiles.
+
+        Includes FIRST_PLAYER token if present.
+        """
+        return self._floor_line
 
     # endregion
     # region Encoding (private) -----------------------------------------------

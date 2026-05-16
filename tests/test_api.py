@@ -4,7 +4,6 @@
 
 import pytest
 import json
-from engine.constants import COL_FOR_TILE_ROW, TILE_FOR_ROW_COL
 from engine.game import Game
 from fastapi.testclient import TestClient
 
@@ -1228,15 +1227,15 @@ def test_entering_factory_setup_refills_bag_when_empty(client):
 
 
 def _encode_pattern_lines_for_snapshot(player) -> list[list[str]]:
-    """Serialize pattern_grid into the pattern_lines wire format for snapshot tests."""
+    """Serialize pattern lines into the pattern_lines wire format for snapshot tests."""
     result = []
     for row in range(5):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             result.append([])
         else:
-            col = COL_FOR_TILE_ROW[tile][row]
-            count = player.pattern_grid[row][col]
+            tile = pattern_row[0]
+            count = len(pattern_row)
             result.append([tile.name] * count)
     return result
 
@@ -1250,14 +1249,11 @@ def _make_snapshot(game) -> dict:
             {
                 "score": p.score,
                 "wall": [
-                    [
-                        TILE_FOR_ROW_COL[row][col].name if p._wall[row][col] else None
-                        for col in range(5)
-                    ]
+                    [tile.name if tile else None for tile in p.wall[row]]
                     for row in range(5)
                 ],
                 "pattern_lines": _encode_pattern_lines_for_snapshot(p),
-                "floor_line": [t.name for t in p._floor_line],
+                "floor_line": [t.name for t in p.floor_line],
             }
             for p in game.players
         ],

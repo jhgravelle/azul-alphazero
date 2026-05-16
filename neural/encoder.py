@@ -97,6 +97,11 @@ MAX_SOURCES: float = 5.0
 # ── Internal helpers — board state encoders ───────────────────────────────
 
 
+def _wall_to_binary(wall: list[list]) -> list[list[int]]:
+    """Convert wall structure (Tile | None) to binary (0/1)."""
+    return [[1 if cell else 0 for cell in row] for row in wall]
+
+
 def _encode_wall_flattened(
     encoding: torch.Tensor,
     offset: int,
@@ -118,14 +123,15 @@ def _encode_pattern_line_fill_ratio_flattened(
 ) -> None:
     """Write pattern line fill ratio into flattened positions."""
     for row in range(SIZE):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             continue
+        tile = pattern_row[0]
         wall_col = COL_FOR_TILE_ROW[tile][row]
         if wall[row][wall_col]:
             continue
         capacity = row + 1
-        fill_count = player._pattern_grid[row][wall_col]
+        fill_count = len(pattern_row)
         if fill_count == 0:
             continue
         fill_ratio = fill_count / capacity
@@ -170,7 +176,7 @@ def _encode_flat_first_player_tokens(
 
 def _encode_flat_game_tiles(flat: torch.Tensor, game: Game) -> None:
     """Write tiles-available, sources-with-color, and bag-count features."""
-    availability = game.tile_availability()
+    availability = game._tile_availability()
     for color_idx, color in enumerate(COLOR_TILES):
         total_tiles, source_count = availability[color]
         flat[OFF_TILES_AVAILABLE + color_idx] = total_tiles / MAX_BAG_TILES
@@ -217,13 +223,16 @@ def encode_state(game: Game) -> torch.Tensor:
 
     encoding = torch.zeros(FLAT_SIZE, dtype=torch.float32)
 
-    _encode_wall_flattened(encoding, OFF_MY_WALL, my_player._wall)
-    _encode_wall_flattened(encoding, OFF_OPP_WALL, opp_player._wall)
+    my_wall_binary = _wall_to_binary(my_player.wall)
+    opp_wall_binary = _wall_to_binary(opp_player.wall)
+
+    _encode_wall_flattened(encoding, OFF_MY_WALL, my_wall_binary)
+    _encode_wall_flattened(encoding, OFF_OPP_WALL, opp_wall_binary)
     _encode_pattern_line_fill_ratio_flattened(
-        encoding, OFF_MY_PATTERN, my_player, my_player._wall
+        encoding, OFF_MY_PATTERN, my_player, my_wall_binary
     )
     _encode_pattern_line_fill_ratio_flattened(
-        encoding, OFF_OPP_PATTERN, opp_player, opp_player._wall
+        encoding, OFF_OPP_PATTERN, opp_player, opp_wall_binary
     )
 
     _encode_flat_scores(encoding, my_player, opp_player)

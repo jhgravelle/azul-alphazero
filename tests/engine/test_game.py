@@ -133,7 +133,7 @@ def test_legal_moves_include_floor_option(game_after_setup):
 
 
 def test_tile_availability_returns_dict(game_after_setup):
-    """_tile_availability() returns a dictionary."""
+    """tile_availability() returns a dictionary."""
     avail = game_after_setup._tile_availability()
     assert isinstance(avail, dict)
     # Should have entries for each color tile

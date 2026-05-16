@@ -17,7 +17,6 @@ from engine.constants import (
     CELLS_BY_TILE,
     COL_FOR_TILE_ROW,
     PLAYERS,
-    TILE_FOR_ROW_COL,
 )
 from engine.game import Game, Move, Tile
 from engine.player import Player
@@ -56,14 +55,15 @@ def _pending_placement_details(player: Player) -> list[dict[str, Any]]:
     """
     from engine.constants import CAPACITY
 
-    wall: list[list[int]] = [row[:] for row in player._wall]
+    wall = [[1 if player.wall[row][col] else 0 for col in range(5)] for row in range(5)]
     details = []
     for row in range(5):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             continue
+        tile = pattern_row[0]
         col = COL_FOR_TILE_ROW[tile][row]
-        if player._pattern_grid[row][col] < CAPACITY[row]:
+        if len(pattern_row) < CAPACITY[row]:
             continue
         wall[row][col] = 1
         points = _score_placement(wall, row, col)
@@ -122,13 +122,14 @@ def _build_post_placement_wall(player: Player) -> list[list[int]]:
     """Return a copy of the wall with all pending full pattern lines placed."""
     from engine.constants import CAPACITY
 
-    wall: list[list[int]] = [row[:] for row in player._wall]
+    wall = [[1 if player.wall[row][col] else 0 for col in range(5)] for row in range(5)]
     for row in range(5):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             continue
+        tile = pattern_row[0]
         col = COL_FOR_TILE_ROW[tile][row]
-        if player._pattern_grid[row][col] >= CAPACITY[row]:
+        if len(pattern_row) >= CAPACITY[row]:
             wall[row][col] = 1
     return wall
 
@@ -141,25 +142,20 @@ def _player_to_dict(player: Player) -> dict[str, Any]:
 
     pattern_lines = []
     for row in range(5):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             pattern_lines.append([])
         else:
-            col = COL_FOR_TILE_ROW[tile][row]
-            count = player._pattern_grid[row][col]
-            pattern_lines.append([tile.name] * count)
+            tile = pattern_row[0]
+            pattern_lines.append([tile.name] * len(pattern_row))
     wall = [
-        [
-            TILE_FOR_ROW_COL[row][col].name if player._wall[row][col] else None
-            for col in range(5)
-        ]
-        for row in range(5)
+        [tile.name if tile else None for tile in player.wall[row]] for row in range(5)
     ]
     return {
         "score": player.score,
         "pattern_lines": pattern_lines,
         "wall": wall,
-        "floor_line": [tile.name for tile in player._floor_line],
+        "floor_line": [tile.name for tile in player.floor_line],
     }
 
 

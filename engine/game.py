@@ -568,6 +568,16 @@ class Game:
                     source_counts[color] += 1
         return {color: (totals[color], source_counts[color]) for color in COLOR_TILES}
 
+    @property
+    def total_source_count(self) -> int:
+        """Return the total number of non-empty tile sources (factories + center).
+
+        Used by agents for search depth heuristics: more sources means the game
+        is earlier in the round with more moves to explore.
+        """
+        availability = self._tile_availability()
+        return sum(source_count for _, source_count in availability.values())
+
     # endregion
 
     # region Turn execution -------------------------------------------------

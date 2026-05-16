@@ -4,7 +4,6 @@ import pytest
 from engine.move import Move
 from engine.constants import Tile, CENTER, FLOOR
 
-
 # region Initialization -------------------------------------------------
 
 

@@ -4,7 +4,6 @@ import pytest
 from engine.game import Game, Move
 from engine.constants import Tile, CENTER, FLOOR, TILES_PER_FACTORY, NUMBER_OF_FACTORIES
 
-
 # region Fixtures -------------------------------------------------------
 
 

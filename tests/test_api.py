@@ -278,8 +278,9 @@ def test_saved_recording_is_valid_json(client_with_recordings):
     saved_files = list(tmp_path.glob("*.json"))
     assert len(saved_files) == 1
     data = json.loads(saved_files[0].read_text())
-    assert "game_id" in data
+    assert "timestamp" in data
     assert "rounds" in data
+    assert "final_score_display" in data
 
 
 # endregion

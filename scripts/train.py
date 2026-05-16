@@ -190,7 +190,7 @@ def _record_showcase_game(
             break
         agent = agents[game.current_player_index]
         move = agent.choose_move(game)
-        recorder.record_move(move, game.current_player_index)
+        recorder.record_move(move, game, game.current_player_index)
         game.make_move(move)
         game.advance()
         if game.is_game_over():

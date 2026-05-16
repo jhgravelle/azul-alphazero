@@ -415,7 +415,7 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
         raise HTTPException(status_code=422, detail="Illegal move")
 
     if _recorder is not None:
-        _recorder.record_move(move, player_index=_game.current_player_index)
+        _recorder.record_move(move, _game, player_index=_game.current_player_index)
 
     _push_history()
     _game.make_move(move)
@@ -495,7 +495,7 @@ def agent_move() -> GameStateResponse:
     )
 
     if _recorder is not None:
-        _recorder.record_move(move, player_index=current)
+        _recorder.record_move(move, _game, player_index=current)
 
     _push_history()
     _game.make_move(move)

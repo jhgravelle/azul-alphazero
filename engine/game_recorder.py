@@ -35,12 +35,23 @@ class MoveRecord:
 
 
 @dataclass
+class TurnRecord:
+    """A single turn: move and resulting game state."""
+
+    turn: int
+    state: list[str]
+    move: str
+
+
+@dataclass
 class RoundRecord:
     """The factory layout and moves for one round."""
 
     round: int
-    factories: list[list[str]]
-    center: list[str]
+    factories: list[list[str]] = field(default_factory=list)
+    center: list[str] = field(default_factory=list)
+    round_display: str = ""
+    turns: list[TurnRecord] = field(default_factory=list)
     moves: list[MoveRecord] = field(default_factory=list)
 
 
@@ -189,6 +200,8 @@ class GameRecord:
     rounds: list[RoundRecord] = field(default_factory=list)
     final_scores: list[int] = field(default_factory=list)
     winner: int | None = None
+    final_score_display: str = ""
+    final_state: list[str] = field(default_factory=list)
 
     def reconstruct(
         self,
@@ -258,59 +271,69 @@ class GameRecord:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
         return {
-            "game_id": self.game_id,
             "timestamp": self.timestamp,
-            "player_names": self.player_names,
-            "player_types": self.player_types,
             "rounds": [
                 {
                     "round": r.round,
-                    "factories": r.factories,
-                    "center": r.center,
-                    "moves": [
+                    "round_display": r.round_display,
+                    "turns": [
                         {
-                            "player_index": m.player_index,
-                            "source": m.source,
-                            "tile": m.tile,
-                            "destination": m.destination,
+                            "turn": t.turn,
+                            "state": t.state,
+                            "move": t.move,
                         }
-                        for m in r.moves
+                        for t in r.turns
                     ],
                 }
                 for r in self.rounds
             ],
-            "final_scores": self.final_scores,
-            "winner": self.winner,
+            "final_score_display": self.final_score_display,
+            "final_state": self.final_state,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GameRecord":
-        """Deserialize from a dict (e.g. loaded from JSON)."""
+        """Deserialize from a dict (e.g. loaded from JSON).
+
+        Note: reconstructing games from JSON with only state strings (no factories)
+        requires parsing the game display. For now, we populate factories field
+        from data if available, but it's optional for new JSON format.
+        """
         rounds = [
             RoundRecord(
                 round=r["round"],
-                factories=r["factories"],
+                factories=r.get("factories", []),
                 center=r.get("center", ["FIRST_PLAYER"]),
-                moves=[
-                    MoveRecord(
-                        player_index=m["player_index"],
-                        source=m["source"],
-                        tile=m["tile"],
-                        destination=m["destination"],
+                round_display=r.get("round_display", ""),
+                turns=[
+                    TurnRecord(
+                        turn=t["turn"],
+                        state=(
+                            t.get("state", [])
+                            if isinstance(t.get("state"), list)
+                            else [t.get("state", "")]
+                        ),
+                        move=t["move"],
                     )
-                    for m in r.get("moves", [])
+                    for t in r.get("turns", [])
                 ],
             )
             for r in data.get("rounds", [])
         ]
+        final_state = data.get("final_state", [])
+        if isinstance(final_state, str):
+            final_state = [final_state] if final_state else []
+
         return cls(
-            game_id=data["game_id"],
+            game_id=data.get("game_id", ""),
             timestamp=data["timestamp"],
-            player_names=data["player_names"],
+            player_names=data.get("player_names", []),
             player_types=data.get("player_types", []),
             rounds=rounds,
             final_scores=data.get("final_scores", []),
             winner=data.get("winner"),
+            final_score_display=data.get("final_score_display", ""),
+            final_state=final_state,
         )
 
     @classmethod
@@ -344,21 +367,34 @@ class GameRecorder:
             player_types=player_types,
         )
         self._current_round: RoundRecord | None = None
+        self._turn_count: int = 0
 
     def start_round(self, game: Game) -> None:
         """Capture the factory layout at the start of a round."""
+        round_display = f"=== Round {game.round} ==="
         round_record = RoundRecord(
             round=game.round,
+            round_display=round_display,
             factories=[[tile.name for tile in factory] for factory in game.factories],
             center=[tile.name for tile in game.center],
         )
         self.record.rounds.append(round_record)
         self._current_round = round_record
+        self._turn_count = 0
 
-    def record_move(self, move: Move, player_index: int = 0) -> None:
+    def record_move(self, move: Move, game: Game, player_index: int = 0) -> None:
         """Record a move within the current round."""
         if self._current_round is None:
             raise RuntimeError("start_round must be called before record_move")
+        self._turn_count += 1
+        move_str = self._format_move(move, game)
+        state_lines = str(game).splitlines()
+        turn_record = TurnRecord(
+            turn=self._turn_count,
+            state=state_lines,
+            move=move_str,
+        )
+        self._current_round.turns.append(turn_record)
         self._current_round.moves.append(
             MoveRecord(
                 player_index=player_index,
@@ -368,6 +404,26 @@ class GameRecorder:
             )
         )
 
+    def _format_move(self, move: Move, game: Game) -> str:
+        """Format a move as a string with count from tiles in the source."""
+        from engine.constants import CENTER
+
+        if move.source == CENTER:
+            tiles = game.center
+        else:
+            tiles = game.factories[move.source]
+        count = sum(1 for t in tiles if t == move.tile)
+        took_first = move.source == CENTER and Tile.FIRST_PLAYER in tiles
+
+        move_with_count = Move(
+            tile=move.tile,
+            source=move.source,
+            destination=move.destination,
+            count=count,
+            took_first=took_first,
+        )
+        return str(move_with_count)
+
     def finalize(self, game: Game) -> None:
         """Record final scores and winner."""
         self.record.final_scores = [p.score for p in game.players]
@@ -375,6 +431,12 @@ class GameRecorder:
         best = max(scores)
         winners = [i for i, s in enumerate(scores) if s == best]
         self.record.winner = winners[0] if len(winners) == 1 else None
+
+        self.record.final_state = str(game).splitlines()
+        score_parts = [
+            f"{name}: {score}" for name, score in zip(self.player_names, scores)
+        ]
+        self.record.final_score_display = "  ".join(score_parts)
 
     def to_json(self) -> str:
         """Serialize the full game record to a JSON string."""

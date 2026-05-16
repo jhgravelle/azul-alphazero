@@ -115,43 +115,36 @@ class Game:
     def __str__(self) -> str:
         """Multi-line display of the full game state.
 
-        Three columns side by side, horizontally aligned row by row:
-          - Column 0: tile table (bag counts, colour header, F1-F5, center)
-          - Column 1+: one column per player (pattern lines, wall, floor)
+        Three columns side by side, horizontally aligned:
+          - Column 1: Player columns (P1 + P2 side-by-side)
+          - Column 2: Gap
+          - Column 3: tile table (BAG, CLR, F1-F5, CTR)
 
         Row alignment:
-          row 0  BAG row       name line
-          row 1  CLR header    score line
-          rows 2-6  F1-F5      pattern rows 1-5
-          row 7  CTR           floor line
+          row 0  Header (R#:T## [SEED])  BAG row
+          row 1  Player headers           CLR header
+          rows 2-7  Player patterns       F1-F5 + CTR
 
-        The current player's name is prefixed with "> ".
+        Current player is marked with "> " prefix on their header.
 
         Example:
-            Round 1  |  Bag: 80  Discard: 0
-            BAG 18 16 17 16 13  > Player 1 (human)        Player 2 (human)
-            CLR  B  Y  R  K  W   0+ 0- 0+ 0= 0             0+ 0- 0+ 0= 0
-            F1   .  1  .  1  2      .|.....                    .|.....
-            F2   1  1  1  1  .     ..|.....                   ..|.....
-            F3   .  2  .  1  1    ...|.....                  ...|.....
-            F4   1  .  1  .  2   ....|.....                 ....|.....
-            F5   .  .  1  1  2  .....|.....                .....|.....
-            CTR  .  .  .  .  .  F  .......|                  .......|
+            R1:T00 [0000000042]                                BAG 18 16 17 16 13
+            > P1: Human      0(  0)    P2: AB8:2      0(  0)   CLR  B  Y  R  K  W
+                      . | . . . . .            . | . . . . .   F-1  .  1  .  1  2
         """
-        return "\n".join([self._format_round_line()] + self._format_all_columns())
+        return "\n".join(self._format_game_display())
 
     def __repr__(self) -> str:
         return str(self)
 
     def _format_round_line(self) -> str:
-        """Return the game header line.
+        """Return the game header line with zero-padded seed.
 
-        Format: {round}:{turn:02d} [{seed}]  P1: {name} ({agent}) vs P2: ...
+        Format: R{round}:T{turn:02d} [{seed:010d}]
 
-        Example: 1:03 [189204712]  P1: Alice (alphabeta_hard) vs P2: Bob (human)
+        Example: R1:T03 [0000000042]
         """
-        player_turn = f"P{self.current_player_index + 1}: {self.current_player.name}"
-        return f"R{self.round}:T{self.turn:02d} [{self.seed}] {player_turn}"
+        return f"R{self.round}:T{self.turn:02d} [{self.seed:010d}]"
 
     def _tile_table_row(self, label: str, cells: list[str]) -> str:
         """Format one row of the tile table: left-justified label + right-justified
@@ -191,36 +184,74 @@ class Game:
         ]
 
     def _build_player_lines(self, player_index: int) -> list[str]:
-        """Return Player.__str__ lines for one player, prefixing the name
-        with "> " when that player is current."""
+        """Return Player.__str__ lines for one player, prefixing with player
+        index and marking current player with "> "."""
         lines = str(self.players[player_index]).splitlines()
+        player_num = player_index + 1
         if player_index == self.current_player_index:
-            lines[0] = f">{lines[0][1:]}"
+            prefix = f"> P{player_num}: "
+        else:
+            prefix = f"  P{player_num}: "
+        # Prefix is exactly 6 characters to replace the 6 leading spaces
+        # Replace the 6 leading spaces with the prefix
+        lines[0] = prefix + lines[0][6:]
         return lines
 
-    def _format_all_columns(self) -> list[str]:
-        """Zip tile-table and all player columns into aligned rows.
+    def _format_game_display(self) -> list[str]:
+        """Build the 3-column game display: players left, factories right.
 
-        Each column except the last is padded to its natural maximum line
-        width before the gap is appended, so columns stay stable regardless
-        of tile counts or score values.
+        Layout:
+          - Row 0: Round/Turn/Seed + BAG counts
+          - Row 1: Player headers + CLR header
+          - Rows 2-7: Player patterns + Factory/Center rows
+
+        Each column except the last is padded to maximum width before gap.
         """
-        columns = [self._build_tile_table_lines()] + [
-            self._build_player_lines(i) for i in range(len(self.players))
+        tile_table_lines = self._build_tile_table_lines()
+        player_columns = [self._build_player_lines(i) for i in range(len(self.players))]
+
+        # Calculate column widths for player columns
+        player_widths = [
+            max((len(line) for line in col), default=0) for col in player_columns
         ]
-        row_count = max(len(col) for col in columns)
-        column_widths = [max((len(line) for line in col), default=0) for col in columns]
+        total_player_width = sum(player_widths) + (len(player_columns) - 1) * len(
+            PLAYER_COLUMN_GAP
+        )
+
         rows = []
-        for row_index in range(row_count):
-            parts = []
-            for col_index, col in enumerate(columns):
-                line = col[row_index] if row_index < len(col) else ""
-                is_last_column = col_index == len(columns) - 1
+
+        # Row 0: Round header + BAG
+        round_line = self._format_round_line()
+        bag_line = tile_table_lines[0]
+        header_row = round_line.ljust(total_player_width) + PLAYER_COLUMN_GAP + bag_line
+        rows.append(header_row)
+
+        # Rows 1-7: Player content + tile table content
+        # Note: row 0 is special, so player row i maps to display row i+1
+        max_rows = max(len(col) for col in player_columns + [tile_table_lines])
+        for row_idx in range(1, max_rows):
+            player_parts = []
+            for col_idx, col in enumerate(player_columns):
+                # row_idx=1 uses col[0] (header), row_idx=2 uses col[1] (pattern 1)
+                player_row_idx = row_idx - 1
+                line = col[player_row_idx] if player_row_idx < len(col) else ""
+                is_last_player_col = col_idx == len(player_columns) - 1
                 padded = (
-                    line if is_last_column else line.ljust(column_widths[col_index])
+                    line if is_last_player_col else line.ljust(player_widths[col_idx])
                 )
-                parts.append(padded)
-            rows.append(PLAYER_COLUMN_GAP.join(parts))
+                player_parts.append(padded)
+
+            players_str = PLAYER_COLUMN_GAP.join(player_parts)
+
+            # Build tile table part
+            tile_line = (
+                tile_table_lines[row_idx] if row_idx < len(tile_table_lines) else ""
+            )
+
+            rows.append(
+                players_str.ljust(total_player_width) + PLAYER_COLUMN_GAP + tile_line
+            )
+
         return rows
 
     # endregion
@@ -317,84 +348,84 @@ class Game:
         if len(lines) < 2:
             raise ValueError("Expected at least 2 lines")
 
-        # Parse the round line: R{round}:T{turn:02d} [{seed}] P{idx}: {name}
-        round_line = lines[0]
+        # Parse the header line: R{round}:T{turn:02d} [{seed:010d}]
+        header_line = lines[0]
         try:
-            match = re.match(r"R(\d+):T(\d+)\s+\[(\d+)\]\s+P(\d+):", round_line)
+            match = re.match(r"R(\d+):T(\d+)\s+\[(\d+)\]", header_line)
             if not match:
-                raise ValueError(f"Invalid round line format: {round_line!r}")
+                raise ValueError(f"Invalid header line format: {header_line!r}")
             round_num = int(match.group(1))
             turn_num = int(match.group(2))
             seed = int(match.group(3))
-            current_player_index = int(match.group(4)) - 1  # Convert to 0-based
         except (ValueError, AttributeError) as exc:
-            raise ValueError(f"Invalid round line format: {round_line!r}") from exc
+            raise ValueError(f"Invalid header line format: {header_line!r}") from exc
 
-        # The remaining lines contain tile table + player displays
-        # Layout: tile_table (21 chars) + gap (2) + player cols (23 each, gap 2)
+        # The first data line (line 0) has the header info and BAG on the right
+        # The remaining lines have player displays + tile table (CLR, F1-F5, CTR)
+        if len(lines) < 3:
+            raise ValueError("Expected at least 3 lines (header + 2 data rows)")
+
         data_lines = lines[1:]
 
-        # Determine the number of players from the first data line
-        if not data_lines:
-            raise ValueError("No data lines found")
+        # Find where the tile table starts by looking for tile table patterns
+        tile_table_col_start = cls._find_tile_table_split(data_lines)
 
-        # Tile table is 0:21, gap is 21:23, then players start at 23
-        # Each player column is 23 chars, separated by "  " (2 chars)
-        TILE_TABLE_WIDTH = 21
-        PLAYER_WIDTH = 23
-        GAP = 2
-
+        # Separate player lines from tile table lines
+        # First, extract BAG from the header line (line 0)
+        header_line = lines[0]
         tile_table_lines = []
-        player_line_groups = []
+        if tile_table_col_start < len(header_line):
+            bag_section = header_line[tile_table_col_start:].lstrip()
+            if bag_section:
+                tile_table_lines.append(bag_section)
 
+        # Then process the remaining data lines
+        player_lines_all = []
         for line in data_lines:
-            # Extract tile table (0:21)
-            tile_table_lines.append(line[:TILE_TABLE_WIDTH].rstrip())
+            if tile_table_col_start < len(line):
+                player_section = line[:tile_table_col_start].rstrip()
+                tile_section = line[tile_table_col_start:].lstrip()
+            else:
+                player_section = line.rstrip()
+                tile_section = ""
 
-            # Extract player columns starting at position 23
-            pos = TILE_TABLE_WIDTH + GAP
-            player_idx = 0
-            while pos < len(line):
-                # Extract player column
-                player_end = pos + PLAYER_WIDTH
-                player_text = line[pos:player_end].rstrip() if pos < len(line) else ""
+            player_lines_all.append(player_section)
+            if tile_section:
+                tile_table_lines.append(tile_section)
 
-                # Ensure we have enough player groups
-                if len(player_line_groups) <= player_idx:
-                    player_line_groups.append([])
-
-                player_line_groups[player_idx].append(player_text)
-                pos = player_end + GAP
-                player_idx += 1
-
-        if not tile_table_lines:
-            raise ValueError("Could not parse tile table")
-        if not player_line_groups:
-            raise ValueError("Could not parse player displays")
-
-        # Parse tile table
+        # Parse tile table to reconstruct factories and center
         factories, center, bag = cls._parse_tile_table(tile_table_lines)
 
-        # Parse players
+        # Extract individual player columns from combined player lines
+        player_line_groups = cls._extract_player_columns(player_lines_all)
+
+        # Parse players and detect current player from ">" marker
+        current_player_index = 0
         players = []
-        for player_idx, player_text_lines in enumerate(player_line_groups):
-            # Remove trailing empty lines and right-side padding
-            player_text_lines = [
-                line.rstrip() for line in player_text_lines if line.strip()
-            ]
+        for player_idx, player_lines in enumerate(player_line_groups):
+            # Remove empty lines and strip whitespace
+            player_lines = [line.rstrip() for line in player_lines if line.strip()]
 
-            # If the first line has ">", remove it (marker for current player)
-            if player_text_lines and player_text_lines[0].startswith(">"):
-                player_text_lines[0] = " " + player_text_lines[0][1:]
-
-            # Ensure we have exactly 7 lines for Player.from_string()
-            if len(player_text_lines) != 7:
+            if len(player_lines) != 7:
                 raise ValueError(
-                    f"Expected 7 lines for player {player_idx}, "
-                    f"got {len(player_text_lines)}"
+                    f"Expected 7 lines for player {player_idx}, got {len(player_lines)}"
                 )
 
-            player_text = "\n".join(player_text_lines)
+            # Replace player prefix with 6 leading spaces for Player.from_string()
+            # Prefixes are: "> P{num}: " (6 chars) or "  P{num}: " (6 chars)
+            header = player_lines[0]
+            if header.startswith(">"):
+                # Current player: "> P{num}: " (6 chars total) -> "      " (6 spaces)
+                current_player_index = player_idx
+                player_lines[0] = "      " + header[6:]
+            elif header.startswith("  P"):
+                # Other player: "  P{num}: " (6 chars) -> "      " (6 spaces)
+                player_lines[0] = "      " + header[6:]
+            else:
+                # Fallback: already has correct format
+                pass
+
+            player_text = "\n".join(player_lines)
             player = Player.from_string(player_text)
             players.append(player)
 
@@ -414,6 +445,88 @@ class Game:
         game._encode()
 
         return game
+
+    @classmethod
+    def _find_tile_table_split(cls, data_lines: list[str]) -> int:
+        """Find the column position where the tile table starts.
+
+        Scans for tile table patterns (BAG, CLR, F-, CTR) and finds the
+        most consistent column position across lines.
+        """
+        tile_patterns = ["BAG", "CLR", "F-", "CTR"]
+        split_positions = []
+
+        for line in data_lines:
+            # Find the rightmost occurrence of any tile table pattern
+            for pattern in tile_patterns:
+                pos = line.find(pattern)
+                if pos >= 0:
+                    # Account for possible leading spaces in tile section
+                    # Tile table starts just before the label
+                    split_positions.append(max(0, pos - 1))
+                    break
+
+        if not split_positions:
+            # Fallback: typical player column width is ~46 chars for 2 players + gap
+            return 50
+
+        # Return the most common split position, or a conservative estimate
+        return min(split_positions) if split_positions else 50
+
+    @classmethod
+    def _extract_player_columns(cls, player_lines: list[str]) -> list[list[str]]:
+        """Extract individual player column data from combined player lines.
+
+        Players are side-by-side, separated by a 2-space gap. This method
+        identifies the gaps by looking for the most consistent "  " pattern
+        across all lines (particularly the header line).
+        """
+        if not player_lines:
+            raise ValueError("No player lines to parse")
+
+        # Use the first (header) line to find the gap position
+        # The header line has "P1:" and "P2:" which are good anchors
+        header_line = player_lines[0]
+
+        # Look for "  P" pattern which indicates the start of "P2:"
+        # OR look for the most significant gap in the header line
+        gap_pos = None
+
+        # Try to find "  P" pattern (gap before P2:)
+        for i in range(len(header_line) - 2):
+            if header_line[i : i + 3] == "  P" and i > 15:  # Must be after P1:
+                gap_pos = i
+                break
+
+        if gap_pos is None:
+            # Fallback: find the largest gap by looking for "  " patterns
+            # that appear early in the header line (player names)
+            max_gap = None
+            for i in range(15, min(35, len(header_line) - 1)):
+                if header_line[i : i + 2] == "  ":
+                    if max_gap is None or i > max_gap:
+                        max_gap = i
+
+            gap_pos = max_gap if max_gap is not None else 27
+
+        # Extract players into two columns
+        player_line_groups = [[], []]
+
+        for line in player_lines:
+            # First player: from 0 to gap_pos
+            player1_text = (
+                line[:gap_pos].rstrip() if gap_pos < len(line) else line.rstrip()
+            )
+            player_line_groups[0].append(player1_text)
+
+            # Second player: include gap (2 spaces) as prefix part
+            if gap_pos + 2 < len(line):
+                player2_text = line[gap_pos:].rstrip()
+            else:
+                player2_text = ""
+            player_line_groups[1].append(player2_text)
+
+        return player_line_groups
 
     @staticmethod
     def _parse_tile_table(

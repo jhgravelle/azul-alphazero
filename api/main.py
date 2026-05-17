@@ -786,6 +786,40 @@ def setup_factories_load(request: list[list[str]]) -> GameStateResponse:
     return _build_response(_game)
 
 
+def _parse_metadata_from_final_state(
+    final_state: list[str],
+) -> tuple[list[str], list[int], int | None]:
+    """Extract player_names, final_scores, and winner from final_state display.
+
+    final_state is a list of strings. The second line has format:
+      "  P1: Player 1  46( 46)  > P2: Player 2  69( 69)  CLR  B  Y  R  K  W"
+    """
+    if len(final_state) < 2:
+        return [], [], None
+
+    line = final_state[1]
+    player_names = []
+    final_scores = []
+
+    import re
+
+    pattern = r"P\d+:\s+([^\s]+(?:\s+[^\s]+)*?)\s+(\d+)\("
+    matches = re.findall(pattern, line)
+
+    for name, score_str in matches:
+        player_names.append(name)
+        final_scores.append(int(score_str))
+
+    winner = None
+    if len(final_scores) == 2:
+        if final_scores[0] > final_scores[1]:
+            winner = 0
+        elif final_scores[1] > final_scores[0]:
+            winner = 1
+
+    return player_names, final_scores, winner
+
+
 @app.get("/recordings", response_model=list[RecordingSummary])
 def list_recordings() -> list[RecordingSummary]:
     folders = {
@@ -800,13 +834,23 @@ def list_recordings() -> list[RecordingSummary]:
         for path in folder_path.glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                game_id = data.get("game_id", "")
+                player_names = data.get("player_names", [])
+                final_scores = data.get("final_scores", [])
+                winner = data.get("winner")
+
+                if not player_names or not final_scores:
+                    player_names, final_scores, winner = (
+                        _parse_metadata_from_final_state(data.get("final_state", []))
+                    )
+
                 summaries.append(
                     RecordingSummary(
-                        game_id=data["game_id"],
+                        game_id=game_id,
                         timestamp=data["timestamp"],
-                        player_names=data["player_names"],
-                        final_scores=data.get("final_scores", []),
-                        winner=data.get("winner"),
+                        player_names=player_names,
+                        final_scores=final_scores,
+                        winner=winner,
                         folder=folder_name,
                     )
                 )
@@ -832,11 +876,19 @@ def get_recording(game_id: str) -> dict:
                 if data.get("game_id") == game_id:
                     record = GameRecord.from_dict(data)
                     computed_turns, final_boards = record.reconstruct()
-                    return {
-                        **data,
-                        "computed_turns": computed_turns,
-                        "final_boards": final_boards,
-                    }
+                    result = dict(data)
+                    if not result.get("player_names"):
+                        player_names, final_scores, winner = (
+                            _parse_metadata_from_final_state(
+                                result.get("final_state", [])
+                            )
+                        )
+                        result["player_names"] = player_names
+                        result["final_scores"] = final_scores
+                        result["winner"] = winner
+                    result["computed_turns"] = computed_turns
+                    result["final_boards"] = final_boards
+                    return result
             except Exception:
                 logger.exception("failed to load or reconstruct recording %s", game_id)
                 raise HTTPException(
@@ -1026,7 +1078,7 @@ def _inspector_load(
             detail=f"Recording {game_id!r} not found",
         )
 
-    total_moves = sum(len(r.moves) for r in record.rounds)
+    total_moves = sum(len(r.turns) for r in record.rounds)
     if move_index < 0 or move_index > total_moves:
         raise HTTPException(
             status_code=422,

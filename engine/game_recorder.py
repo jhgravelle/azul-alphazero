@@ -2,6 +2,7 @@
 """Game recorder for capturing Azul games for replay and analysis."""
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,14 +46,12 @@ class TurnRecord:
 
 @dataclass
 class RoundRecord:
-    """The factory layout and moves for one round."""
+    """The starting state and turns for one round."""
 
     round: int
-    factories: list[list[str]] = field(default_factory=list)
-    center: list[str] = field(default_factory=list)
     round_display: str = ""
+    starting_state: list[str] = field(default_factory=list)
     turns: list[TurnRecord] = field(default_factory=list)
-    moves: list[MoveRecord] = field(default_factory=list)
 
 
 # ── Pending breakdown helpers ──────────────────────────────────────────────
@@ -186,6 +185,30 @@ def _counts(tile_list: list[Tile]) -> dict[str, int]:
     return {t.name: tile_list.count(t) for t in colors}
 
 
+def _extract_seed_from_starting_state(starting_state: list[str]) -> int:
+    """Extract the seed from the first line of a starting state.
+
+    Format: R{round}:T{turn} [{seed:010d}]
+    Uses regex to extract the seed value in square brackets.
+
+    Args:
+        starting_state: List of state display strings, first line has header
+
+    Returns:
+        The seed as an integer
+
+    Raises:
+        ValueError: If the seed cannot be extracted
+    """
+    if not starting_state:
+        raise ValueError("starting_state cannot be empty")
+    first_line = starting_state[0]
+    match = re.search(r"\[(\d+)\]", first_line)
+    if not match:
+        raise ValueError(f"Could not extract seed from: {first_line!r}")
+    return int(match.group(1))
+
+
 # ── GameRecord ─────────────────────────────────────────────────────────────
 
 
@@ -206,21 +229,39 @@ class GameRecord:
     def reconstruct(
         self,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Replay all moves and return (computed_turns, final_boards)."""
-        game = Game()
+        """Replay all moves and return (computed_turns, final_boards).
+
+        Creates a single Game instance with the seed from the first round,
+        then replays all moves sequentially across all rounds. Uses game.advance()
+        to handle round transitions automatically.
+        """
         computed_turns: list[dict[str, Any]] = []
 
-        for round_record in self.rounds:
-            explicit_factories = [
-                [Tile[name] for name in factory] for factory in round_record.factories
-            ]
-            game.setup_round(factories=explicit_factories)
+        if not self.rounds:
+            return computed_turns, []
 
-            if not computed_turns:
+        # Extract seed from the first round's starting state
+        seed = _extract_seed_from_starting_state(self.rounds[0].starting_state)
+
+        # Create a single game instance with the seed
+        game = Game(seed=seed)
+
+        # Track whether this is the first entry
+        is_first_entry = True
+
+        # Replay all moves across all rounds
+        for round_record in self.rounds:
+            # Initialize the round (on first round, call setup_round; on later rounds,
+            # it's already been set up by advance() at the previous round boundary)
+            if round_record.round == 1:
+                game.setup_round()
+
+            # Add initial state for this round (only on first round)
+            if is_first_entry:
                 computed_turns.append(
                     {
                         "round": round_record.round,
-                        "player_index": 0,
+                        "player_index": game.current_player_index,
                         "source": None,
                         "tile": None,
                         "destination": None,
@@ -235,23 +276,23 @@ class GameRecord:
                         "is_initial": True,
                     }
                 )
+                is_first_entry = False
 
-            for move_record in round_record.moves:
-                move = Move(
-                    source=move_record.source,
-                    tile=Tile[move_record.tile],
-                    destination=move_record.destination,
-                )
-                game.make_move(move)
-                game.advance(skip_setup=True)
+            # Replay all turns in the round
+            for turn_record in round_record.turns:
+                move = None
+                if turn_record.move:
+                    move = Move.from_str(turn_record.move)
+                    game.make_move(move)
+                    game.advance()
 
                 computed_turns.append(
                     {
                         "round": round_record.round,
-                        "player_index": move_record.player_index,
-                        "source": move_record.source,
-                        "tile": move_record.tile,
-                        "destination": move_record.destination,
+                        "player_index": game.current_player_index,
+                        "source": move.source if move else None,
+                        "tile": move.tile.name if move else None,
+                        "destination": move.destination if move else None,
                         "boards": [
                             _player_to_dict_with_pending(p) for p in game.players
                         ],
@@ -271,16 +312,18 @@ class GameRecord:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
         return {
+            "game_id": self.game_id,
             "timestamp": self.timestamp,
             "rounds": [
                 {
                     "round": r.round,
                     "round_display": r.round_display,
+                    "starting_state": r.starting_state,
                     "turns": [
                         {
                             "turn": t.turn,
-                            "state": t.state,
                             "move": t.move,
+                            "state": t.state,
                         }
                         for t in r.turns
                     ],
@@ -295,25 +338,22 @@ class GameRecord:
     def from_dict(cls, data: dict[str, Any]) -> "GameRecord":
         """Deserialize from a dict (e.g. loaded from JSON).
 
-        Note: reconstructing games from JSON with only state strings (no factories)
-        requires parsing the game display. For now, we populate factories field
-        from data if available, but it's optional for new JSON format.
+        Expects the new format with starting_state for each round.
         """
         rounds = [
             RoundRecord(
                 round=r["round"],
-                factories=r.get("factories", []),
-                center=r.get("center", ["FIRST_PLAYER"]),
                 round_display=r.get("round_display", ""),
+                starting_state=r.get("starting_state", []),
                 turns=[
                     TurnRecord(
                         turn=t["turn"],
+                        move=t["move"],
                         state=(
                             t.get("state", [])
                             if isinstance(t.get("state"), list)
                             else [t.get("state", "")]
                         ),
-                        move=t["move"],
                     )
                     for t in r.get("turns", [])
                 ],
@@ -370,14 +410,13 @@ class GameRecorder:
         self._turn_count: int = 0
 
     def start_round(self, game: Game) -> None:
-        """Capture the factory layout at the start of a round."""
+        """Capture the game state at the start of a round."""
         round_display = f"=== Round {game.round} ==="
         round_record = RoundRecord(
             round=game.round,
             round_display=round_display,
-            factories=[[tile.name for tile in factory] for factory in game.factories],
-            center=[tile.name for tile in game.center],
         )
+        round_record.starting_state = str(game).splitlines()
         self.record.rounds.append(round_record)
         self._current_round = round_record
         self._turn_count = 0
@@ -391,18 +430,10 @@ class GameRecorder:
         state_lines = str(game).splitlines()
         turn_record = TurnRecord(
             turn=self._turn_count,
-            state=state_lines,
             move=move_str,
+            state=state_lines,
         )
         self._current_round.turns.append(turn_record)
-        self._current_round.moves.append(
-            MoveRecord(
-                player_index=player_index,
-                source=move.source,
-                tile=move.tile.name,
-                destination=move.destination,
-            )
-        )
 
     def _format_move(self, move: Move, game: Game) -> str:
         """Format a move as a string with count from tiles in the source."""

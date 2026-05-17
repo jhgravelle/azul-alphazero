@@ -37,7 +37,7 @@ def _record_full_game() -> GameRecord:
 
 
 def _total_moves(record: GameRecord) -> int:
-    return sum(len(r.moves) for r in record.rounds)
+    return sum(len(r.turns) for r in record.rounds)
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ def test_replay_to_move_preserves_round_boundaries():
         pytest.skip("Game too short to test round boundaries")
 
     # Index of the last move in round 1
-    moves_in_round_1 = len(record.rounds[0].moves)
+    moves_in_round_1 = len(record.rounds[0].turns)
     game = replay_to_move(record, moves_in_round_1)
 
     # After the last move of round 1, round scoring + setup has happened,

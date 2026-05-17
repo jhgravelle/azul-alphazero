@@ -89,32 +89,37 @@ def test_start_round_adds_round_record():
     assert len(recorder.record.rounds) == 1
 
 
-def test_start_round_captures_factories():
+def test_start_round_captures_starting_state():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
     round_record = recorder.record.rounds[0]
-    assert len(round_record.factories) == len(game.factories)
+    assert len(round_record.starting_state) > 0
 
 
-def test_start_round_captures_center():
+def test_start_round_has_starting_state_in_record():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
     round_record = recorder.record.rounds[0]
-    assert "FIRST_PLAYER" in round_record.center
+    # Starting state should be a list of strings (the game state repr)
+    assert isinstance(round_record.starting_state, list)
+    assert len(round_record.starting_state) > 0
 
 
-def test_start_round_factories_use_tile_names():
+def test_start_round_starting_state_contains_tile_info():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
-    for factory in recorder.record.rounds[0].factories:
-        for tile_name in factory:
-            assert tile_name in ("BLUE", "YELLOW", "RED", "BLACK", "WHITE")
+    # Starting state is stored as stringified game state
+    state_str = "\n".join(recorder.record.rounds[0].starting_state)
+    # Verify it contains tile abbreviations used in the display
+    tile_abbrev = ("B", "Y", "R", "K", "W")
+    has_tiles = any(abbrev in state_str for abbrev in tile_abbrev)
+    assert has_tiles
 
 
 def test_start_round_captures_round_number():
@@ -145,47 +150,52 @@ def test_record_move_adds_to_current_round():
     recorder.start_round(game)
     move = _first_legal_move(game)
     recorder.record_move(move, game)
-    assert len(recorder.record.rounds[0].moves) == 1
+    assert len(recorder.record.rounds[0].turns) == 1
 
 
-def test_record_move_captures_source():
+def test_record_move_captures_move_string():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
     recorder.record_move(move, game)
-    assert recorder.record.rounds[0].moves[0].source == move.source
+    assert len(recorder.record.rounds[0].turns[0].move) > 0
 
 
-def test_record_move_captures_tile():
+def test_record_move_captures_state():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
     recorder.record_move(move, game)
-    assert recorder.record.rounds[0].moves[0].tile == move.tile.name
+    assert isinstance(recorder.record.rounds[0].turns[0].state, list)
+    assert len(recorder.record.rounds[0].turns[0].state) > 0
 
 
-def test_record_move_captures_destination():
+def test_record_move_increments_turn_count():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
     recorder.record_move(move, game)
-    assert recorder.record.rounds[0].moves[0].destination == move.destination
+    assert recorder.record.rounds[0].turns[0].turn == 1
 
 
-def test_record_move_captures_player_index():
+def test_record_move_multiple_moves():
     game = Game()
     game.setup_round()
     recorder = GameRecorder()
     recorder.start_round(game)
-    move = _first_legal_move(game)
-    recorder.record_move(move, game, player_index=game.current_player_index)
-    assert recorder.record.rounds[0].moves[0].player_index == 0
+    move1 = _first_legal_move(game)
+    recorder.record_move(move1, game, player_index=game.current_player_index)
+    game.make_move(move1)
+    game.advance()
+    move2 = _first_legal_move(game)
+    recorder.record_move(move2, game, player_index=game.current_player_index)
+    assert len(recorder.record.rounds[0].turns) == 2
 
 
 def test_record_move_before_start_round_raises():
@@ -290,6 +300,7 @@ def test_round_trip_preserves_moves(tmp_path):
 def test_round_trip_preserves_factories(tmp_path):
     game = Game()
     game.setup_round()
+    original_factory_count = len(game.factories)
     recorder = GameRecorder()
     recorder.start_round(game)
 
@@ -297,9 +308,15 @@ def test_round_trip_preserves_factories(tmp_path):
     recorder.save(path)
     loaded = GameRecord.load(path)
 
-    # Factories not serialized (redundant with state), preserved internally
-    assert len(recorder.record.rounds[0].factories) == len(game.factories)
+    # Factories are not serialized (redundant with starting_state)
+    # but can be reconstructed from starting_state
     assert len(loaded.rounds) == 1
+    round_record = loaded.rounds[0]
+    assert len(round_record.starting_state) > 0
+
+    # Reconstruct game from starting_state
+    reconstructed_game = Game.from_string("\n".join(round_record.starting_state))
+    assert len(reconstructed_game.factories) == original_factory_count
 
 
 def test_round_trip_preserves_player_types(tmp_path):
@@ -341,7 +358,7 @@ def test_reconstruct_returns_one_state_per_move():
             last_round = game.round
 
     states, _ = recorder.record.reconstruct()
-    total_moves = sum(len(r.moves) for r in recorder.record.rounds)
+    total_moves = sum(len(r.turns) for r in recorder.record.rounds)
     assert len(states) == total_moves + 1  # +1 for initial state
 
 

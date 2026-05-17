@@ -201,7 +201,7 @@ def test_move_is_recorded(client_with_recordings):
         },
     )
     assert main._recorder is not None
-    total_moves = sum(len(r.moves) for r in main._recorder.record.rounds)
+    total_moves = sum(len(r.turns) for r in main._recorder.record.rounds)
     assert total_moves == 1
 
 
@@ -222,7 +222,7 @@ def test_multiple_moves_are_all_recorded(client_with_recordings):
                 },
             )
     assert main._recorder is not None
-    total_moves = sum(len(r.moves) for r in main._recorder.record.rounds)
+    total_moves = sum(len(r.turns) for r in main._recorder.record.rounds)
     assert total_moves == 3
 
 

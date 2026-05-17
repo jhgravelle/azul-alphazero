@@ -29,9 +29,9 @@ def _play_full_game(recorder: GameRecorder | None = None) -> Game:
         if not moves:
             break
         move = moves[0]
+        game.make_move(move)
         if recorder:
             recorder.record_move(move, player_index=game.current_player_index)
-        game.make_move(move)
         game.advance()
         if recorder and not game.is_game_over() and game.round != last_round:
             recorder.start_round(game)
@@ -149,6 +149,7 @@ def test_record_move_adds_to_current_round():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
+    game.make_move(move)
     recorder.record_move(move, game)
     assert len(recorder.record.rounds[0].turns) == 1
 
@@ -159,6 +160,7 @@ def test_record_move_captures_move_string():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
+    game.make_move(move)
     recorder.record_move(move, game)
     assert len(recorder.record.rounds[0].turns[0].move) > 0
 
@@ -169,6 +171,7 @@ def test_record_move_captures_state():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
+    game.make_move(move)
     recorder.record_move(move, game)
     assert isinstance(recorder.record.rounds[0].turns[0].state, list)
     assert len(recorder.record.rounds[0].turns[0].state) > 0
@@ -180,6 +183,7 @@ def test_record_move_increments_turn_count():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
+    game.make_move(move)
     recorder.record_move(move, game)
     assert recorder.record.rounds[0].turns[0].turn == 1
 
@@ -190,10 +194,11 @@ def test_record_move_multiple_moves():
     recorder = GameRecorder()
     recorder.start_round(game)
     move1 = _first_legal_move(game)
-    recorder.record_move(move1, game, player_index=game.current_player_index)
     game.make_move(move1)
+    recorder.record_move(move1, game, player_index=game.current_player_index)
     game.advance()
     move2 = _first_legal_move(game)
+    game.make_move(move2)
     recorder.record_move(move2, game, player_index=game.current_player_index)
     assert len(recorder.record.rounds[0].turns) == 2
 
@@ -220,8 +225,8 @@ def test_finalize_sets_final_scores():
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, game, player_index=game.current_player_index)
         game.make_move(move)
+        recorder.record_move(move, game, player_index=game.current_player_index)
         game.advance()
         if game.round > recorder.record.rounds[-1].round and not game.is_game_over():
             recorder.start_round(game)
@@ -241,8 +246,8 @@ def test_finalize_winner_has_highest_score():
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, game, player_index=game.current_player_index)
         game.make_move(move)
+        recorder.record_move(move, game, player_index=game.current_player_index)
         game.advance()
         if game.round > recorder.record.rounds[-1].round and not game.is_game_over():
             recorder.start_round(game)
@@ -263,6 +268,7 @@ def test_to_json_is_valid_json():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
+    game.make_move(move)
     recorder.record_move(move, game, player_index=game.current_player_index)
     assert isinstance(json.loads(recorder.to_json()), dict)
 
@@ -273,6 +279,7 @@ def test_to_json_contains_rounds():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
+    game.make_move(move)
     recorder.record_move(move, game, player_index=game.current_player_index)
     parsed = json.loads(recorder.to_json())
     assert "rounds" in parsed
@@ -285,6 +292,7 @@ def test_round_trip_preserves_moves(tmp_path):
     recorder = GameRecorder(player_names=["Alice", "Bob"])
     recorder.start_round(game)
     move = _first_legal_move(game)
+    game.make_move(move)
     recorder.record_move(move, game, player_index=game.current_player_index)
 
     path = tmp_path / "game.json"
@@ -350,8 +358,8 @@ def test_reconstruct_returns_one_state_per_move():
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, game, player_index=game.current_player_index)
         game.make_move(move)
+        recorder.record_move(move, game, player_index=game.current_player_index)
         game.advance()
         if game.round != last_round and not game.is_game_over():
             recorder.start_round(game)
@@ -373,8 +381,8 @@ def test_reconstruct_final_boards_reflect_scoring():
         if not moves:
             break
         move = moves[0]
-        recorder.record_move(move, game, player_index=game.current_player_index)
         game.make_move(move)
+        recorder.record_move(move, game, player_index=game.current_player_index)
         game.advance()
         if game.round > recorder.record.rounds[-1].round and not game.is_game_over():
             recorder.start_round(game)
@@ -394,8 +402,8 @@ def test_reconstruct_grand_totals_are_after_move():
     recorder = GameRecorder()
     recorder.start_round(game)
     move = _first_legal_move(game)
-    recorder.record_move(move, game, player_index=game.current_player_index)
     game.make_move(move)
+    recorder.record_move(move, game, player_index=game.current_player_index)
 
     states, _ = recorder.record.reconstruct()
     # After first move, at least one player's grand total should be >= 0.

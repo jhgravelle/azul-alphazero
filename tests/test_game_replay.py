@@ -24,8 +24,8 @@ def _record_full_game() -> GameRecord:
 
     while not game.is_game_over():
         move = agents[game.current_player_index].choose_move(game)
-        recorder.record_move(move, game, player_index=game.current_player_index)
         game.make_move(move)
+        recorder.record_move(move, game, player_index=game.current_player_index)
         round_ended = game.advance(skip_setup=True)
         if round_ended and not game.is_game_over():
             print(f"center before setup: {game.center}")  # temporary debug

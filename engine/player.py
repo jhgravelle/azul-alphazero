@@ -156,7 +156,7 @@ class Player:
             # Check if all color demands for this row can be met
             # wall_row_demand is [color_idx * SIZE + row]
             all_demands_met = all(
-                wall_row_demand_slice[color_idx * SIZE + row]
+                wall_row_demand_slice[row * SIZE + color_idx]
                 <= tiles_available[color_idx]
                 for color_idx in range(SIZE)
             )
@@ -302,8 +302,8 @@ class Player:
                 wall_cells[row][col] = 1 if self._wall_tiles[row][col] else 0
                 pending_cells[row][col] = 1 if committed and full else 0
                 adjacency_cells[row][col] = self._adjacency(row, col, for_score=False)
-                wall_row_demand[color_idx][row] += demand
-                wall_col_demand[color_idx][col] += demand
+                wall_row_demand[row][color_idx] += demand
+                wall_col_demand[col][color_idx] += demand
                 wall_tile_demand[color_idx] += demand
                 pattern_demand[color_idx] += demand if committed else 0
                 pattern_capacity[color_idx][row] += capacity

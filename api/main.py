@@ -414,11 +414,11 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
     if move not in _game.legal_moves():
         raise HTTPException(status_code=422, detail="Illegal move")
 
-    if _recorder is not None:
-        _recorder.record_move(move, _game, player_index=_game.current_player_index)
-
     _push_history()
     _game.make_move(move)
+
+    if _recorder is not None:
+        _recorder.record_move(move, _game, player_index=_game.current_player_index)
 
     if _search_tree is not None:
         _search_tree.advance(move)
@@ -494,11 +494,12 @@ def agent_move() -> GameStateResponse:
         else agent.choose_move(_game)
     )
 
+    _push_history()
+    _game.make_move(move)
+
     if _recorder is not None:
         _recorder.record_move(move, _game, player_index=current)
 
-    _push_history()
-    _game.make_move(move)
     if _search_tree is not None:
         _search_tree.advance(move)
 

@@ -419,7 +419,6 @@ class GameRecorder:
         round_record.starting_state = str(game).splitlines()
         self.record.rounds.append(round_record)
         self._current_round = round_record
-        self._turn_count = 0
 
     def record_move(self, move: Move, game: Game, player_index: int = 0) -> None:
         """Record a move within the current round."""

@@ -45,10 +45,9 @@ import torch
 import torch.nn.functional as F
 
 from engine.constants import (
-    BOARD_SIZE,
+    SIZE,
     COLOR_TILES,
-    COLUMN_FOR_TILE_IN_ROW,
-    CUMULATIVE_FLOOR_PENALTIES,
+    COL_FOR_TILE_ROW,
     PLAYERS,
     TILES_PER_COLOR,
     Tile,
@@ -60,13 +59,13 @@ from engine.player import Player
 
 NUM_FACTORIES: int = 2 * PLAYERS + 1
 NUM_SOURCES: int = NUM_FACTORIES + 1  # factories + center
-NUM_DESTINATIONS: int = BOARD_SIZE + 1  # pattern lines + floor
-MOVE_SPACE_SIZE: int = NUM_SOURCES * BOARD_SIZE * NUM_DESTINATIONS
+NUM_DESTINATIONS: int = SIZE + 1  # pattern lines + floor
+MOVE_SPACE_SIZE: int = NUM_SOURCES * SIZE * NUM_DESTINATIONS
 
 # ── Encoding constants ────────────────────────────────────────────────────
 
 NUM_COLORS: int = len(COLOR_TILES)  # 5
-BOARD_CELLS: int = BOARD_SIZE * BOARD_SIZE  # 25
+BOARD_CELLS: int = SIZE * SIZE  # 25
 
 OFF_MY_PATTERN: int = 0  # 25 values
 OFF_MY_WALL: int = 25  # 25 values
@@ -91,13 +90,16 @@ FLAT_SIZE: int = 125
 
 # ── Normalization constants ────────────────────────────────────────────────
 
-MAX_SCORE_DIVISOR: float = 100.0
-EARNED_DIVISOR: float = 100.0
-FLOOR_PENALTY_DIVISOR: float = 14.0
+SCORING_DIVISOR: float = 100.0
 MAX_BAG_TILES: float = float(TILES_PER_COLOR)  # 20
 MAX_SOURCES: float = 5.0
 
 # ── Internal helpers — board state encoders ───────────────────────────────
+
+
+def _wall_to_binary(wall: list[list]) -> list[list[int]]:
+    """Convert wall structure (Tile | None) to binary (0/1)."""
+    return [[1 if cell else 0 for cell in row] for row in wall]
 
 
 def _encode_wall_flattened(
@@ -106,10 +108,10 @@ def _encode_wall_flattened(
     wall: list[list[int]],
 ) -> None:
     """Write 1.0 for each occupied wall cell into flattened positions."""
-    for row in range(BOARD_SIZE):
-        for wall_col in range(BOARD_SIZE):
+    for row in range(SIZE):
+        for wall_col in range(SIZE):
             if wall[row][wall_col]:
-                flat_idx = row * BOARD_SIZE + wall_col
+                flat_idx = row * SIZE + wall_col
                 encoding[offset + flat_idx] = 1.0
 
 
@@ -120,19 +122,20 @@ def _encode_pattern_line_fill_ratio_flattened(
     wall: list[list[int]],
 ) -> None:
     """Write pattern line fill ratio into flattened positions."""
-    for row in range(BOARD_SIZE):
-        tile = player._line_tile(row)
-        if tile is None:
+    for row in range(SIZE):
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             continue
-        wall_col = COLUMN_FOR_TILE_IN_ROW[tile][row]
+        tile = pattern_row[0]
+        wall_col = COL_FOR_TILE_ROW[tile][row]
         if wall[row][wall_col]:
             continue
         capacity = row + 1
-        fill_count = player.pattern_grid[row][wall_col]
+        fill_count = len(pattern_row)
         if fill_count == 0:
             continue
         fill_ratio = fill_count / capacity
-        flat_idx = row * BOARD_SIZE + wall_col
+        flat_idx = row * SIZE + wall_col
         encoding[offset + flat_idx] = fill_ratio
 
 
@@ -145,10 +148,10 @@ def _encode_flat_scores(
     opp_player: Player,
 ) -> None:
     """Write official scores and earned values."""
-    flat[OFF_MY_SCORE] = my_player.score / MAX_SCORE_DIVISOR
-    flat[OFF_MY_EARNED] = my_player.earned / EARNED_DIVISOR
-    flat[OFF_OPP_SCORE] = opp_player.score / MAX_SCORE_DIVISOR
-    flat[OFF_OPP_EARNED] = opp_player.earned / EARNED_DIVISOR
+    flat[OFF_MY_SCORE] = my_player.score / SCORING_DIVISOR
+    flat[OFF_MY_EARNED] = my_player.earned / SCORING_DIVISOR
+    flat[OFF_OPP_SCORE] = opp_player.score / SCORING_DIVISOR
+    flat[OFF_OPP_EARNED] = opp_player.earned / SCORING_DIVISOR
 
 
 def _encode_flat_floor_penalties(
@@ -157,12 +160,8 @@ def _encode_flat_floor_penalties(
     opp_player: Player,
 ) -> None:
     """Write floor penalty values normalized by max penalty."""
-    flat[OFF_MY_FLOOR] = (
-        CUMULATIVE_FLOOR_PENALTIES[len(my_player.floor_line)] / FLOOR_PENALTY_DIVISOR
-    )
-    flat[OFF_OPP_FLOOR] = (
-        CUMULATIVE_FLOOR_PENALTIES[len(opp_player.floor_line)] / FLOOR_PENALTY_DIVISOR
-    )
+    flat[OFF_MY_FLOOR] = my_player.penalty / SCORING_DIVISOR
+    flat[OFF_OPP_FLOOR] = opp_player.penalty / SCORING_DIVISOR
 
 
 def _encode_flat_first_player_tokens(
@@ -171,13 +170,13 @@ def _encode_flat_first_player_tokens(
     opp_player: Player,
 ) -> None:
     """Write first-player token flags for each player."""
-    flat[OFF_MY_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in my_player.floor_line else 0.0
-    flat[OFF_OPP_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in opp_player.floor_line else 0.0
+    flat[OFF_MY_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in my_player._floor_line else 0.0
+    flat[OFF_OPP_FP_TOKEN] = 1.0 if Tile.FIRST_PLAYER in opp_player._floor_line else 0.0
 
 
 def _encode_flat_game_tiles(flat: torch.Tensor, game: Game) -> None:
     """Write tiles-available, sources-with-color, and bag-count features."""
-    availability = game.tile_availability()
+    availability = game._tile_availability()
     for color_idx, color in enumerate(COLOR_TILES):
         total_tiles, source_count = availability[color]
         flat[OFF_TILES_AVAILABLE + color_idx] = total_tiles / MAX_BAG_TILES
@@ -197,11 +196,11 @@ def _idx_to_source(idx: int) -> int:
 
 
 def _dest_to_idx(destination: int) -> int:
-    return BOARD_SIZE if destination == FLOOR else destination
+    return SIZE if destination == FLOOR else destination
 
 
 def _idx_to_dest(idx: int) -> int:
-    return FLOOR if idx == BOARD_SIZE else idx
+    return FLOOR if idx == SIZE else idx
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -224,13 +223,16 @@ def encode_state(game: Game) -> torch.Tensor:
 
     encoding = torch.zeros(FLAT_SIZE, dtype=torch.float32)
 
-    _encode_wall_flattened(encoding, OFF_MY_WALL, my_player.wall)
-    _encode_wall_flattened(encoding, OFF_OPP_WALL, opp_player.wall)
+    my_wall_binary = _wall_to_binary(my_player.wall)
+    opp_wall_binary = _wall_to_binary(opp_player.wall)
+
+    _encode_wall_flattened(encoding, OFF_MY_WALL, my_wall_binary)
+    _encode_wall_flattened(encoding, OFF_OPP_WALL, opp_wall_binary)
     _encode_pattern_line_fill_ratio_flattened(
-        encoding, OFF_MY_PATTERN, my_player, my_player.wall
+        encoding, OFF_MY_PATTERN, my_player, my_wall_binary
     )
     _encode_pattern_line_fill_ratio_flattened(
-        encoding, OFF_OPP_PATTERN, opp_player, opp_player.wall
+        encoding, OFF_OPP_PATTERN, opp_player, opp_wall_binary
     )
 
     _encode_flat_scores(encoding, my_player, opp_player)
@@ -247,15 +249,13 @@ def encode_move(move: Move, _game: Game) -> int:
     color_idx = COLOR_TILES.index(move.tile)
     dest_idx = _dest_to_idx(move.destination)
     return (
-        source_idx * (BOARD_SIZE * NUM_DESTINATIONS)
-        + color_idx * NUM_DESTINATIONS
-        + dest_idx
+        source_idx * (SIZE * NUM_DESTINATIONS) + color_idx * NUM_DESTINATIONS + dest_idx
     )
 
 
 def decode_move(index: int, _game: Game) -> Move:
     """Decode an integer index back into a Move."""
-    source_idx, remainder = divmod(index, BOARD_SIZE * NUM_DESTINATIONS)
+    source_idx, remainder = divmod(index, SIZE * NUM_DESTINATIONS)
     color_idx, dest_idx = divmod(remainder, NUM_DESTINATIONS)
     return Move(
         source=_idx_to_source(source_idx),
@@ -305,7 +305,7 @@ def flat_policy_to_3head_targets(
     """
     B = flat_policy.shape[0]
     # Reshape to (B, NUM_SOURCES=7, BOARD_SIZE=5, NUM_DESTINATIONS=6)
-    p3 = flat_policy.view(B, NUM_SOURCES, BOARD_SIZE, NUM_DESTINATIONS)
+    p3 = flat_policy.view(B, NUM_SOURCES, SIZE, NUM_DESTINATIONS)
 
     tile_targets = p3.sum(dim=1).sum(dim=2)  # (B, 5)
     dst_targets = p3.sum(dim=1).sum(dim=1)  # (B, 6)

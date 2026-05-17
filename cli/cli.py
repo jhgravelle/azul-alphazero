@@ -10,7 +10,7 @@ import os
 import re
 from engine.game import FLOOR, WALL_PATTERN, Game, Move
 from engine.tile import Tile
-from engine.constants import BOARD_SIZE
+from engine.constants import SIZE
 
 # Enable ANSI escape codes on Windows
 os.system("color")
@@ -90,20 +90,20 @@ def render_player_board(player, player_idx: int) -> list[str]:
     lines.append("")
     lines.append("  Pattern lines    Wall")
 
-    for row in range(BOARD_SIZE):
+    for row in range(SIZE):
         cap = row + 1
         pattern = player.pattern_lines[row]
 
         # Pattern line — only cap dots wide, right-aligned in BOARD_SIZE field
         pattern_cells = [render_tile(None)] * (cap - len(pattern))
         pattern_cells += [render_tile(t) for t in pattern]
-        padding = " " * (BOARD_SIZE - cap) * 2
+        padding = " " * (SIZE - cap) * 2
         pattern_str = padding + " ".join(pattern_cells)
 
         # Wall row with dim colored hints for empty cells
         wall_cells = [
             render_tile(player.wall[row][col], hint=WALL_PATTERN[row][col])
-            for col in range(BOARD_SIZE)
+            for col in range(SIZE)
         ]
         wall_str = " ".join(wall_cells)
 

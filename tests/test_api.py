@@ -4,7 +4,6 @@
 
 import pytest
 import json
-from engine.constants import COLUMN_FOR_TILE_IN_ROW, WALL_PATTERN
 from engine.game import Game
 from fastapi.testclient import TestClient
 
@@ -202,7 +201,7 @@ def test_move_is_recorded(client_with_recordings):
         },
     )
     assert main._recorder is not None
-    total_moves = sum(len(r.moves) for r in main._recorder.record.rounds)
+    total_moves = sum(len(r.turns) for r in main._recorder.record.rounds)
     assert total_moves == 1
 
 
@@ -223,7 +222,7 @@ def test_multiple_moves_are_all_recorded(client_with_recordings):
                 },
             )
     assert main._recorder is not None
-    total_moves = sum(len(r.moves) for r in main._recorder.record.rounds)
+    total_moves = sum(len(r.turns) for r in main._recorder.record.rounds)
     assert total_moves == 3
 
 
@@ -279,8 +278,9 @@ def test_saved_recording_is_valid_json(client_with_recordings):
     saved_files = list(tmp_path.glob("*.json"))
     assert len(saved_files) == 1
     data = json.loads(saved_files[0].read_text())
-    assert "game_id" in data
+    assert "timestamp" in data
     assert "rounds" in data
+    assert "final_score_display" in data
 
 
 # endregion
@@ -1228,15 +1228,15 @@ def test_entering_factory_setup_refills_bag_when_empty(client):
 
 
 def _encode_pattern_lines_for_snapshot(player) -> list[list[str]]:
-    """Serialize pattern_grid into the pattern_lines wire format for snapshot tests."""
+    """Serialize pattern lines into the pattern_lines wire format for snapshot tests."""
     result = []
     for row in range(5):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             result.append([])
         else:
-            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-            count = player.pattern_grid[row][col]
+            tile = pattern_row[0]
+            count = len(pattern_row)
             result.append([tile.name] * count)
     return result
 
@@ -1250,10 +1250,7 @@ def _make_snapshot(game) -> dict:
             {
                 "score": p.score,
                 "wall": [
-                    [
-                        WALL_PATTERN[row][col].name if p.wall[row][col] else None
-                        for col in range(5)
-                    ]
+                    [tile.name if tile else None for tile in p.wall[row]]
                     for row in range(5)
                 ],
                 "pattern_lines": _encode_pattern_lines_for_snapshot(p),

@@ -45,8 +45,8 @@ def _build_position() -> Game:
     p2.place(1, [Tile.BLACK])
     p2.place(2, [Tile.RED, Tile.RED])
     p2.place(3, [Tile.BLUE, Tile.BLUE])
-    p2.floor_line.append(Tile.FIRST_PLAYER)
-    p2._update_penalty()
+    p2._floor_line.append(Tile.FIRST_PLAYER)
+    p2._encode()
 
     game.current_player_index = 0
     game.round = 1
@@ -115,12 +115,12 @@ def test_position_legal_destinations_are_row5_and_floor():
 # ── Root minimax ──────────────────────────────────────────────────────────────
 
 
-def test_root_minimax_is_plus_four():
+def test_root_minimax_is_plus_five():
     game = _build_position()
     tree = _make_tree(game)
     serialized = tree.serialize()
     mm_pts = serialized["minimax_value"] * 50
-    assert abs(mm_pts - 4.0) < 0.5, f"Expected +4pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 5.0) < 0.5, f"Expected +5pts, got {mm_pts:.1f}pts"
 
 
 def test_root_best_move_is_black_to_row5():
@@ -140,7 +140,7 @@ def test_root_best_move_is_black_to_row5():
 # ── Per-branch minimax ────────────────────────────────────────────────────────
 
 
-def test_black_to_row5_minimax_is_plus_four():
+def test_black_to_row5_minimax_is_plus_five():
     game = _build_position()
     tree = _make_tree(game)
     serialized = tree.serialize()
@@ -149,7 +149,7 @@ def test_black_to_row5_minimax_is_plus_four():
     )
     assert child is not None
     mm_pts = child["minimax_value"] * 50
-    assert abs(mm_pts - 4.0) < 0.5, f"Expected +4pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 5.0) < 0.5, f"Expected +5pts, got {mm_pts:.1f}pts"
 
 
 def test_white_to_row5_minimax_is_plus_four():
@@ -164,7 +164,7 @@ def test_white_to_row5_minimax_is_plus_four():
     assert abs(mm_pts - 4.0) < 0.5, f"Expected +4pts, got {mm_pts:.1f}pts"
 
 
-def test_black_to_floor_minimax_is_plus_two():
+def test_black_to_floor_minimax_is_plus_three():
     game = _build_position()
     tree = _make_tree(game)
     serialized = tree.serialize()
@@ -173,7 +173,7 @@ def test_black_to_floor_minimax_is_plus_two():
     )
     assert child is not None
     mm_pts = child["minimax_value"] * 50
-    assert abs(mm_pts - 2.0) < 0.5, f"Expected +2pts, got {mm_pts:.1f}pts"
+    assert abs(mm_pts - 3.0) < 0.5, f"Expected +3pts, got {mm_pts:.1f}pts"
 
 
 def test_white_to_floor_minimax_is_plus_two():

@@ -40,6 +40,6 @@ class EfficientAgent(Agent):
         preferred = [
             m
             for m in moves
-            if m.destination >= 0 and max(player.pattern_grid[m.destination]) > 0
+            if m.destination >= 0 and len(player.pattern_lines[m.destination]) > 0
         ]
         return preferred if preferred else moves

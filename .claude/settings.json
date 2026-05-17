@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm *)",
+      "PowerShell(Remove-Item *)"
+    ],
+    "ask": [
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(git branch -D *)",
+      "PowerShell(git push --force *)",
+      "PowerShell(git reset --hard *)",
+      "PowerShell(git branch -D *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Evaluating file write/edit: $ARGUMENTS\n\nIs this modifying a critical file (settings, config, .gitignore, pipeline files) in a destructive way? Only block if the change appears to be data loss or critical configuration corruption (not normal edits).\n\nIf concerning, respond with: {\"decision\": \"block\", \"reason\": \"...\"}.\nOtherwise: {\"decision\": \"allow\"}.",
+            "statusMessage": "Validating file operation..."
+          }
+        ]
+      }
+    ]
+  }
+}

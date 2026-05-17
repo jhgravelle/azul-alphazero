@@ -26,7 +26,7 @@ from api.schemas import (
     RecordingSummary,
     RemoveTileRequest,
 )
-from engine.constants import COLUMN_FOR_TILE_IN_ROW, WALL_PATTERN, Tile
+from engine.constants import TILE_FOR_ROW_COL, Tile
 from engine.game import Game, Move
 from engine.game_recorder import (
     GameRecorder,
@@ -86,52 +86,44 @@ def _make_agent(player_type: PlayerType) -> Agent | None:
 
 
 def _encode_pattern_lines(player: Player) -> list[list[str]]:
-    """Serialize pattern_grid into the pattern_lines wire format.
+    """Serialize pattern lines into the wire format.
 
     Each row is a list of tile name strings — only the committed color tile
     appears, repeated by fill count. Empty rows are empty lists.
     """
     result = []
     for row in range(5):
-        tile = player._line_tile(row)
-        if tile is None:
+        pattern_row = player.pattern_lines[row]
+        if not pattern_row:
             result.append([])
         else:
-            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-            count = player.pattern_grid[row][col]
+            tile = pattern_row[0]
+            count = len(pattern_row)
             result.append([tile.name] * count)
     return result
 
 
 def _decode_pattern_lines(player: Player, pattern_lines: list[list[str]]) -> None:
-    """Decode the pattern_lines wire format back into player.pattern_grid.
+    """Decode the pattern_lines wire format back into player pattern lines.
 
-    Each row is a list of tile name strings. Fill count equals list length.
-    Clears all grid cells first, then sets the appropriate cell for each row.
+    Each row is a list of tile name strings. All tiles in the list are the
+    same color (the committed tile). Clears all pattern lines first.
     """
     for row in range(5):
-        for col in range(5):
-            player.pattern_grid[row][col] = 0
-    for row, tiles in enumerate(pattern_lines):
-        if not tiles:
-            continue
-        tile = _str_to_tile(tiles[0])
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-        player.pattern_grid[row][col] = len(tiles)
+        player._pattern_lines[row].clear()
+    for row, tile_names in enumerate(pattern_lines):
+        if tile_names:
+            tile = _str_to_tile(tile_names[0])
+            player._pattern_lines[row].extend([tile] * len(tile_names))
 
 
 def _encode_wall(player: Player) -> list[list[str | None]]:
-    """Serialize the binary wall grid into tile name strings.
+    """Serialize the wall grid into tile name strings.
 
-    Filled cells carry the wall pattern color for that position; empty cells
-    are None.
+    Filled cells carry the tile name; empty cells are None.
     """
     return [
-        [
-            WALL_PATTERN[row][col].name if player.wall[row][col] else None
-            for col in range(5)
-        ]
-        for row in range(5)
+        [tile.name if tile else None for tile in player.wall[row]] for row in range(5)
     ]
 
 
@@ -160,11 +152,14 @@ def _game_from_snapshot(request: HypotheticalSnapshotRequest) -> Game:
     for player, board_req in zip(game.players, request.boards):
         player.score = board_req.score
         _decode_pattern_lines(player, board_req.pattern_lines)
-        player.wall = _decode_wall(board_req.wall)
-        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
-        player._update_pending()
-        player._update_penalty()
-        player._update_bonus()
+        wall_data = _decode_wall(board_req.wall)
+        for row in range(5):
+            for col in range(5):
+                player._wall_tiles[row][col] = (
+                    TILE_FOR_ROW_COL[row][col] if wall_data[row][col] else None
+                )
+        player._floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+        player._encode()
 
     return game
 
@@ -233,7 +228,7 @@ def _build_response(game: Game) -> GameStateResponse:
     for player in game.players:
         pattern_lines = _encode_pattern_lines(player)
         wall = _encode_wall(player)
-        floor_line = [_tile_to_str(t) for t in player.floor_line]
+        floor_line = [_tile_to_str(t) for t in player._floor_line]
         pending_placements, pending_bonuses = _build_pending(player)
         boards.append(
             BoardResponse(
@@ -419,11 +414,11 @@ def make_move(move_request: MoveRequest) -> GameStateResponse:
     if move not in _game.legal_moves():
         raise HTTPException(status_code=422, detail="Illegal move")
 
-    if _recorder is not None:
-        _recorder.record_move(move, player_index=_game.current_player_index)
-
     _push_history()
     _game.make_move(move)
+
+    if _recorder is not None:
+        _recorder.record_move(move, _game, player_index=_game.current_player_index)
 
     if _search_tree is not None:
         _search_tree.advance(move)
@@ -499,11 +494,12 @@ def agent_move() -> GameStateResponse:
         else agent.choose_move(_game)
     )
 
-    if _recorder is not None:
-        _recorder.record_move(move, player_index=current)
-
     _push_history()
     _game.make_move(move)
+
+    if _recorder is not None:
+        _recorder.record_move(move, _game, player_index=current)
+
     if _search_tree is not None:
         _search_tree.advance(move)
 
@@ -598,12 +594,12 @@ def hypothetical_from_snapshot(
 
     for player, scratch_player in zip(_game.players, scratch.players):
         player.score = scratch_player.score
-        player.pending = scratch_player.pending
-        player.penalty = scratch_player.penalty
-        player.bonus = scratch_player.bonus
-        player.pattern_grid = [row[:] for row in scratch_player.pattern_grid]
-        player.wall = [row[:] for row in scratch_player.wall]
-        player.floor_line = scratch_player.floor_line[:]
+        for row in range(5):
+            player._pattern_lines[row][:] = scratch_player._pattern_lines[row][:]
+            for col in range(5):
+                player._wall_tiles[row][col] = scratch_player._wall_tiles[row][col]
+        player._floor_line[:] = scratch_player._floor_line[:]
+        player._encode()
 
     return _build_response(_game)
 
@@ -629,11 +625,14 @@ def hypothetical_replace_snapshot(
     for player, board_req in zip(_game.players, request.boards):
         player.score = board_req.score
         _decode_pattern_lines(player, board_req.pattern_lines)
-        player.wall = _decode_wall(board_req.wall)
-        player.floor_line = [_str_to_tile(name) for name in board_req.floor_line]
-        player._update_pending()
-        player._update_penalty()
-        player._update_bonus()
+        wall_data = _decode_wall(board_req.wall)
+        for row in range(5):
+            for col in range(5):
+                player._wall_tiles[row][col] = (
+                    TILE_FOR_ROW_COL[row][col] if wall_data[row][col] else None
+                )
+        player._floor_line = [_str_to_tile(name) for name in board_req.floor_line]
+        player._encode()
 
     return _build_response(_game)
 
@@ -788,6 +787,40 @@ def setup_factories_load(request: list[list[str]]) -> GameStateResponse:
     return _build_response(_game)
 
 
+def _parse_metadata_from_final_state(
+    final_state: list[str],
+) -> tuple[list[str], list[int], int | None]:
+    """Extract player_names, final_scores, and winner from final_state display.
+
+    final_state is a list of strings. The second line has format:
+      "  P1: Player 1  46( 46)  > P2: Player 2  69( 69)  CLR  B  Y  R  K  W"
+    """
+    if len(final_state) < 2:
+        return [], [], None
+
+    line = final_state[1]
+    player_names = []
+    final_scores = []
+
+    import re
+
+    pattern = r"P\d+:\s+([^\s]+(?:\s+[^\s]+)*?)\s+(\d+)\("
+    matches = re.findall(pattern, line)
+
+    for name, score_str in matches:
+        player_names.append(name)
+        final_scores.append(int(score_str))
+
+    winner = None
+    if len(final_scores) == 2:
+        if final_scores[0] > final_scores[1]:
+            winner = 0
+        elif final_scores[1] > final_scores[0]:
+            winner = 1
+
+    return player_names, final_scores, winner
+
+
 @app.get("/recordings", response_model=list[RecordingSummary])
 def list_recordings() -> list[RecordingSummary]:
     folders = {
@@ -802,13 +835,23 @@ def list_recordings() -> list[RecordingSummary]:
         for path in folder_path.glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                game_id = data.get("game_id", "")
+                player_names = data.get("player_names", [])
+                final_scores = data.get("final_scores", [])
+                winner = data.get("winner")
+
+                if not player_names or not final_scores:
+                    player_names, final_scores, winner = (
+                        _parse_metadata_from_final_state(data.get("final_state", []))
+                    )
+
                 summaries.append(
                     RecordingSummary(
-                        game_id=data["game_id"],
+                        game_id=game_id,
                         timestamp=data["timestamp"],
-                        player_names=data["player_names"],
-                        final_scores=data.get("final_scores", []),
-                        winner=data.get("winner"),
+                        player_names=player_names,
+                        final_scores=final_scores,
+                        winner=winner,
                         folder=folder_name,
                     )
                 )
@@ -834,11 +877,19 @@ def get_recording(game_id: str) -> dict:
                 if data.get("game_id") == game_id:
                     record = GameRecord.from_dict(data)
                     computed_turns, final_boards = record.reconstruct()
-                    return {
-                        **data,
-                        "computed_turns": computed_turns,
-                        "final_boards": final_boards,
-                    }
+                    result = dict(data)
+                    if not result.get("player_names"):
+                        player_names, final_scores, winner = (
+                            _parse_metadata_from_final_state(
+                                result.get("final_state", [])
+                            )
+                        )
+                        result["player_names"] = player_names
+                        result["final_scores"] = final_scores
+                        result["winner"] = winner
+                    result["computed_turns"] = computed_turns
+                    result["final_boards"] = final_boards
+                    return result
             except Exception:
                 logger.exception("failed to load or reconstruct recording %s", game_id)
                 raise HTTPException(
@@ -1028,7 +1079,7 @@ def _inspector_load(
             detail=f"Recording {game_id!r} not found",
         )
 
-    total_moves = sum(len(r.moves) for r in record.rounds)
+    total_moves = sum(len(r.turns) for r in record.rounds)
     if move_index < 0 or move_index > total_moves:
         raise HTTPException(
             status_code=422,

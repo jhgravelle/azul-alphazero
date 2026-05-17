@@ -24,8 +24,8 @@ def _record_full_game() -> GameRecord:
 
     while not game.is_game_over():
         move = agents[game.current_player_index].choose_move(game)
-        recorder.record_move(move, player_index=game.current_player_index)
         game.make_move(move)
+        recorder.record_move(move, game, player_index=game.current_player_index)
         round_ended = game.advance(skip_setup=True)
         if round_ended and not game.is_game_over():
             print(f"center before setup: {game.center}")  # temporary debug
@@ -37,7 +37,7 @@ def _record_full_game() -> GameRecord:
 
 
 def _total_moves(record: GameRecord) -> int:
-    return sum(len(r.moves) for r in record.rounds)
+    return sum(len(r.turns) for r in record.rounds)
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -51,10 +51,10 @@ def test_replay_to_move_zero_is_initial_state():
     total_factory_tiles = sum(len(f) for f in game.factories)
     assert total_factory_tiles == 20
 
-    # No moves made yet — all pattern grid cells empty
+    # No moves made yet — all pattern lines empty
     for player in game.players:
-        for row in player.pattern_grid:
-            assert sum(row) == 0
+        for row in player._pattern_lines:
+            assert len(row) == 0
 
     assert game.round == 1
 
@@ -66,9 +66,9 @@ def test_replay_to_move_one_matches_first_recorded_move():
     game = replay_to_move(record, 1)
 
     total_pattern_tiles = sum(
-        sum(row) for player in game.players for row in player.pattern_grid
+        len(tile_list) for player in game.players for tile_list in player._pattern_lines
     )
-    total_floor_tiles = sum(len(player.floor_line) for player in game.players)
+    total_floor_tiles = sum(len(player._floor_line) for player in game.players)
     assert total_pattern_tiles + total_floor_tiles > 0
 
 
@@ -123,7 +123,7 @@ def test_replay_to_move_preserves_round_boundaries():
         pytest.skip("Game too short to test round boundaries")
 
     # Index of the last move in round 1
-    moves_in_round_1 = len(record.rounds[0].moves)
+    moves_in_round_1 = len(record.rounds[0].turns)
     game = replay_to_move(record, moves_in_round_1)
 
     # After the last move of round 1, round scoring + setup has happened,

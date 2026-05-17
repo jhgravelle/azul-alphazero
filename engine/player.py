@@ -1,25 +1,45 @@
 # engine/player.py
 from dataclasses import dataclass, field
-from typing import Any
 
 from engine.constants import (
-    BOARD_SEPARATOR,
-    BOARD_SIZE,
+    BLANK,
     BONUS_COLUMN,
     BONUS_ROW,
     BONUS_TILE,
     CAPACITY,
-    CELLS_BY_COLUMN,
-    CELLS_BY_ROW,
-    CELLS_BY_TILE,
-    COLUMN_FOR_TILE_IN_ROW,
-    CUMULATIVE_FLOOR_PENALTIES,
+    CHAR_FOR_TILE,
+    COL_FOR_TILE_ROW,
+    COLOR_TILES,
+    EMPTY,
     FLOOR,
     FLOOR_PENALTIES,
-    TILE_CHAR,
-    WALL_PATTERN,
+    FLOOR_SIZE,
+    MAX_USED,
+    SEPARATOR,
+    SIZE,
+    SPACE,
+    TILE_FOR_CHAR,
+    TILE_FOR_ROW_COL,
     Tile,
 )
+
+# Slices into encoded_features list
+# Each slice defines the range of values for that encoding section
+# Update these if encoding layout changes
+ENCODING_SLICES = {
+    "wall": slice(0, 25),
+    "pending_wall": slice(25, 50),
+    "adjacency_grid": slice(50, 75),
+    "wall_row_demand": slice(75, 100),
+    "wall_col_demand": slice(100, 125),
+    "wall_tile_demand": slice(125, 130),
+    "pattern_demand": slice(130, 135),
+    "pattern_capacity": slice(135, 160),
+    "scoring": slice(160, 165),
+    "misc": slice(165, 168),
+}
+
+# region class Player
 
 
 @dataclass
@@ -27,413 +47,477 @@ class Player:
     """A single player in an Azul game.
 
     Owns all board state directly — pattern lines, wall, floor, and score.
-    Also carries lightweight metadata (name, agent string) that survives
-    cloning so recordings and logs stay meaningful.
-
-    Scoring components are cached and updated surgically after each move
-    so that earned (the projected end-of-round score) is cheap to read.
-    Only the acting player's components are recomputed per move.
-
-    Attributes:
-        name:          Display name, e.g. "Player 1" or "Alice".
-        agent:         "human", or a string describing the bot and its
-                       parameters, e.g.
-                       "alphabeta_hard(depths=(3,5,8), thresholds=(20,10))"
-                       or "alphazero(checkpoint=gen_0012, sims=1500)".
-        score:         Confirmed score from completed rounds (always >= 0).
-        pending:       Cached placement points for full pattern lines this
-                       round. Updated when a pattern line completes.
-        penalty:       Cached floor line penalty (negative or zero). Updated
-                       when a tile hits the floor.
-        bonus:         Cached end-of-game bonus guaranteed by the current
-                       wall state. Updated when a pattern line completes;
-                       persists across rounds until replaced by the next
-                       _update_bonus call. Not included in update_score —
-                       only applied at game end.
-        pattern_grid:  Rather than stor the type of tile and a list of how many
-                       tiles, we will store a grid that mimics the wall pattern,
-                       each cell will have the count of how many tiles are in
-                       the pattern line.  there can only be one cell per row
-                       with a value > 0
-        floor_line:    Tiles dropped here incur penalty points at round end.
-                       May contain more than the 7 penalty slots — extra
-                       tiles are harmless (no additional penalty) but tracked
-                       for debugging. See _format_floor for display behavior.
-        wall:          The 5x5 placed tile grid (0 = empty, 1= full).
-
-    Properties:
-        earned:        score + pending + penalty + bonus — the projected
-                       total if the round ended now. Never stored; always
-                       computed from the four cached components above.
+    Scoring components (pending, penalty, bonus) are recomputed on demand
+    from board state via _encode().
     """
 
+    # Display name (recommended 8 chars or less, unique across players/models).
     name: str
-    agent: str = "human"
+
+    # Official score from completed rounds (always >= 0).
     score: int = 0
-    pending: int = 0
-    penalty: int = 0
-    bonus: int = 0
-    pattern_grid: list[list[int]] = field(
-        default_factory=lambda: [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
-    )
-    floor_line: list[Tile] = field(default_factory=list)
-    wall: list[list[int]] = field(
-        default_factory=lambda: [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+
+    # Pattern lines: list of tile lists, one per row. Each list contains tiles
+    # in order placed. Empty if no tiles on that row.
+    _pattern_lines: list[list[Tile]] = field(
+        default_factory=lambda: [[] for _ in range(SIZE)]
     )
 
-    # region Earned score ---------------------------------------------------
+    # Floor line: tiles incur penalty points at round end.
+    # Can contain more than FLOOR_SIZE slots (extras harmless but tracked).
+    _floor_line: list[Tile] = field(default_factory=list)
+
+    # Wall: 5x5 tile placement grid. Each cell holds the placed tile (None if empty).
+    _wall_tiles: list[list[Tile | None]] = field(
+        default_factory=lambda: [[None for _ in range(SIZE)] for _ in range(SIZE)]
+    )
+
+    # Encoded player state: 168 int values representing all board metrics.
+    # Computed at initialization and after state changes (place, process_round_end).
+    encoded_features: list[int] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Compute encoded features on initialization."""
+        self._encode()
+
+    @property
+    def pending(self) -> int:
+        """Placement points from full pattern lines this round."""
+        return self.encoded_features[ENCODING_SLICES["scoring"].start + 1]
+
+    @property
+    def penalty(self) -> int:
+        """Floor line penalty (negative or zero)."""
+        return self.encoded_features[ENCODING_SLICES["scoring"].start + 2]
+
+    @property
+    def bonus(self) -> int:
+        """End-of-game bonus guaranteed by current wall state."""
+        return self.encoded_features[ENCODING_SLICES["scoring"].start + 3]
 
     @property
     def earned(self) -> int:
-        """Projected score if the round ended now.
+        """Projected score if the game ended now.
 
-        Combines confirmed score with all cached components. Bonus is
-        included prospectively — it reflects end-of-game points already
-        guaranteed by the wall, even though they are not applied until
-        game end.
+        Combines official score with pending, penalty, and prospective bonus.
         """
-        return self.score + self.pending + self.penalty + self.bonus
-
-    def update_score(self) -> None:
-        """Confirm this round's placement and penalty points into score.
-
-        Adds pending and penalty into score (clamped to zero minimum), then
-        resets both to zero. Bonus is intentionally not touched here — it
-        accumulates across rounds and is only applied at game end.
-        """
-        self.score = max(0, self.score + self.pending + self.penalty)
-        self.pending = 0
-        self.penalty = 0
+        return self.encoded_features[ENCODING_SLICES["scoring"].start + 4]
 
     # endregion
-
-    # region Cache updates --------------------------------------------------
-
-    def _update_pending(self) -> None:
-        """Recompute pending from all currently full pattern lines.
-
-        Called whenever a pattern line completes. Sums adjacency scores
-        for every cell that will be placed at round end.
-        """
-        self.pending = sum(
-            self._adjacency_count(row, col) for row, col in self._pending_cells()
-        )
-
-    def _update_penalty(self) -> None:
-        """Recompute the floor line penalty from the current floor length.
-
-        Uses the precomputed cumulative table — a single index lookup.
-        Result is always zero or negative.
-        """
-        self.penalty = CUMULATIVE_FLOOR_PENALTIES[len(self.floor_line)]
-
-    def _update_bonus(self) -> None:
-        """Recompute the prospective end-of-game bonus from the current wall.
-
-        Called whenever a pattern line completes (wall may gain a tile at
-        round end). Replaces the previous cached value entirely.
-
-        Awards +BONUS_ROW per completed row, +BONUS_COLUMN per completed
-        column, +BONUS_TILE per tile color with all 5 placements on the wall.
-        Pending cells count as complete for this purpose.
-        """
-        bonus_features = [
-            (CELLS_BY_ROW, BONUS_ROW),
-            (CELLS_BY_COLUMN, BONUS_COLUMN),
-            (CELLS_BY_TILE, BONUS_TILE),
-        ]
-        self.bonus = sum(
-            bonus
-            for feature, bonus in bonus_features
-            for cells in feature
-            if self._is_complete(cells)
-        )
-
-    # endregion
-
-    # region Wall and pattern line inspection -------------------------------
-
-    def _line_tile(self, row: int) -> Tile | None:
-        """Return the committed color of a pattern line, or None if empty."""
-        for col in range(BOARD_SIZE):
-            if self.pattern_grid[row][col] > 0:
-                return WALL_PATTERN[row][col]
-        return None
-
-    def _cell_completion(self, row: int, col: int) -> int:
-        """Return the fill progress toward this wall cell, in tile units.
-
-        Returns CAPACITY[row] if the cell is already placed, the current
-        pattern line length if the line is aimed at this cell, or 0 if
-        neither condition holds.
-        """
-        return self.wall[row][col] * CAPACITY[row] + self.pattern_grid[row][col]
-
-    def _is_complete(self, cells: list[tuple[int, int]]) -> bool:
-        """Return True if every cell in the group is placed or pending.
-
-        Pending cells count as complete — game end is triggered before
-        the round scores, so pending placements are included.
-        """
-        return all(
-            self.wall[row][col] or self.pattern_grid[row][col] == CAPACITY[row]
-            for row, col in cells
-        )
-
-    def _pending_cells(self) -> list[tuple[int, int]]:
-        """Return all wall cells that will be placed at the end of this round."""
-        return [
-            (row, col)
-            for row in range(BOARD_SIZE)
-            for col in range(BOARD_SIZE)
-            if self.pattern_grid[row][col] == CAPACITY[row]
-        ]
-
-    def _adjacency_count(self, row: int, col: int) -> int:
-        """Return the placement score for a tile placed at (row, col).
-
-        Counts contiguous horizontal and vertical runs through the cell,
-        including the cell itself. A lone tile with no neighbors scores 1.
-
-        Horizontal: counts placed tiles in the same wall row.
-        Vertical: counts placed or pending tiles above (already scored by
-        round end when this tile places), but placed tiles only below
-        (not yet placed when scoring runs top to bottom in real Azul).
-        """
-        # Horizontal: walk left and right along placed wall tiles
-        left, right = col - 1, col + 1
-        while left >= 0 and self.wall[row][left]:
-            left -= 1
-        while right < BOARD_SIZE and self.wall[row][right]:
-            right += 1
-        horizontal = right - left - 1
-        horizontal = horizontal if horizontal > 1 else 0
-
-        # Vertical: walk up through placed or pending, down through placed only
-        above, below = row - 1, row + 1
-        while above >= 0 and (
-            self.wall[above][col] or self.pattern_grid[above][col] == CAPACITY[row]
-        ):
-            above -= 1
-        while below < BOARD_SIZE and self.wall[below][col]:
-            below += 1
-        vertical = below - above - 1
-        vertical = vertical if vertical > 1 else 0
-
-        return horizontal + vertical or 1
-
-    # endregion
-
-    # region Game flow ------------------------------------------------------
+    # region State inspection ------------------------------------------------
 
     def is_tile_valid_for_row(self, tile: Tile, row: int) -> bool:
         """Return True if tile can legally be placed on the given pattern line row.
 
         A tile is valid if:
-        - The wall cell for that tile in that row is not already filled.
-        - The pattern line is not already at full capacity.
+        - The wall cell is not already filled.
+        - The pattern line is not at full capacity.
         - The pattern line is empty, or already committed to the same color.
         """
-        col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-        if self.wall[row][col] == 1:
+        assert tile in COLOR_TILES
+        col = COL_FOR_TILE_ROW[tile][row]
+        if self._cell_units(row, col) == CAPACITY[row]:  # already placed or full
             return False
-        line_tile = self._line_tile(row)
-        if line_tile is None:
+        if self._cell_units(row, col) > 0:  # partially full implies correct color
             return True
-        if line_tile != tile:
-            return False
-        if self.pattern_grid[row][col] == CAPACITY[row]:
-            return False
-        return True
+        if len(self._pattern_lines[row]) == 0:  # empty line accepts any tile
+            return True
+        return False
+
+    def can_trigger_game_end(self, tiles_available: list[int]) -> bool:
+        """Check if this player can complete a full wall row this round.
+
+        A row can be completed if:
+        - It has exactly SIZE-1 (4) tiles placed.
+        - All color demands for that row can be met with available tiles.
+
+        Args:
+            tiles_available: Count of each color tile available in factories
+                        [B, Y, R, K, W] (index order matches COLOR_TILES).
+
+        Returns:
+            True if any wall row has 4 tiles placed and all remaining demands
+            can be satisfied with available tiles; False otherwise.
+        """
+        wall_slice = self.encoded_features[ENCODING_SLICES["wall"]]
+        wall_row_demand_slice = self.encoded_features[
+            ENCODING_SLICES["wall_row_demand"]
+        ]
+
+        # Check each of the 5 rows
+        for row in range(SIZE):
+            # Count placed tiles in this row (wall section is row-major)
+            placed_in_row = sum(wall_slice[row * SIZE + col] for col in range(SIZE))
+
+            # Row must have exactly 4 tiles (SIZE - 1)
+            if placed_in_row != SIZE - 1:
+                continue
+
+            # Check if all color demands for this row can be met
+            # wall_row_demand is [color_idx * SIZE + row]
+            all_demands_met = all(
+                wall_row_demand_slice[row * SIZE + color_idx]
+                <= tiles_available[color_idx]
+                for color_idx in range(SIZE)
+            )
+
+            if all_demands_met:
+                return True
+
+        return False
+
+    def has_triggered_game_end(self) -> bool:
+        """Return True if this player has completed a full row on the wall.
+
+        Game ends when any player completes a full row (all 5 tiles placed).
+        """
+        wall_slice = self.encoded_features[ENCODING_SLICES["wall"]]
+        for row in range(SIZE):
+            placed_in_row = sum(wall_slice[row * SIZE + col] for col in range(SIZE))
+            if placed_in_row == SIZE:  # Full row
+                return True
+        return False
+
+    # endregion
+    # region Game flow -------------------------------------------------------
+
+    def place(self, row: int, tiles: list[Tile]) -> None:
+        """Place tiles onto the pattern line row or floor.
+
+        Args:
+            row: Pattern line row (0–4), or FLOOR to place directly on floor.
+            tiles: List of tiles to place (all same color, FIRST_PLAYER allowed).
+
+        Precondition: tiles contains only valid color tiles for this row —
+        the caller is responsible for checking is_tile_valid_for_row before
+        calling. FIRST_PLAYER is handled here regardless of destination.
+
+        Overflow beyond line capacity spills to the floor. Encoded features
+        are recomputed after placement.
+        """
+        if Tile.FIRST_PLAYER in tiles:
+            self._floor_line.append(Tile.FIRST_PLAYER)
+            tiles = [tile for tile in tiles if tile != Tile.FIRST_PLAYER]
+        # Safety checks
+        assert len(tiles) > 0
+        assert all(tiles[0] == tile for tile in tiles)
+        if row != FLOOR:
+            assert self.is_tile_valid_for_row(tiles[0], row)
+            total_count = len(self._pattern_lines[row]) + len(tiles)
+            self._pattern_lines[row] = [tiles[0]] * min(CAPACITY[row], total_count)
+            tiles = [tiles[0]] * max(0, total_count - CAPACITY[row])
+        self._floor_line.extend(tiles)
+        self._encode()
 
     def process_round_end(self) -> list[Tile]:
         """Commit pending pattern lines to the wall and clear the floor.
 
         For each full pattern line: places the tile on the wall, clears the
         line, and collects the extras (all but one tile) for discard.
-        Then calls update_score() to commit pending and penalty into score.
-        Floor tiles are collected for discard (FIRST_PLAYER excluded — it
-        returns to the box, not the discard pile).
+        Then commits pending and penalty into score (clamped to zero minimum).
+        Floor tiles are collected for discard (FIRST_PLAYER excluded).
 
         Returns:
             All tiles to be added to the game discard pile.
         """
         discard: list[Tile] = []
-        for row in range(BOARD_SIZE):
-            if not max(self.pattern_grid[row]) == CAPACITY[row]:
+        for row in range(SIZE):
+            if len(self._pattern_lines[row]) != CAPACITY[row]:
                 continue
-            tile = self._line_tile(row)
-            assert tile
-            col = COLUMN_FOR_TILE_IN_ROW[tile][row]
-            self.wall[row][col] = True
-            discard.extend([tile] * (CAPACITY[row] - 1))
-            self.pattern_grid[row][col] = 0
-        self.update_score()
-        discard.extend(t for t in self.floor_line if t != Tile.FIRST_PLAYER)
-        self.floor_line.clear()
+            tile = self._pattern_lines[row][-1]
+            col = COL_FOR_TILE_ROW[tile][row]
+            self._wall_tiles[row][col] = tile
+            discard.extend(self._pattern_lines[row][:-1])
+            self._pattern_lines[row].clear()
+        self.score = max(0, self.score + self.pending + self.penalty)
+        discard.extend(t for t in self._floor_line if t != Tile.FIRST_PLAYER)
+        self._floor_line.clear()
+        self._encode()
         return discard
 
-    def place(self, destination: int, tiles: list[Tile]) -> None:
-        """Place tiles onto the destination pattern line or floor.
+    # endregion
+    # region State access (public properties) --------------------------------
 
-        Precondition: tiles contains only valid color tiles for this
-        destination — the caller is responsible for checking
-        _is_valid_destination before calling. FIRST_PLAYER is handled
-        here regardless of destination.
+    @property
+    def pattern_lines(self) -> list[list[Tile]]:
+        """Return the pattern lines grid.
 
-        Overflow beyond line capacity spills to the floor. Cache updates
-        (pending, bonus, penalty) are applied after placement.
+        Each row contains tiles placed in order. Empty rows are empty lists.
         """
-        if Tile.FIRST_PLAYER in tiles:
-            self.floor_line.append(Tile.FIRST_PLAYER)
-            tiles = [tile for tile in tiles if tile != Tile.FIRST_PLAYER]
-        overflow = 0
-        overflow_tile = None
-        if destination != FLOOR and tiles:
-            overflow_tile = tiles[0]
-            col = COLUMN_FOR_TILE_IN_ROW[overflow_tile][destination]
-            count = len(tiles)
-            filled = self.pattern_grid[destination][col]
-            overflow = max(0, filled + count - CAPACITY[destination])
-            self.pattern_grid[destination][col] = filled + count - overflow
-            if self.pattern_grid[destination][col] == CAPACITY[destination]:
-                self._update_pending()
-                self._update_bonus()
-        elif destination == FLOOR:
-            self.floor_line.extend(tiles)
-        if overflow_tile is not None:
-            self.floor_line.extend([overflow_tile] * overflow)
-        self._update_penalty()
+        return self._pattern_lines
 
-    def has_triggered_game_end(self) -> bool:
-        """Return True if this player has completed at least one wall row.
+    @property
+    def wall(self) -> list[list[Tile | None]]:
+        """Return the wall grid (5×5).
 
-        Includes pending cells — a full pattern line that will place at
-        round end counts as complete. The round still plays out fully
-        before game end bonuses are applied.
+        Each cell contains the placed tile or None if empty.
         """
-        return any(self._is_complete(cells) for cells in CELLS_BY_ROW)
+        return self._wall_tiles
+
+    @property
+    def floor_line(self) -> list[Tile]:
+        """Return the floor line tiles.
+
+        Includes FIRST_PLAYER token if present.
+        """
+        return self._floor_line
 
     # endregion
+    # region Encoding (private) -----------------------------------------------
 
-    # region Completion progress --------------------------------------------
+    def _encode(self) -> None:
+        """Compute and cache all player state metrics into encoded_features.
 
-    def extract_features(self) -> dict[str, Any]:
-        """Return all player-specific cached features."""
-        return {
-            # Scoring (already cached)
-            "score": self.score,
-            "pending": self.pending,
-            "penalty": self.penalty,
-            "bonus": self.bonus,
-            "earned": self.earned,  # Property
-            # Board state (cheap helpers)
-            "wall": [row[:] for row in self.wall],
-            "pattern_grid": [row[:] for row in self.pattern_grid],
-            "floor_length": len(self.floor_line),
-            # Already cached
-            "completion_progress": self.encode_completion_progress(),
-        }
-
-    def _completion_progress(self, cells: list[tuple[int, int]]) -> float:
-        """Return progress toward completing a cell group as a fraction 0..1.
-
-        Numerator is the sum of fill progress for each cell (CAPACITY[row]
-        if placed, current line length if aimed at this cell, 0 otherwise).
-        Denominator is the sum of CAPACITY[row] for all cells in the group.
+        Builds 168 values in a fixed layout (see ENCODING_SLICES):
+        - Wall state (25): binary grid of placed tiles
+        - Pending wall (25): binary grid of tiles committed to place this round
+        - Adjacency (25): bonus points for each wall cell (0-10)
+        - Wall row demand (25): tiles needed to complete each color×row
+        - Wall col demand (25): tiles needed to complete each color×col
+        - Wall tile demand (5): tiles needed to complete each color (all rows/cols)
+        - Pattern demand (5): tiles needed to fill committed pattern lines
+        - Pattern capacity (25): tiles needed to fill pattern lines, committed or empty
+        - Scoring (5): official_score, pending, penalty, bonus, earned
+        - Misc (3): first_player_token, total_used, max_pattern_capacity
         """
-        numerator = sum(self._cell_completion(row, col) for row, col in cells)
-        denominator = sum(CAPACITY[row] for row, _ in cells)
-        return numerator / denominator
+        wall_cells = [[0] * SIZE for _ in range(SIZE)]  # [row][col] binary
+        pending_cells = [[0] * SIZE for _ in range(SIZE)]  # [row][col] binary
+        adjacency_cells = [[0] * SIZE for _ in range(SIZE)]  # [row][col] count 0-10
+        wall_row_demand = [[0] * SIZE for _ in range(SIZE)]  # [color][row] count
+        wall_col_demand = [[0] * SIZE for _ in range(SIZE)]  # [color][col] count
+        wall_tile_demand = [0] * SIZE  # [color] count
+        pattern_demand = [0] * SIZE  # [color] count
+        pattern_capacity = [[0] * SIZE for _ in range(SIZE)]  # [color][row] count
 
-    def encode_completion_progress(self) -> list[list[float]]:
-        """Return completion progress for all rows, columns, and tile groups.
+        for row in range(SIZE):
+            for col in range(SIZE):
+                color_idx = TILE_FOR_ROW_COL[row][col].value
+                empty = len(self._pattern_lines[row]) == 0
+                full = len(self._pattern_lines[row]) == CAPACITY[row]
+                committed = not empty and self._pattern_lines[row][0].value == color_idx
+                demand = CAPACITY[row] - self._cell_units(row, col)
+                empty = len(self._pattern_lines[row]) == 0
+                capacity = demand if committed or empty or full else 0
 
-        Returns a list of three lists: rows, columns, and tile colors.
-        Each value is a fraction in 0..1. Used as neural network features.
-        """
-        features = [CELLS_BY_ROW, CELLS_BY_COLUMN, CELLS_BY_TILE]
-        return [
-            [self._completion_progress(cells) for cells in feature]
-            for feature in features
-        ]
+                wall_cells[row][col] = 1 if self._wall_tiles[row][col] else 0
+                pending_cells[row][col] = 1 if committed and full else 0
+                adjacency_cells[row][col] = self._adjacency(row, col, for_score=False)
+                wall_row_demand[row][color_idx] += demand
+                wall_col_demand[col][color_idx] += demand
+                wall_tile_demand[color_idx] += demand
+                pattern_demand[color_idx] += demand if committed else 0
+                pattern_capacity[color_idx][row] += capacity
+
+        # Sort columns by total demand to help model prioritize near-complete columns.
+        wall_col_demand.sort(key=lambda x: sum(x))
+
+        # Compute scoring metrics
+        official_score = self.score
+        pending_score = self._pending(pending_cells)
+        penalty_score = self._penalty()
+        bonus_score = self._bonus(wall_row_demand, wall_col_demand, wall_tile_demand)
+        earned_score = official_score + pending_score + penalty_score + bonus_score
+        first_player_token = 1 if Tile.FIRST_PLAYER in self._floor_line else 0
+        total_used = MAX_USED - sum(wall_tile_demand)
+        max_pattern_capacity = self._max_pattern_capacity(pattern_capacity)
+
+        self.encoded_features = self._flatten(
+            [
+                wall_cells,
+                pending_cells,
+                adjacency_cells,
+                wall_row_demand,
+                wall_col_demand,
+                wall_tile_demand,
+                pattern_demand,
+                pattern_capacity,
+                official_score,
+                pending_score,
+                penalty_score,
+                bonus_score,
+                earned_score,
+                first_player_token,
+                total_used,
+                max_pattern_capacity,
+            ]
+        )
 
     # endregion
+    # region Helpers (private) ------------------------------------------------
 
+    def _cell_units(self, row: int, col: int) -> int:
+        """Return the fill progress toward this wall cell, in tile units.
+
+        Returns CAPACITY[row] if the cell is already placed, the current
+        pattern line length if the line is aimed at this cell, or 0 otherwise.
+        """
+        if self._wall_tiles[row][col] is not None:
+            return CAPACITY[row]
+        elif not self._pattern_lines[row]:
+            return 0
+        elif self._pattern_lines[row][0] == TILE_FOR_ROW_COL[row][col]:
+            return len(self._pattern_lines[row])
+        else:
+            return 0
+
+    def _cell_is_placed(self, row: int, col: int) -> bool:
+        """Return True if the wall cell is already placed (helper for _adjacency)."""
+        return self._wall_tiles[row][col] is not None
+
+    def _cell_is_full(self, row: int, col: int) -> bool:
+        """Return True if the wall cell is placed or will be placed this round
+        (helper for _adjacency)."""
+        return self._cell_units(row, col) == CAPACITY[row]
+
+    def _adjacency(self, row: int, col: int, for_score: bool) -> int:
+        """Count contiguous adjacent tiles (horizontal + vertical).
+
+        Returns the number of adjacent tiles (0–10), or 1 if the cell is alone.
+        Used during encoding to compute adjacency bonus points.
+
+        Args:
+            row, col: Wall cell coordinates.
+            for_score: If True, uses _cell_is_placed (score mode: only count
+                committed placements). If False, uses _cell_is_full (lookahead
+                mode: count placements + pending fills).
+        """
+        method = self._cell_is_placed if for_score else self._cell_is_full
+
+        # Horizontal: walk left and right
+        left, right = col - 1, col + 1
+        while left >= 0 and method(row, left):
+            left -= 1
+        while right < SIZE and method(row, right):
+            right += 1
+        horizontal = right - left - 1
+        horizontal = horizontal if horizontal > 1 else 0
+
+        # Vertical: walk up and down (up always considers pending)
+        above, below = row - 1, row + 1
+        while above >= 0 and self._cell_is_full(above, col):
+            above -= 1
+        while below < SIZE and method(below, col):
+            below += 1
+        vertical = below - above - 1
+        vertical = vertical if vertical > 1 else 0
+
+        return horizontal + vertical or 1
+
+    def _pending(self, pending_cells: list[list[int]]) -> int:
+        """Sum adjacency bonus for all pending placements this round."""
+        return sum(
+            self._adjacency(row, col, for_score=True) if pending_cells[row][col] else 0
+            for row in range(SIZE)
+            for col in range(SIZE)
+        )
+
+    def _penalty(self) -> int:
+        """Sum floor line penalty (negative or zero)."""
+        return sum(FLOOR_PENALTIES[: len(self._floor_line)])
+
+    def _bonus(
+        self,
+        wall_row_demand: list[list[int]],
+        wall_col_demand: list[list[int]],
+        wall_tile_demand: list[int],
+    ) -> int:
+        """Sum end-of-game bonus from completed rows, columns, and colors."""
+        return (
+            sum(BONUS_ROW for i in range(SIZE) if sum(wall_row_demand[i]) == 0)
+            + sum(BONUS_COLUMN for i in range(SIZE) if sum(wall_col_demand[i]) == 0)
+            + sum(BONUS_TILE for i in range(SIZE) if wall_tile_demand[i] == 0)
+        )
+
+    def _max_pattern_capacity(self, pattern_capacity: list[list[int]]) -> int:
+        """Sum maximum pattern capacity across all colors and rows."""
+        return sum(
+            max(pattern_capacity[color_idx][row] for color_idx in range(SIZE))
+            for row in range(SIZE)
+        )
+
+    def _flatten(self, data: list) -> list[int]:
+        """Flatten nested list structure of any depth into a single flat list.
+
+        Recursively traverses nested lists and appends all scalar values in order.
+        Handles mixed depths — elements can be lists, lists of lists, or scalars.
+
+        Args:
+            data: A list containing elements of any depth (nested lists or scalars).
+
+        Returns:
+            A flat list of all scalar values in traversal order.
+
+        Examples:
+            flatten([1, [2, 3], [[4, 5], 6]]) → [1, 2, 3, 4, 5, 6]
+            flatten([[1, 2], [3, 4, 5]]) → [1, 2, 3, 4, 5]
+            flatten([[[1]]]) → [1]
+        """
+        result = []
+        for item in data:
+            if isinstance(item, list):
+                result.extend(self._flatten(item))  # Recurse for nested lists
+            else:
+                result.append(item)  # Append scalar values
+        return result
+
+    # endregion
     # region Display --------------------------------------------------------
 
-    def _format_score_line(self) -> str:
-        """Format the scoring component line: score+pending-penalty+bonus=earned.
+    def _format_header(self) -> str:
+        """Format the header as a fixed 23-character string.
 
-        Each value is padded to 2 characters. penalty is shown negated so
-        the displayed number is positive (e.g. -0 unambiguously marks the
-        penalty slot even when no tiles are on the floor).
+        Six leading spaces are reserved for Game to overwrite with context
+        (e.g. 'P1: ' or '> '). Player name is left-justified to 8 characters,
+        truncated with ellipsis if over budget. Score and earned are shown
+        as 'score(earned)' right-justified at the end.
         """
-        return (
-            f"{self.score:>2d}"
-            f" + {self.pending:>2d}"
-            f" - {-self.penalty:>2d}"
-            f" + {self.bonus:>2d}"
-            f" = {self.earned:>2d}"
-        )
+        name = self.name if len(self.name) <= 8 else self.name[:7] + "…"
+        return f"      {name:<8} {self.score:>3d}({self.earned:>3d})"
 
     def _format_row(self, row: int) -> str:
-        """Return a formatted string for one pattern line and its wall row.
+        """Return a fixed 23-character string for one pattern line and wall row.
 
-        Pattern line is right-aligned to BOARD_SIZE with dots for empty
-        slots. Wall row shows placed tiles with dots for empty cells.
-        The two halves are joined by BOARD_SEPARATOR.
+        Pattern side is right-justified to 6 unspaced characters so that
+        after spacing every character the separator lands at position 12.
+        Wall shows placed tile character for filled cells, dot for empty.
         """
-        empty = TILE_CHAR[None] * (CAPACITY[row] - max(self.pattern_grid[row]))
-        filled = TILE_CHAR[self._line_tile(row)] * max(self.pattern_grid[row])
-        pattern = "".join([*empty, *filled]).rjust(BOARD_SIZE)
+        fill = len(self._pattern_lines[row])
+        tile = self._pattern_lines[row][-1] if self._pattern_lines[row] else None
+        empty = CHAR_FOR_TILE[None] * (CAPACITY[row] - fill)
+        filled = CHAR_FOR_TILE[tile] * fill
+        pattern = "".join([*empty, *filled]).rjust(6)
         wall = "".join(
             (
-                TILE_CHAR[WALL_PATTERN[row][col]]
-                if self.pattern_grid[row][col]
-                else TILE_CHAR[None]
+                CHAR_FOR_TILE[self._wall_tiles[row][col]]
+                if self._wall_tiles[row][col] is not None
+                else CHAR_FOR_TILE[None]
             )
-            for col in range(BOARD_SIZE)
+            for col in range(SIZE)
         )
-        chars = BOARD_SEPARATOR.join([pattern, wall])
-        return " ".join([c for c in chars])
+        chars = SEPARATOR.join([pattern, wall])
+        return " ".join(c for c in chars)
 
     def _format_floor(self) -> str:
-        """Format the floor line for display.
+        """Return a fixed 23-character string for the floor line.
 
-        Shows up to 7 penalty slots (dots for empty), then BOARD_SEPARATOR
-        and any overflow tiles beyond slot 7. Overflow tiles incur no
-        additional penalty but are shown for debugging visibility.
+        Shows up to FLOOR_SIZE penalty slots with spaced dots for empty
+        tiles, then ' |' and any overflow tiles left-justified in the
+        remaining 8 chars.
         """
-        length = len(FLOOR_PENALTIES)
-        tile_strs = " ".join(TILE_CHAR[tile] for tile in self.floor_line)
-        slots = tile_strs[:length].ljust(length, TILE_CHAR[None])
-        overflow = tile_strs[length:]
-        chars = BOARD_SEPARATOR.join([slots, overflow])
-        return " ".join([c for c in chars])
+        floor_chars = [CHAR_FOR_TILE[tile] for tile in self._floor_line]
+        slots = floor_chars[:FLOOR_SIZE]
+        overflow = floor_chars[FLOOR_SIZE:]
+        slots_str = "".join(slots + [CHAR_FOR_TILE[None]] * (FLOOR_SIZE - len(slots)))
+        overflow_str = "".join(overflow)
+        return f"{slots_str:>11} {SEPARATOR} {overflow_str:<9}"
 
     def __str__(self) -> str:
-        """Multi-line monospaced display of the player board.
-
-        Example output:
-            Alice (alphabeta_hard(...))
-             5+ 3- 1+ 0= 7
-                R|..R..
-               .Y|.....
-              ...|.....
-             WWWW|..W..
-            ....K|.....
-            FR.....|
-        """
+        """Multi-line monospaced 23-character-wide display of the player board."""
         return "\n".join(
             [
-                f"{self.name} ({self.agent})".rjust((BOARD_SIZE + 1) * 4),
-                self._format_score_line().rjust((BOARD_SIZE + 1) * 4),
-                "\n".join(
-                    self._format_row(row).rjust((BOARD_SIZE + 1) * 4)
-                    for row in range(BOARD_SIZE)
-                ),
-                self._format_floor().rjust((BOARD_SIZE + 1) * 4),
+                self._format_header(),
+                "\n".join(self._format_row(row) for row in range(SIZE)),
+                self._format_floor(),
             ]
         )
 
@@ -441,33 +525,137 @@ class Player:
         return str(self)
 
     # endregion
+    # region From String -----------------------------------------------------
 
+    @classmethod
+    def from_string(cls, text: str) -> "Player":
+        """Reconstruct a Player from the output of __str__.
+
+        Parses name and score from the header line, _pattern_lines and _wall
+        from the five board rows, and _floor_line from the floor line.
+        Recomputes encoded_features and asserts that earned matches parsed value.
+
+        Raises:
+            ValueError: if the string does not match the expected format.
+            AssertionError: if recomputed earned does not match parsed earned.
+        """
+        lines = text.strip().splitlines()
+        if len(lines) != 7:
+            raise ValueError(f"Expected 7 lines, got {len(lines)}")
+
+        name, score, earned = cls._parse_header(lines[0])
+        pattern_lines, wall_tiles = cls._parse_board_rows(lines[1:6])
+        floor_line = cls._parse_floor(lines[6])
+
+        player = cls(name=name, score=score)
+        player._pattern_lines = pattern_lines
+        player._wall_tiles = wall_tiles
+        player._floor_line = floor_line
+        player._encode()
+
+        assert (
+            player.earned == earned
+        ), f"Recomputed earned {player.earned} does not match parsed earned {earned}"
+        return player
+
+    @staticmethod
+    def _parse_header(line: str) -> tuple[str, int, int]:
+        """Parse name, score, and earned from the header line.
+
+        Score and earned are at the end in the format ' NNN(NNN)'.
+        Name is everything before that suffix, stripped of padding.
+        """
+        name = line[:-9].strip()
+        score = int(line[-8:-5])
+        earned = int(line[-4:-1])
+        return name, score, earned
+
+    @staticmethod
+    def _parse_board_rows(
+        lines: list[str],
+    ) -> tuple[list[list[Tile]], list[list[Tile | None]]]:
+        """Parse _pattern_lines and _wall_tiles from the five board row lines.
+
+        Each line has a spaced pattern side, ' | ', and a spaced wall side.
+        Pattern side chars are tile characters or dots. Wall side chars are
+        tile characters (placed) or dots (empty) — any character other than
+        empty marks the wall as filled. Convenient for hand-entered states.
+        """
+        pattern_lines: list[list[Tile]] = [[] for _ in range(SIZE)]
+        wall_tiles: list[list[Tile | None]] = [
+            [None for _ in range(SIZE)] for _ in range(SIZE)
+        ]
+        for row, line in enumerate(lines):
+            pattern_str, wall_str = line.replace(SPACE, BLANK).split(SEPARATOR)
+            # Extract tiles from the pattern side (last character indicates which tile)
+            pattern_str = pattern_str.replace(EMPTY, BLANK)
+            if pattern_str and pattern_str != BLANK:
+                last_char = pattern_str[-1]
+                if last_char in TILE_FOR_CHAR and TILE_FOR_CHAR[last_char] is not None:
+                    tile = TILE_FOR_CHAR[last_char]
+                    assert (
+                        tile is not None
+                    ), f"Invalid tile character '{last_char}' in pattern line"
+                    count = len(pattern_str)
+                    if count > 0:
+                        pattern_lines[row] = [tile] * count
+            assert (
+                len(wall_str) == SIZE
+            ), f"Expected wall string of length {SIZE}, got {len(wall_str)}"
+            for col, c in enumerate(wall_str):
+                if c != EMPTY:
+                    wall_tiles[row][col] = TILE_FOR_ROW_COL[row][col]
+        return pattern_lines, wall_tiles
+
+    @staticmethod
+    def _parse_floor(line: str) -> list[Tile]:
+        """Parse _floor_line from the floor line.
+
+        Expected format: slots (up to FLOOR_SIZE) then ' | ' then overflow
+        tiles. Dots are empty slots and are skipped.
+        """
+        line = line.replace(EMPTY, BLANK)
+        line = line.replace(SPACE, BLANK)
+        line = line.replace(SEPARATOR, BLANK)
+        return [
+            tile
+            for c in line
+            if c in TILE_FOR_CHAR and (tile := TILE_FOR_CHAR[c]) is not None
+        ]
+
+    # endregion
     # region Clone ----------------------------------------------------------
 
     def clone(self) -> "Player":
         """Return a fast independent copy of this player.
 
         Bypasses __init__ — no default_factory calls. All mutable state is
-        copied with direct list operations to avoid deepcopy overhead.
-        Metadata (name, agent) and cached scoring components are copied
-        as plain assignments.
+        copied appropriately. Metadata (name) and score are copied as plain
+        assignments.
+
+        Note on encoded_features: passed by reference without copying. Safe
+        because _encode() always replaces the list (via self._flatten()),
+        never mutates it in place. Clone inherits the reference but gets its
+        own list when _encode() is called (e.g., after place() or
+        process_round_end()).
         """
         p = object.__new__(Player)
         p.name = self.name
-        p.agent = self.agent
         p.score = self.score
-        p.pending = self.pending
-        p.penalty = self.penalty
-        p.bonus = self.bonus
-        p.pattern_grid = [row[:] for row in self.pattern_grid]
-        p.floor_line = self.floor_line[:]
-        p.wall = [row[:] for row in self.wall]
+        p._pattern_lines = [row[:] for row in self._pattern_lines]
+        p._floor_line = self._floor_line[:]
+        p._wall_tiles = [row[:] for row in self._wall_tiles]
+        p.encoded_features = self.encoded_features
         return p
 
     # endregion
 
 
 if __name__ == "__main__":
-    player = Player("Joe")
+    player = Player("Alexandria")
     player.place(3, [Tile.BLACK] * 2)
+    player.place(FLOOR, [Tile.BLACK] * 9)
     print(player)
+    s = str(player)
+    player2 = Player.from_string(s)
+    print(player2)
